@@ -1,0 +1,16 @@
+name: KoInsight
+url: "https://github.com/GeorgeSG/KoInsight"
+image: "ghcr.io/georgesg/koinsight:v0.1.4"
+version: 0.1.4
+slug: koinsight
+init: false
+description: "Home Assistant Addon for GeorgeSG/KoInsight"
+arch: ["aarch64"]
+startup: application
+boot: auto
+ports:
+  "3000/tcp": 3000
+map: ["data:rw"]
+environment:
+  DATA_PATH: /data/koinsight_data
+

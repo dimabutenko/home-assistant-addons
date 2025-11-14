@@ -8,16 +8,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Build Add-on
-        uses: frenck/action-addon-builder@v5
-        with:
-          addon: "calibre_web_automated"
-          token: ${{ secrets.GITHUB_TOKEN }}
+    uses: home-assistant/addons/.github/workflows/addon.yml@master
+    with:
+      path: "calibre_web_automated"
+    secrets:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

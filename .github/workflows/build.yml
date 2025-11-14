@@ -15,9 +15,13 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      - name: Get short SHA
-        id: sha
-        run: echo "SHA_SHORT=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+      - name: Install yq
+        run: |
+          sudo wget https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -O /usr/bin/yq
+          sudo chmod +x /usr/bin/yq
+      - name: Get version from config
+        id: version
+        run: echo "VERSION=$(yq e '.version' 'calibre_web_automated/config.yaml')" >> $GITHUB_OUTPUT
       - name: Login to ghcr.io
         uses: docker/login-action@v3
         with:
@@ -35,4 +39,4 @@ jobs:
           platforms: linux/aarch64
           tags: |
             ghcr.io/dimabutenko/ha-addon-cwa:latest
-            ghcr.io/dimabutenko/ha-addon-cwa:${{ steps.sha.outputs.SHA_SHORT }}
+            ghcr.io/dimabutenko/ha-addon-cwa:${{ steps.version.outputs.VERSION }}

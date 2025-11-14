@@ -1,7 +1,7 @@
 name: KoInsight
 url: "https://github.com/GeorgeSG/KoInsight"
-image: "ghcr.io/georgesg/koinsight:v0.1.4"
-version: 0.1.4
+image: "ghcr.io/georgesg/koinsight"
+version: v0.1.4
 slug: koinsight
 init: false
 description: "Home Assistant Addon for GeorgeSG/KoInsight"

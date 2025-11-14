@@ -12,7 +12,7 @@ map: ["share:rw"]
 privileged:
   - SYS_ADMIN
 init: false
-image: "ghcr.io/dimabutenko/ha-addon-cwa-{arch}"
+image: "ghcr.io/dimabutenko/ha-addon-cwa:latest"
 environment:
   TZ: "Europe/Warsaw"
   PUID: "1000"

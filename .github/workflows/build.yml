@@ -1,0 +1,23 @@
+name: Build & Publish Add-on
+
+on:
+  push:
+    branches:
+      - "main"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build Add-on
+        uses: hassio-addons/addon-action@v3
+        with:
+          addon: "calibre_web_automated"
+          token: ${{ secrets.GITHUB_TOKEN }}

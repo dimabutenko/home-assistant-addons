@@ -1,7 +1,7 @@
 name: Calibre-Web Automated
 version: 1.0
 slug: calibre_web_automated
-description: "Локальный аддон для crocodilestick/calibre-web-automated"
+description: "Home Assistant Addon for crocodilestick/calibre-web-automated"
 arch: ["aarch64"]
 startup: application
 boot: auto
@@ -12,6 +12,7 @@ map: ["share:rw"]
 privileged:
   - SYS_ADMIN
 init: false
+image: "ghcr.io/dimabutenko/ha-addon-cwa-{arch}"
 environment:
   TZ: "Europe/Warsaw"
   PUID: "1000"

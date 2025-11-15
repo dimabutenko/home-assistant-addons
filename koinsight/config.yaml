@@ -8,9 +8,9 @@ description: "Home Assistant Addon for GeorgeSG/KoInsight"
 arch: ["aarch64"]
 startup: application
 boot: auto
+webui: "http://192.168.1.4:[PORT:3000]"
 ports:
   "3000/tcp": 3000
 map: ["data:rw"]
 environment:
   DATA_PATH: /data/koinsight_data
-

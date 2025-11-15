@@ -4,6 +4,8 @@ name: Build & Push Add-on (Single Arch)
 
 on:
   push:
+    paths:
+      - calibre_web_automated/**/*
     branches:
       - "main"
 jobs:

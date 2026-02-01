@@ -1,6 +1,6 @@
 name: Calibre-Web Automated
 url: "https://github.com/dimabutenko/home-assistant-addons"
-version: 1.0.2
+version: 1.0.3
 slug: calibre_web_automated
 description: "Home Assistant Addon for crocodilestick/calibre-web-automated"
 arch: ["aarch64"]

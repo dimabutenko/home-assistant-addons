@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.0.2
+* Updated Calibre-Web Automated (CWA) image to latest version
+
 ## 1.0.1
 * Added custom addon icon and logo for better presentation in the Home Assistant store.
 

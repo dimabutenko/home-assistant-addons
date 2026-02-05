@@ -1,5 +1,8 @@
 # Changelog
 
+## 4.0.6
+* Updated Calibre-Web Automated (CWA) image to version 4.0.6
+
 ## 4.0.5
 * Updated Calibre-Web Automated (CWA) image to version 4.0.5
 * Aligned addon version with original package version for consistency

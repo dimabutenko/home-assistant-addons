@@ -1,6 +1,6 @@
 name: Calibre-Web Automated
 url: "https://github.com/dimabutenko/home-assistant-addons"
-version: 4.0.6
+version: 4.0.7
 slug: calibre_web_automated
 description: "Home Assistant Addon for crocodilestick/calibre-web-automated"
 arch: ["aarch64"]
@@ -9,7 +9,7 @@ boot: auto
 ports:
   "8083/tcp": 8084
 apparmor: false
-map: ["share:rw"]
+map: ["media:rw"]
 privileged:
   - SYS_ADMIN
 init: false

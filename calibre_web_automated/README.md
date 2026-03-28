@@ -13,7 +13,7 @@ library directly within their Home Assistant environment.
 * **Calibre-Web Automated Integration:** Provides a full-featured web interface to browse, read, and manage your Calibre ebook library.
 * **Automation:** Leverages the original `crocodilestick/calibre-web-automated` features for automated book processing.
 * **Home Assistant OS Compatibility:** Designed to run reliably on Home Assistant OS (e.g., Raspberry Pi).
-* **External Data Storage:** Ebook library data (`config`, `ingest`, `library`) is stored in the Home Assistant's `/share` directory for easy access and backup.
+* **External Data Storage:** Ebook library data (`config`, `ingest`, `library`) is stored in the Home Assistant's `/media` directory for easy access and backup.
 * **Automated Builds:** Images are pre-built for `aarch64` (Raspberry Pi) and published to GitHub Container Registry (GHCR) using GitHub Actions, speeding up installation and updates.
 
 ## Based On
@@ -32,14 +32,14 @@ Integrating custom Docker containers into Home Assistant OS add-ons can be chall
     The base Docker image declares certain directories (like `/config`, `/calibre-library`) as `VOLUME`s, which Docker typically manages as anonymous volumes.
 
 2.  **Home Assistant Add-on Environment:**
-    * The `config.yaml` of this add-on configures `map: ["share:rw"]`, making the Home Assistant's `/share` directory accessible inside the add-on container at `/share`.
+    * The `config.yaml` of this add-on configures `map: ["media:rw"]`, making the Home Assistant's `/media` directory accessible inside the add-on container at `/media`.
     * It also enables `apparmor: false` and `privileged: [SYS_ADMIN]` to allow advanced filesystem operations.
 
 3.  **Custom Initialization Script (`01-ha-links.sh`):**
     This script runs early in the container's startup process (`/etc/cont-init.d/`). Its crucial role is to perform `mount --bind` operations:
     * It binds specific subdirectories from `/share/calibre-automated/` (e.g., `share/calibre-automated/library`)
     * **OVER** the default `VOLUME` paths declared by the original container (e.g., `/calibre-library`).
-    This "bind mount over volume" technique ensures that the application (Calibre-Web) sees its data in the expected paths, while the actual data resides in the user-accessible `/share` directory.
+    This "bind mount over volume" technique ensures that the application (Calibre-Web) sees its data in the expected paths, while the actual data resides in the user-accessible `/media` directory.
 
 4.  **GitHub Actions Integration:**
     * The add-on image (`ghcr.io/dimabutenko/ha-addon-cwa:latest`) is pre-built for `linux/aarch64` architecture (for Raspberry Pi users).
@@ -58,7 +58,7 @@ Integrating custom Docker containers into Home Assistant OS add-ons can be chall
     * Find "Calibre-Web Automated" in the list and click it.
     * Click `Install`.
 3.  **Prepare your data:**
-    * Ensure your Calibre library data (folders `config`, `ingest`, `library`) is located in `/share/calibre-automated/` on your Home Assistant file system.
+    * Ensure your Calibre library data (folders `config`, `ingest`, `library`) is located in `/media/calibre-automated/` on your Home Assistant file system.
 4.  **Start the add-on:**
     * Configure any desired add-on options.
     * Start the add-on.

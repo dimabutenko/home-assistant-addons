@@ -7,9 +7,9 @@ CONFIG_DIR="/config"
 INGEST_DIR="/cwa-book-ingest"
 LIBRARY_DIR="/calibre-library"
 
-DATA_SOURCE_CONFIG="/share/calibre-automated/config"
-DATA_SOURCE_INGEST="/share/calibre-automated/ingest"
-DATA_SOURCE_LIBRARY="/share/calibre-automated/library"
+DATA_SOURCE_CONFIG="/media/calibre-automated/config"
+DATA_SOURCE_INGEST="/media/calibre-automated/ingest"
+DATA_SOURCE_LIBRARY="/media/calibre-automated/library"
 
 mkdir -p ${DATA_SOURCE_CONFIG}
 mkdir -p ${DATA_SOURCE_INGEST}

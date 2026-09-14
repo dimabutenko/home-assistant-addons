@@ -1,6 +1,6 @@
 name: "SMBv1 Share"
 url: "https://github.com/dimabutenko/home-assistant-addons"
-version: "1.0.0"
+version: "1.0.1"
 slug: "samba_v1"
 description: "Samba-server with SMBv1 support"
 arch: ["aarch64"]

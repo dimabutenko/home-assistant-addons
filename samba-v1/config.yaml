@@ -1,6 +1,6 @@
 name: "SMBv1 Share"
 url: "https://github.com/dimabutenko/home-assistant-addons"
-version: "1.0.1"
+version: "1.0.2"
 slug: "samba_v1"
 description: "Samba-server with SMBv1 support"
 arch: ["aarch64"]
@@ -9,6 +9,8 @@ map: ["media:rw"]
 privileged:
   - SYS_ADMIN
 init: false
-host_network: true
+ports:
+  139/tcp: 139
+  445/tcp: 445
 options: {}
 schema: {}

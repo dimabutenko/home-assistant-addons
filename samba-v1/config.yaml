@@ -4,7 +4,10 @@ version: "1.0.0"
 slug: "samba_v1"
 description: "Samba-server with SMBv1 support"
 arch: ["aarch64"]
+apparmor: false
 map: ["media:rw"]
+privileged:
+  - SYS_ADMIN
 init: false
 host_network: true
 options: {}

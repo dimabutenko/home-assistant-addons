@@ -1,7 +1,7 @@
 name: DzenAnalytics
 url: "https://dzenanalytics.ru/"
 image: "ghcr.io/deadover/dzenanalytics"
-version: 1.16.0
+version: 1.16.1
 slug: dzen_analytics
 init: false
 description: "DzenAnalytics"

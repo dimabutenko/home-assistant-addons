@@ -1,5 +1,8 @@
 # Changelog
 
+## 4.0.8
+* Updated Calibre-Web Automated (CWA) image to version 4.0.8
+
 ## 4.0.6
 * Updated Calibre-Web Automated (CWA) image to version 4.0.6
 

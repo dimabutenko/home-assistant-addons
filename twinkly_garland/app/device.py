@@ -114,8 +114,16 @@ def ensure(dev: dict, desired: list, play_key: str | None = None) -> dict:
         if not pl["fits"]:
             raise ValueError(f"{dev['name']}: {pl['frames_needed']} frames > capacity {pl['capacity']}")
         ci = connect(dev["host"])
-        before = retry(ci.get_movies_current)
+        try:
+            before = retry(ci.get_movies_current)
+        except Exception:  # empty answer when no movie is stored
+            before = {}
+        orig_mode = retry(ci.get_mode).get("mode")
+        # The firmware refuses to delete movies (code 1102) unless the LEDs are off.
+        retry(ci.set_mode, "off")
         retry(ci.delete_movies)
+        if retry(ci.get_movies)["movies"]:
+            raise RuntimeError(f"{dev['name']}: the device did not delete its movies")
         for m in desired:
             retry(ci.set_movies_new, m["name"], m["uid"], "rgb_raw", m["n_leds"], len(m["frames"]), m["fps"])
             retry(ci.set_movies_full, io.BytesIO(b"".join(m["frames"])))
@@ -128,10 +136,18 @@ def ensure(dev: dict, desired: list, play_key: str | None = None) -> dict:
             want_uid = desired[0]["uid"]  # old selection is gone: play the first effect
         if want_uid:
             _select(ci, want_uid)
+        elif orig_mode:
+            retry(ci.set_mode, orig_mode)
         return pl
 
 
 def _select(ci, uid: str) -> None:
+    try:
+        cur = retry(ci.get_movies_current)
+        if (cur.get("unique_id") or "").upper() == uid and retry(ci.get_mode).get("mode") == "movie":
+            return  # already playing: re-selecting would restart the loop
+    except Exception:
+        pass
     movies = retry(ci.get_movies)["movies"]
     mid = next(m["id"] for m in movies if m["unique_id"].upper() == uid)
     retry(ci.set_mode, "movie")

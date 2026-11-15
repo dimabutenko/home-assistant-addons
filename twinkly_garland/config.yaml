@@ -1,0 +1,20 @@
+name: Twinkly Garland
+url: "https://github.com/dimabutenko/home-assistant-addons"
+version: 0.1.0
+slug: twinkly_garland
+description: "Local control of Twinkly Gen2 garlands: effects stored on the devices, ensure/reconcile, layout preview"
+arch: ["aarch64"]
+startup: application
+boot: auto
+init: false
+image: "ghcr.io/dimabutenko/ha-addon-twinkly"
+ingress: true
+ingress_port: 8099
+panel_icon: mdi:string-lights
+panel_title: Garland
+options:
+  devices: []
+schema:
+  devices:
+    - name: str
+      host: str

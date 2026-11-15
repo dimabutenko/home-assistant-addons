@@ -4,6 +4,7 @@ import base64
 import json
 import logging
 import os
+import random
 import re
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -204,21 +205,41 @@ def api_play(req: PlayReq):
     """Play effect `key` on the given devices. Reconciles first when the device
     drifted (e.g. a firmware update wiped the movies), so playback never breaks."""
     names = req.devices or [d["name"] for d in devices()]
-    out = []
+    desired_by_dev = {}
+    errors = {}
     for n in names:
         dev = find_device(n)
         try:
-            desired = desired_for(dev)
-            if not any(m["key"] == req.effect for m in desired):
-                raise HTTPException(404, f"effect {req.effect!r} is not configured for {n}")
-            res = device.ensure(dev, desired, play_key=req.effect)
+            desired_by_dev[n] = desired_for(dev)
+        except Exception as exc:  # e.g. device offline and no cached layout
+            errors[n] = str(exc)
+
+    key = req.effect
+    if key == "random":
+        # One key for every device, so garlands stay in sync with each other.
+        common = None
+        for desired in desired_by_dev.values():
+            keys = {m["key"] for m in desired}
+            common = keys if common is None else common & keys
+        if not common:
+            raise HTTPException(404, "no effect is configured for all of the target devices")
+        key = random.choice(sorted(common))
+
+    out = [{"device": n, "error": e} for n, e in errors.items()]
+    for n, desired in desired_by_dev.items():
+        dev = find_device(n)
+        try:
+            if not any(m["key"] == key for m in desired):
+                raise KeyError(f"effect {key!r} is not configured for {n}")
+            res = device.ensure(dev, desired, play_key=key)
             if res["action"] == "ok":
-                device.play(dev, desired, req.effect)
-            out.append({"device": n, "playing": req.effect, "reconcile": res["action"]})
-        except HTTPException:
-            raise
+                device.play(dev, desired, key)
+            out.append({"device": n, "playing": key, "reconcile": res["action"]})
         except Exception as exc:
             out.append({"device": n, "error": str(exc)})
+    if not any("playing" in o for o in out):
+        # Lets callers (HA rest_command) detect failure and fall back.
+        raise HTTPException(502, out)
     return out
 
 

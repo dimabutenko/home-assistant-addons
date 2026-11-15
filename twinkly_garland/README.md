@@ -26,6 +26,6 @@ Open the web UI from the "Garland" sidebar entry (ingress).
 
 ## HTTP API (also usable from HA `rest_command`)
 
-- `POST api/play` with `{"effect": "<key>", "devices": ["<name>", ...]}` (empty list = all devices)
+- `POST api/play` with `{"effect": "<key>", "devices": ["<name>", ...]}` (empty list = all devices). `effect` may be `"random"`: one key common to all target devices is picked. Returns 502 if no device could play it.
 - `POST api/ensure`, `POST api/devices/<name>/ensure`, `GET api/devices/<name>/plan`
 - `GET|PUT api/instances`, `POST api/preview`, `GET api/devices`, `GET api/effects`

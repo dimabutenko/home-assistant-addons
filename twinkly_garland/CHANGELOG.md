@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.0
+- 11 new abstract generators: twinkle, wave, aurora, snowfall, plasma, meteors, ripple, candy, fireflies, breathe, pinwheel. All loop seamlessly.
+- Each generator gets one default saved effect the first time it is seen (a deleted effect is not brought back).
+- Rendered frames are cached, so repeated play/ensure calls are cheap.
+
 ## 0.3.1
 - Fix ensure: the firmware only deletes movies while the LEDs are off (code 1102 otherwise), so the mode is switched to `off` first and the result is verified.
 - Fix ensure on a device with no stored movies (empty `movies/current` answer).

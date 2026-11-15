@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.1
+- Fix ensure: the firmware only deletes movies while the LEDs are off (code 1102 otherwise), so the mode is switched to `off` first and the result is verified.
+- Fix ensure on a device with no stored movies (empty `movies/current` answer).
+- `play` no longer restarts an effect that is already playing.
+
 ## 0.3.0
 - `POST api/play` accepts `effect: "random"` (one key common to all target devices) and returns 502 when nothing could be played.
 

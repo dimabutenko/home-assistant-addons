@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Twinkly Garland</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 16px; background: #111; color: #eee; }
+  .dev { border: 1px solid #333; border-radius: 8px; padding: 12px; margin-bottom: 12px; }
+  .off { color: #f66; } .on { color: #6c6; }
+  ul { margin: 6px 0 0; padding-left: 20px; }
+</style>
+</head>
+<body>
+<h1>Twinkly Garland</h1>
+<div id="list">Loading…</div>
+<script>
+// Relative URL: required for HA ingress (page is served under a path prefix).
+fetch('api/devices').then(r => r.json()).then(devs => {
+  const el = document.getElementById('list');
+  if (!devs.length) { el.textContent = 'No devices configured. Add them in the add-on options.'; return; }
+  el.innerHTML = '';
+  for (const d of devs) {
+    const box = document.createElement('div');
+    box.className = 'dev';
+    const status = d.online ? `<span class="on">online</span>, fw ${d.firmware}` : `<span class="off">offline</span> (${d.error || ''})`;
+    box.innerHTML = `<b></b> — ${status}`;
+    box.querySelector('b').textContent = `${d.name} (${d.host})`;
+    if (d.movies) {
+      const ul = document.createElement('ul');
+      for (const m of d.movies) { const li = document.createElement('li'); li.textContent = `#${m.id} ${m.name}`; ul.append(li); }
+      box.append(ul);
+    }
+    el.append(box);
+  }
+});
+</script>
+</body>
+</html>

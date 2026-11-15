@@ -47,11 +47,31 @@ def _instances_path() -> Path:
     return device.DATA_DIR / "instances.json"
 
 
+def _seeded_path() -> Path:
+    return device.DATA_DIR / "seeded.json"
+
+
 def load_instances() -> list:
+    """Saved instances plus one default instance per generator that was never
+    seeded before (so new generators appear after an add-on update; a deleted
+    instance is not brought back)."""
     try:
-        return json.loads(_instances_path().read_text())
+        items = json.loads(_instances_path().read_text())
     except (OSError, ValueError):
-        return [{"key": "flame", "effect": "flame", "params": {}, "devices": []}]
+        items = []
+    try:
+        seeded = set(json.loads(_seeded_path().read_text()))
+    except (OSError, ValueError):
+        seeded = set()
+    new = [g for g in effects.GENERATORS if g not in seeded]
+    if new:
+        have = {i["key"] for i in items}
+        for g in new:
+            if g not in have:
+                items.append({"key": g, "effect": g, "params": {}, "devices": []})
+        save_instances(items)
+        _seeded_path().write_text(json.dumps(sorted(seeded | set(new))))
+    return items
 
 
 def save_instances(items: list) -> None:

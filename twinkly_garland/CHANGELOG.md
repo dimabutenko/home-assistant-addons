@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.2
+- Scan is much more robust against clutter outside the garland: two "off" and two "on" photos (only what is the same in both counts, so flickering lights and passing cars drop out), single-LED search limited to the area where LEDs were found and away from unstable pixels, phone-motion check with a clear message, and a stop with an explanation instead of a "successful" garbage result when fewer than half of the LEDs are recognised.
+- Tested on a synthetic camera with 8 street lights (2 flickering): 0 wrong LEDs with a steady phone (use a tripod), error under 0.5 px.
+
 ## 0.7.1
 - Scan: the LED brightness calibration no longer dims the LEDs towards invisibility when a phone camera is dazzled (it went 170 -> 85 -> 42 -> 21, so single LEDs could not be seen by eye). The floor is 100 of 255, single LEDs are lit at 200+, and the status line shows the brightness used.
 - Scan: new "Light test" button lights the garland step by step (everything, code pattern, single LEDs) so you can check by eye that scanning works, without the camera.

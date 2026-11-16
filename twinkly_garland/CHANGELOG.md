@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.0
+- New web UI: library of live animated thumbnails with per-device status (what plays, what is stored, frame budget, sync state), a step-by-step editor with automatic preview, and a palette editor.
+- Effects are made of 1-4 layers with palette, mix mode (normal/add/screen/multiply/max), opacity and an x/y/radial mask.
+- Colour palettes (13 built-in, custom ones editable). Existing generators now take a palette instead of fixed hues, so they are re-uploaded once.
+- Per effect: "on the garland" (stored on devices) and "in rotation" (picked by `effect: random`, with a weight 1-5).
+- 14 new generators: clouds, stars, storm, ocean, rain, bars, scanner, lavalamp, glitter, helix, checker, confetti, radar, pulse. New ones start in the library only (not on the garland) to save device frames.
+- API: `GET /api/status`, `GET /api/gallery`, `GET|PUT /api/palettes`; `POST /api/preview` takes a whole effect.
+
 ## 0.4.0
 - 11 new abstract generators: twinkle, wave, aurora, snowfall, plasma, meteors, ripple, candy, fireflies, breathe, pinwheel. All loop seamlessly.
 - Each generator gets one default saved effect the first time it is seen (a deleted effect is not brought back).

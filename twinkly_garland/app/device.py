@@ -60,15 +60,17 @@ def get_layout(dev: dict, refresh: bool = False) -> list:
 
 # ---- desired state ------------------------------------------------------
 
-def build_desired(dev: dict, instances: list, render) -> list:
-    """Render every instance targeting this device -> list of movie specs."""
+def build_desired(dev: dict, instances: list, render_instance) -> list:
+    """Render every enabled instance targeting this device -> list of movie specs."""
     layout = get_layout(dev)
     out = []
     for inst in instances:
+        if not inst.get("on_device", True):
+            continue
         targets = inst.get("devices") or []
         if targets and dev["name"] not in targets:
             continue
-        r = render(inst["effect"], layout, inst.get("params", {}))
+        r = render_instance(inst, layout)
         digest = hashlib.sha1(b"".join(r.frames) + str(r.fps).encode()).hexdigest()[:16]
         out.append({
             "key": inst["key"],
@@ -79,6 +81,8 @@ def build_desired(dev: dict, instances: list, render) -> list:
             "fps": r.fps,
             "frames": r.frames,
             "n_leds": len(layout),
+            "rotation": inst.get("rotation", True),
+            "weight": inst.get("weight", 1),
         })
     return out
 

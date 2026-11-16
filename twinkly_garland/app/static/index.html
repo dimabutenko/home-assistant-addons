@@ -4,195 +4,23 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Twinkly Garland</title>
-<style>
-  :root { --bg:#fff; --fg:#1c1c1e; --card:#f3f3f5; --line:#d6d6db; --ok:#1a7f37; --bad:#c62828; --acc:#d9480f; --canvas:#0b0b0d; }
-  @media (prefers-color-scheme: dark) { :root { --bg:#161618; --fg:#ececf0; --card:#222226; --line:#38383e; --ok:#5ec27a; --bad:#ff6b6b; --acc:#ff9248; } }
-  * { box-sizing: border-box; }
-  body { font-family: system-ui, sans-serif; margin: 0; padding: 16px; background: var(--bg); color: var(--fg); max-width: 900px; }
-  h1 { font-size: 1.3rem; margin: 0 0 12px; } h2 { font-size: 1.05rem; margin: 0 0 8px; }
-  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 12px; margin-bottom: 14px; }
-  .on { color: var(--ok); } .off { color: var(--bad); }
-  ul { margin: 4px 0 0; padding-left: 20px; }
-  button, select, input[type=text] { font: inherit; padding: 6px 10px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); }
-  button { cursor: pointer; } button.primary { background: var(--acc); color: #fff; border-color: var(--acc); }
-  button:disabled { opacity: .5; cursor: default; }
-  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 8px; }
-  .params { display: grid; grid-template-columns: minmax(120px, 220px) 1fr 48px; gap: 6px 10px; align-items: center; margin: 8px 0; }
-  .params input[type=range] { width: 100%; }
-  canvas { background: var(--canvas); border-radius: 8px; max-width: 100%; display: block; }
-  .msg { min-height: 1.3em; font-size: .9rem; margin-top: 6px; white-space: pre-wrap; }
-  .muted { opacity: .7; font-size: .85rem; }
-</style>
+<link rel="stylesheet" href="static/style.css">
 </head>
 <body>
-<h1>Twinkly Garland</h1>
-
-<div class="card"><h2>Devices</h2><div id="devices">Loading…</div></div>
-
-<div class="card">
-  <h2>Effect editor</h2>
-  <div class="row">
-    <label>Saved effect <select id="inst"></select></label>
-    <button id="new">New</button>
-    <button id="del">Delete</button>
-  </div>
-  <div class="row">
-    <label>Name (key) <input type="text" id="key" maxlength="32" size="18"></label>
-    <label>Generator <select id="gen"></select></label>
-  </div>
-  <div class="params" id="params"></div>
-  <div class="row"><span>Apply to:</span><span id="targets"></span><span class="muted">(none ticked = all devices)</span></div>
-  <div class="row">
-    <label>Preview on layout of <select id="pdev"></select></label>
-    <button id="preview" class="primary">Preview</button>
-    <button id="save">Save</button>
-  </div>
-  <canvas id="cv" width="420" height="420"></canvas>
-  <div class="msg" id="pmsg"></div>
-  <div class="muted">Preview renders the effect against the device's real LED layout. Nothing is sent to the garland until you press Apply.</div>
-</div>
-
-<div class="card">
-  <h2>Sync with devices</h2>
-  <div class="muted">Check compares the movies stored on each device with the saved effects. Apply re-uploads everything when they differ (the device's stored movies are wiped and rebuilt; playback restarts).</div>
-  <div class="row" style="margin-top:8px">
-    <select id="sdev"></select>
-    <button id="check">Check</button>
-    <button id="apply" class="primary">Apply</button>
-    <button id="play">Play selected effect</button>
-  </div>
-  <div class="msg" id="smsg"></div>
-</div>
-
-<script>
-// All URLs are relative: required for HA ingress (page lives under a path prefix).
-const $ = id => document.getElementById(id);
-const api = (path, opts) => fetch(path, opts).then(async r => {
-  const t = await r.text(); let j; try { j = JSON.parse(t); } catch { j = t; }
-  if (!r.ok) throw new Error(typeof j === 'object' ? (j.detail || JSON.stringify(j)) : j);
-  return j;
-});
-const put = (path, body, method='POST') => api(path, { method, headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
-
-let gens = {}, insts = [], devs = [], anim = null;
-
-async function loadAll() {
-  [gens, insts, devs] = await Promise.all([api('api/effects'), api('api/instances'), api('api/devices')]);
-  renderDevices(); fillSelects(); selectInst(0);
-}
-
-function renderDevices() {
-  const el = $('devices');
-  if (!devs.length) { el.textContent = 'No devices configured. Add them in the add-on options.'; return; }
-  el.innerHTML = '';
-  for (const d of devs) {
-    const box = document.createElement('div'); box.style.marginBottom = '8px';
-    const b = document.createElement('b'); b.textContent = `${d.name} (${d.host})`;
-    const s = document.createElement('span');
-    s.innerHTML = d.online ? ` — <span class="on">online</span>, fw ${d.firmware}, free frames ${d.available_frames}` : ` — <span class="off">offline</span> (${d.error || ''})`;
-    box.append(b, s);
-    if (d.movies) { const ul = document.createElement('ul'); for (const m of d.movies) { const li = document.createElement('li'); li.textContent = `#${m.id} ${m.name} (${m.frames} frames)`; ul.append(li); } box.append(ul); }
-    el.append(box);
-  }
-}
-
-function fillSelects() {
-  for (const id of ['pdev', 'sdev']) { $(id).innerHTML = ''; for (const d of devs) $(id).add(new Option(d.name, d.name)); }
-  $('gen').innerHTML = ''; for (const [k, v] of Object.entries(gens)) $('gen').add(new Option(v.title, k));
-  $('targets').innerHTML = '';
-  for (const d of devs) { const l = document.createElement('label'); const c = document.createElement('input'); c.type = 'checkbox'; c.value = d.name; l.append(c, ' ' + d.name + ' '); $('targets').append(l); }
-}
-
-function fillInstSelect(sel) {
-  $('inst').innerHTML = ''; insts.forEach((i, n) => $('inst').add(new Option(i.key, n)));
-  if (sel != null) $('inst').value = sel;
-}
-
-function selectInst(n) {
-  fillInstSelect(n);
-  const i = insts[n]; if (!i) return;
-  $('key').value = i.key; $('gen').value = i.effect; renderParams(i.params);
-  for (const c of $('targets').querySelectorAll('input')) c.checked = i.devices.includes(c.value);
-}
-
-function renderParams(values) {
-  const box = $('params'); box.innerHTML = '';
-  for (const p of gens[$('gen').value].params) {
-    const v = values && values[p.name] != null ? values[p.name] : p.default;
-    const l = document.createElement('label'); l.textContent = p.label;
-    const r = document.createElement('input'); r.type = 'range'; r.min = p.min; r.max = p.max; r.step = p.step; r.value = v; r.dataset.name = p.name;
-    const o = document.createElement('span'); o.textContent = v;
-    r.oninput = () => o.textContent = r.value;
-    box.append(l, r, o);
-  }
-}
-
-function current() {
-  const params = {}; for (const r of $('params').querySelectorAll('input')) params[r.dataset.name] = Number(r.value);
-  const targets = [...$('targets').querySelectorAll('input:checked')].map(c => c.value);
-  return { key: $('key').value.trim(), effect: $('gen').value, params, devices: targets };
-}
-
-$('inst').onchange = () => selectInst(Number($('inst').value));
-$('gen').onchange = () => renderParams(null);
-$('new').onclick = () => { insts.push({ key: 'effect' + (insts.length + 1), effect: Object.keys(gens)[0], params: {}, devices: [] }); selectInst(insts.length - 1); };
-$('del').onclick = async () => {
-  if (!confirm('Delete this saved effect? Devices keep it until the next Apply.')) return;
-  insts.splice(Number($('inst').value), 1);
-  try { await put('api/instances', insts, 'PUT'); $('pmsg').textContent = 'Deleted.'; } catch (e) { $('pmsg').textContent = e.message; }
-  selectInst(0);
-};
-$('save').onclick = async () => {
-  const n = Number($('inst').value); insts[n] = current();
-  try { await put('api/instances', insts, 'PUT'); $('pmsg').textContent = 'Saved. Use Apply to push it to the devices.'; fillInstSelect(n); }
-  catch (e) { $('pmsg').textContent = 'Not saved: ' + e.message; }
-};
-
-function stopAnim() { if (anim) { clearInterval(anim); anim = null; } }
-
-$('preview').onclick = async () => {
-  const cur = current(); $('pmsg').textContent = 'Rendering…'; $('preview').disabled = true; stopAnim();
-  try {
-    const r = await put('api/preview', { effect: cur.effect, params: cur.params, device: $('pdev').value });
-    const frames = r.frames.map(b => Uint8Array.from(atob(b), c => c.charCodeAt(0)));
-    const xs = r.layout.map(p => p[0]), ys = r.layout.map(p => p[1]);
-    const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
-    const cv = $('cv'), g = cv.getContext('2d'), pad = 14;
-    const sc = Math.min((cv.width - 2 * pad) / ((x1 - x0) || 1), (cv.height - 2 * pad) / ((y1 - y0) || 1));
-    const ox = (cv.width - (x1 - x0) * sc) / 2, oy = (cv.height - (y1 - y0) * sc) / 2;
-    let f = 0;
-    const draw = () => {
-      g.clearRect(0, 0, cv.width, cv.height);
-      const fr = frames[f];
-      r.layout.forEach((p, i) => {
-        g.fillStyle = `rgb(${fr[3*i]},${fr[3*i+1]},${fr[3*i+2]})`;
-        g.beginPath(); g.arc(ox + (p[0] - x0) * sc, cv.height - oy - (p[1] - y0) * sc, 3, 0, 6.2832); g.fill();
-      });
-      f = (f + 1) % frames.length;
-    };
-    draw(); anim = setInterval(draw, 1000 / r.fps);
-    $('pmsg').textContent = `${r.layout.length} LEDs, ${frames.length} frames at ${r.fps} fps (${(frames.length / r.fps).toFixed(0)} s loop).`;
-  } catch (e) { $('pmsg').textContent = 'Preview failed: ' + e.message; }
-  $('preview').disabled = false;
-};
-
-const fmt = o => JSON.stringify(o, null, 1);
-$('check').onclick = async () => { $('smsg').textContent = 'Checking…'; try { $('smsg').textContent = fmt(await api(`api/devices/${encodeURIComponent($('sdev').value)}/plan`)); } catch (e) { $('smsg').textContent = e.message; } };
-$('apply').onclick = async () => {
-  const name = $('sdev').value;
-  if (!confirm(`Apply saved effects to ${name}? If it differs, the garland's stored movies are wiped and re-uploaded.`)) return;
-  $('smsg').textContent = 'Uploading… (can take up to a minute)';
-  try { $('smsg').textContent = fmt(await put(`api/devices/${encodeURIComponent(name)}/ensure`, {})); loadDevicesOnly(); } catch (e) { $('smsg').textContent = e.message; }
-};
-$('play').onclick = async () => {
-  const key = insts[Number($('inst').value)]?.key, name = $('sdev').value;
-  if (!confirm(`Play "${key}" on ${name}?`)) return;
-  $('smsg').textContent = 'Working…';
-  try { $('smsg').textContent = fmt(await put('api/play', { effect: key, devices: [name] })); } catch (e) { $('smsg').textContent = e.message; }
-};
-async function loadDevicesOnly() { devs = await api('api/devices'); renderDevices(); }
-
-loadAll().catch(e => { $('devices').textContent = 'Failed to load: ' + e.message; });
-</script>
+<header>
+  <h1>Twinkly Garland</h1>
+  <nav>
+    <button data-tab="library" class="tab active">Library</button>
+    <button data-tab="editor" class="tab">Editor</button>
+    <button data-tab="palettes" class="tab">Palettes</button>
+  </nav>
+</header>
+<main>
+  <section id="view-library"></section>
+  <section id="view-editor" hidden></section>
+  <section id="view-palettes" hidden></section>
+</main>
+<div id="toast" hidden></div>
+<script src="static/app.js"></script>
 </body>
 </html>

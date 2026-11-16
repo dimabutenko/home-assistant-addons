@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.0
+- **Formula effects** (new tab "Formulas"): write the colour of every LED as a few lines of maths in `x`, `y`, loop time `t`, your own sliders, noise and palettes; live preview on the real layout, error messages with line numbers, a check that the loop is seamless, 6 examples. Saved formulas become generators ("<name> (formula)") usable in layers like the built-in ones. The language is a small safe subset (parsed with `ast`, whitelisted nodes only: no attributes, indexing, loops, imports or strings except palette names) with limits on size and render time.
+- Fix: the flame texture drifted **down** (since 0.2.0); it now rises. Meteors flew up-left; they now fall along their direction with the tail behind.
+
 ## 0.7.2
 - Scan is much more robust against clutter outside the garland: two "off" and two "on" photos (only what is the same in both counts, so flickering lights and passing cars drop out), single-LED search limited to the area where LEDs were found and away from unstable pixels, phone-motion check with a clear message, and a stop with an explanation instead of a "successful" garbage result when fewer than half of the LEDs are recognised.
 - Tested on a synthetic camera with 8 street lights (2 flickering): 0 wrong LEDs with a steady phone (use a tripod), error under 0.5 px.

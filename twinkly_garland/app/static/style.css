@@ -71,3 +71,10 @@ button.small, select.small { padding: 2px 8px; font-size: .85rem; }
 
 #toast { position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); max-width: 90vw; background: #222; color: #fff; padding: 10px 16px; border-radius: 8px; z-index: 10; white-space: pre-wrap; font-size: .9rem; }
 #toast.err { background: var(--bad); }
+
+/* formulas */
+.fm-code { width: 100%; font-family: ui-monospace, Consolas, monospace; font-size: .9rem; line-height: 1.4; padding: 8px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); resize: vertical; tab-size: 2; }
+.fm-param { display: grid; grid-template-columns: 90px minmax(80px, 1fr) 64px 64px 64px auto; gap: 6px; align-items: center; margin-bottom: 6px; }
+.fm-param input { min-width: 0; width: 100%; padding: 3px 6px; }
+.fm-funcs { columns: 1; font-family: ui-monospace, Consolas, monospace; font-size: .8rem; }
+@media (min-width: 900px) { .fm-funcs { columns: 2; } }

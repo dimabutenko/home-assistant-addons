@@ -30,6 +30,28 @@ Open the web UI from the "Garland" sidebar entry (ingress).
 - **In rotation** effects (with a weight 1-5) are the pool for `effect: "random"`.
 - The editor previews an effect in the browser against the real layout before anything is sent.
 
+## Formula effects
+
+Tab **Formulas**: an effect is a few lines, one `name = expression` per line, the last line is the colour. It is evaluated for
+every LED and every frame, so it is a function of the position and the loop time:
+
+    q = rise(x*5, y*3, t, cells)                 # noise drifting upward, loops exactly
+    heat = (q - (1 - max(1 - y/height, 0)) * 0.85) * contrast
+    palette("fire", heat)
+
+- Variables: `x y` (y = 0 bottom .. 1 top, x in the real proportions), `u v` (0..1 across the area), `r a` (distance and angle
+  from the centre), `i n` (LED index and count), `t` (0..1 loop phase), `w h`, `seed`, `tau pi`, your own parameters (they become
+  sliders) and any name you assign.
+- Functions: `sin cos atan2 abs sqrt exp floor fract sign min max clamp step smoothstep mix tri dist noise noise3 tnoise rise
+  hash palette cpalette hsv rgb gray` (the editor lists them with descriptions). Colours (`palette`, `hsv`, `rgb`, `gray`) can be
+  added and multiplied. Use whole numbers of cycles of `t` or `tnoise` / `rise` and the loop is seamless; the editor shows a warning
+  when there is a jump.
+- Safety: the code is parsed with `ast` and only whitelisted nodes are accepted (numbers, arithmetic, comparisons, conditions,
+  calls of the listed functions, assignments); no attributes, indexing, loops, imports or text except palette names. `/`, `%` and `**`
+  are made safe, size and render time are limited.
+- Saved formulas live in `/data/formulas.json` and appear as generators in the effect editor ("<name> (formula)"), so they can be
+  layered, masked and given a palette-free colour of their own. A formula that is used by an effect cannot be deleted.
+
 ## Scanning LED positions
 
 Tab **Scan**: open it on a phone through the https address of Home Assistant (browsers give the camera only to https
@@ -43,7 +65,7 @@ needed and press "Apply to the garland". The previous layout is saved in `/data/
 
 - `POST api/play` with `{"effect": "<key>", "devices": ["<name>", ...]}` (empty list = all devices). `effect` may be `"random"`: one effect that is on every target device and in the rotation is picked (weighted). Returns 502 if no device could play it.
 - `POST api/ensure`, `POST api/devices/<name>/ensure`, `GET api/devices/<name>/plan`
-- `GET|PUT api/instances`, `GET|PUT api/palettes`, `POST api/preview`, `GET api/gallery`, `GET api/status`, `POST api/scan/start|pattern|stop|apply`, `GET api/devices`, `GET api/effects`
+- `GET|PUT api/instances`, `GET|PUT api/formulas`, `POST api/formulas/check`, `GET|PUT api/palettes`, `POST api/preview`, `GET api/gallery`, `GET api/status`, `POST api/scan/start|pattern|stop|apply`, `GET api/devices`, `GET api/effects`
 
 ## Known issues / tech debt
 
@@ -69,3 +91,10 @@ needed and press "Apply to the garland". The previous layout is saved in `/data/
   but only once the scan works well.
 - **Not verified:** a local Docker build of the image (only GitHub Actions builds it), the update error seen once at
   02:12 on 2026-11-16 (`update.install ... unknown error`, the update still installed).
+- **Ideas, not started (live mode and data-driven effects).** Formulas could take inputs from Home Assistant (a temperature,
+  a thermostat state, a media player). Two levels: (1) *stored*: the value is sampled when the movie is rendered and the movie is
+  re-rendered and synced only when it changes noticeably (slow things like temperature or heating mode; keeps working without HA);
+  (2) *live*: the add-on streams frames in real-time mode (UDP, 10-25 fps) computed from fast inputs (needs the add-on and HA up; has
+  to fall back to the stored movie when the stream stops; the device keeps one login token, so streaming competes with other
+  clients). HA does not expose an audio spectrum: music reactivity needs the audio analysed somewhere else (a microphone or a
+  stream tapped by the add-on); a media player gives only state, volume, title and position.

@@ -52,6 +52,16 @@ every LED and every frame, so it is a function of the position and the loop time
 - Saved formulas live in `/data/formulas.json` and appear as generators in the effect editor ("<name> (formula)"), so they can be
   layered, masked and given a palette-free colour of their own. A formula that is used by an effect cannot be deleted.
 
+### Geometry and feedback
+
+`r` and `a` (distance and angle in turns from the centre) make shapes easy: concentric rings `sin(tau*(r*rings - t))`, a spiral
+`fract(a*arms + r*twist - t)`, a six-fold kaleidoscope `m = mirror(a, 6)`, `px = r*cos(m*tau)`, `py = r*sin(m*tau)` and then any pattern
+of `(px, py)`. `<input>_phase` is the running total of an input (value x seconds), so `cos(tau*(a + wind_phase*0.1))` turns at a speed
+that follows the wind without jumps. `prev(x, y)` is the colour of the previous frame at that position, interpolated between the LEDs:
+`prev(x*0.97, (y-0.5)*0.97 + 0.5) * 0.95` pulls the picture outward and fades it (a tunnel); add something new in the middle and it
+streams outward. Examples: "Rings live", "Kaleidoscope live", "Spiral live", "Tunnel live", "Mandala live" (bound to power, wind, sun,
+radiator valve and the load of two PCs).
+
 ### Inputs from Home Assistant and live preview
 
 A formula can have **inputs**: a name, an entity (and optionally an attribute, e.g. `sun.sun` / `elevation`), the value that maps to

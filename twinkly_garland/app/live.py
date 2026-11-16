@@ -34,6 +34,12 @@ class InputTracker:
         self.kick, self.age, self.count, self.dir, self.delta, self.phase = 0.0, 120.0, 0, 0, 0.0, 0.0
         self.prev_v = None
         self.last_evt = -1e9
+        self.manual = None     # a value 0..1 set by hand (the sliders of the editor) instead of the sensor
+
+    def fire(self, now: float, direction: int = 1):
+        """An event on demand (the kick button of the editor)."""
+        self.kick, self.dir, self.age, self.last_evt = 0.9, direction, 0.0, now
+        self.count += 1
 
     def seed(self, values: list, now: float):
         """History from Home Assistant: the auto range is useful from the first frame."""
@@ -61,7 +67,12 @@ class InputTracker:
     def update(self, raw, dt: float, now: float):
         inp = self.inp
         target = None
-        if raw is not None:
+        if self.manual is not None:
+            target = self.manual
+            self.raw = inp["min"] + target * (inp["max"] - inp["min"])
+            a = 1.0 if inp["smooth"] <= 0.01 else 1 - math.exp(-dt / inp["smooth"])
+            self.value += (target - self.value) * a
+        elif raw is not None:
             self.raw = raw
             if self.auto and now - self.last_sample >= 1.0:
                 self.last_sample = now
@@ -128,6 +139,12 @@ class LiveScene:
         for inp in self.inputs:
             raw, _norm = self.source(inp)
             self.trk[inp["name"]].update(raw, dt, now)
+
+    def set_manual(self, name: str, value) -> None:
+        self.trk[name].manual = None if value is None else min(1.0, max(0.0, float(value)))
+
+    def fire(self, name: str) -> None:
+        self.trk[name].fire(time.time())
 
     def values(self) -> dict:
         return {n: {"raw": t.raw, "value": round(t.value, 3), "kick": round(t.kick, 2), "count": t.count} for n, t in self.trk.items()}

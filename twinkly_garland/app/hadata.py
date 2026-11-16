@@ -8,11 +8,13 @@ import logging
 import os
 import threading
 import time
+import urllib.parse
+from datetime import datetime, timedelta, timezone
 
 import requests
 
 log = logging.getLogger("twinkly.ha")
-POLL_S = 2.0
+POLL_S = 1.0  # fast signals (CPU load, power) change every few seconds
 KEEP_S = 120.0  # stop polling an entity nobody asked for during this long
 
 
@@ -129,6 +131,19 @@ def read_input(inp: dict):
     if raw is None:
         return None, None
     return raw, normalize(raw, inp["min"], inp["max"])
+
+
+def history(entity: str, minutes: float = 30.0) -> list:
+    """Numeric states of the entity over the last minutes (oldest first), for seeding an auto range."""
+    start = (datetime.now(timezone.utc) - timedelta(minutes=minutes)).strftime("%Y-%m-%dT%H:%M:%S+00:00")
+    data = _get(f"/history/period/{urllib.parse.quote(start)}?filter_entity_id={entity}&minimal_response&no_attributes")
+    out = []
+    for st in (data[0] if data else []):
+        try:
+            out.append(float(st["state"]))
+        except (KeyError, TypeError, ValueError):
+            pass
+    return out
 
 
 # ---- entity search for the editor -------------------------------------------------------------------------

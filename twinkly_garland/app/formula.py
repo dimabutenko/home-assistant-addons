@@ -274,6 +274,8 @@ REFERENCE = {
         "t: loop phase 0..1. Use whole cycles (sin(tau*2*t)) so the loop is seamless",
         "now: seconds since the effect started (live mode) or t * loop length (stored effect). Do not make loops with it",
         "<input>_phase: for every input its running total over time (value * seconds): use it as a speed that follows data without jumps, e.g. cos(tau * (a + wind_phase * 0.1))",
+        "<input>_kick: 1 at the moment the input jumps (a kettle is switched on, a CPU spike) and fading to 0 in about 1.5 s; <input>_age: seconds since the last jump; <input>_count: number of jumps so far (a seed for random places: hash(power_count, 1)); <input>_dir: +1 / -1 for a rise / fall; <input>_delta: how fast it is changing",
+        "an input with auto = on maps the range of the last 30 minutes to 0..1 (so any sensor uses its whole range); the jump threshold is set per input",
         "inputs from Home Assistant: 0..1 numbers named by you (a temperature, a power, a valve...); a stored effect uses their default value, a live scene the real value",
         "w, h: width and height of the area; seed: the Seed slider; tau, pi",
         "your own parameters (they become sliders) and any name you assign: speed = 2",
@@ -390,24 +392,44 @@ def compile_formula(src: str, param_names: tuple = ()):
 
     tree = _Ops().visit(tree)
     args = BASE_VARS + ["prev"] + list(param_names)  # prev(x, y) is passed in per scene (no shared state in the code)
-    mod = ast.parse(f"def _f({', '.join(args)}):\n    pass\n")
-    fn = mod.body[0]
-    fn.body = list(tree.body[:-1]) + [ast.copy_location(ast.Return(value=tree.body[-1].value), tree.body[-1])]
-    ast.fix_missing_locations(mod)
+    # The checked and transformed tree is written out as ordinary source text and compiled the normal way
+    # (hand-assembled ASTs with positions that do not fit together are an unusual input for the compiler).
+    lines, line_map = [f"def _f({', '.join(args)}):"], {}
+    for st in tree.body[:-1]:
+        lines.append("    " + ast.unparse(st))
+        line_map[len(lines)] = st.lineno
+    lines.append("    return " + ast.unparse(tree.body[-1].value))
+    line_map[len(lines)] = tree.body[-1].lineno
     ns = dict(GLOBALS)
-    exec(compile(mod, "<formula>", "exec"), ns)
+    exec(compile("\n".join(lines) + "\n", "<formula>", "exec"), ns)
     if len(_compiled) > 60:
         _compiled.pop(next(iter(_compiled)))
-    ns["_f"].uses_prev = re.search(r"\bprev\s*\(", src) is not None
-    _compiled[key] = ns["_f"]
-    return ns["_f"]
+    fn = ns["_f"]
+    fn.uses_prev = re.search(r"\bprev\s*\(", src) is not None
+    fn.line_map = line_map  # line of the generated function -> line the user wrote
+    _compiled[key] = fn
+    return fn
 
 
 # ---- parameters, storage -----------------------------------------------------------------------------
 
+INPUT_SUFFIXES = ("phase", "kick", "age", "count", "dir", "delta")
+
+
 def all_names(defs: list, inputs: list) -> tuple:
-    """Function arguments after the base variables: parameters, inputs, then <input>_phase for every input."""
-    return tuple(d["name"] for d in defs) + tuple(i["name"] for i in inputs) + tuple(f"{i['name']}_phase" for i in inputs)
+    """Function arguments after the base variables: parameters, the inputs, then for every input
+    <input>_phase, _kick, _age, _count, _dir, _delta (each group in the order of the inputs)."""
+    return (tuple(d["name"] for d in defs) + tuple(i["name"] for i in inputs)
+            + tuple(f"{i['name']}_{s}" for s in INPUT_SUFFIXES for i in inputs))
+
+
+def input_defaults(inputs: list, now: float) -> list:
+    """Values of the per-input extras for a stored effect (no live data): a steady input, no events."""
+    out = [i["default"] * now for i in inputs]           # phase
+    out += [0.0] * len(inputs)                           # kick
+    out += [60.0] * len(inputs)                          # age
+    out += [0.0] * len(inputs) * 3                       # count, dir, delta
+    return out
 
 
 def clean_params(defs) -> list:
@@ -445,12 +467,13 @@ def clean_inputs(inputs, taken: set) -> list:
         name = str(d.get("name", "")).strip()
         if not PARAM_RE.match(name):
             raise FormulaError(f"input name '{name}': lowercase letters, digits and _, starting with a letter")
-        if name in set(BASE_VARS) | set(CONSTS) | set(FUNCS) or name in seen or name in ("intensity", "color") or name.endswith("_phase"):
+        if (name in set(BASE_VARS) | set(CONSTS) | set(FUNCS) or name in seen or name in ("intensity", "color")
+                or any(name.endswith(f"_{s}") for s in INPUT_SUFFIXES)):
             raise FormulaError(f"input name '{name}' is taken")
-        if f"{name}_phase" in seen:
-            raise FormulaError(f"input name '{name}' clashes with '{name}_phase'")
+        if any(f"{name}_{s}" in seen for s in INPUT_SUFFIXES):
+            raise FormulaError(f"input name '{name}' clashes with another name")
         seen.add(name)
-        seen.add(f"{name}_phase")
+        seen.update(f"{name}_{s}" for s in INPUT_SUFFIXES)
         entity = str(d.get("entity", "")).strip()
         if not ENTITY_RE.match(entity):
             raise FormulaError(f"input '{name}': entity must look like sensor.power_total")
@@ -462,6 +485,8 @@ def clean_inputs(inputs, taken: set) -> list:
             on_states = [x.strip().lower() for x in on_states.split(",") if x.strip()]
         out.append({"name": name, "entity": entity, "attribute": str(d.get("attribute") or "").strip(), "min": lo, "max": hi,
                     "smooth": min(120.0, max(0.0, float(d.get("smooth", 2)))), "default": min(1.0, max(0.0, float(d.get("default", 0.5)))),
+                    "auto": bool(d.get("auto", False)), "span": max(0.0, float(d.get("span") or 0.0)),
+                    "kick": min(0.5, max(0.02, float(d.get("kick") or 0.12))),
                     "on_states": [str(x).lower() for x in on_states]})
     return out
 
@@ -540,13 +565,13 @@ def render_effect(effect: str, layout: list, params: dict) -> Rendered:
     return render_spec(layout, params, spec)
 
 
-def _line_of(exc) -> int | None:
+def _line_of(exc, fn=None) -> int | None:
     tb, line = exc.__traceback__, None
     while tb:
         if tb.tb_frame.f_code.co_filename == "<formula>":
             line = tb.tb_lineno
         tb = tb.tb_next
-    return line
+    return getattr(fn, "line_map", {}).get(line, line) if line else None
 
 
 def _rgb(res, k):
@@ -631,7 +656,7 @@ def eval_frame(fn, prep: Prepared, t: float, now: float, seed: float, vals: list
         except (ZeroDivisionError, OverflowError, ValueError):
             res = 0.0
         except Exception as exc:  # a mistake in the formula (e.g. a colour used as a number)
-            raise FormulaError(f"{type(exc).__name__}: {exc}", _line_of(exc)) from None
+            raise FormulaError(f"{type(exc).__name__}: {exc}", _line_of(exc, fn)) from None
         try:
             buf += _rgb(res, k)
         except TypeError as exc:
@@ -656,7 +681,7 @@ def render_spec(layout: list, params: dict, spec: dict) -> Rendered:
     for f in range(frames_n * (2 if feedback else 1)):  # feedback: one warm-up loop first, only the second is kept
         t = (f % frames_n) / frames_n
         now = t * duration
-        frame = eval_frame(fn, prep, t, now, seed, base + [i["default"] * now for i in inputs], k, prevfn)
+        frame = eval_frame(fn, prep, t, now, seed, base + input_defaults(inputs, now), k, prevfn)
         state["frame"] = frame
         if f >= frames_n * (1 if feedback else 0):
             frames.append(frame)
@@ -669,10 +694,6 @@ def render_spec(layout: list, params: dict, spec: dict) -> Rendered:
 
 def _p(name, label, lo, hi, default, step=None):
     return {"name": name, "label": label, "min": lo, "max": hi, "default": default, **({"step": step} if step else {})}
-
-
-def _in(name, entity, lo, hi, smooth, default, attribute=""):
-    return {"name": name, "entity": entity, "attribute": attribute, "min": lo, "max": hi, "smooth": smooth, "default": default}
 
 
 EXAMPLES = [
@@ -699,84 +720,12 @@ hsv(fract(s * 3), 0.6, flash * on)""", "params": [_p("rate", "Flashes per loop",
 tt = fract(t * beats - dist(x, y, 0, 0.4) * spread * 0.5)
 g = min(exp(-((tt - 0.1) / 0.09) ** 2) + 0.7 * exp(-((tt - 0.3) / 0.1) ** 2), 1)
 palette("lava", g) * (0.08 + 0.92 * g)""", "params": [_p("beats", "Beats per loop", 1, 4, 2, 1), _p("spread", "Wave spread", 0, 2, 0.6, 0.1)]},
-    {"name": "House live", "code": """# The garland shows the state of the home. Meant for live mode (it follows Home Assistant);
-# stored on the garland it shows the default values of the inputs.
-# Sky follows the sun (night blue, orange dusk, blue day), clouds thicken with cloud cover and drift with the wind.
-night = palette("ocean", 0.3) * 0.3
-dusk = palette("sunset", 0.6)
-day = palette("ocean", 0.6)
-sky = mix(mix(night, dusk, smoothstep(0.05, 0.3, sun)), day, smoothstep(0.3, 0.6, sun))
-drift = noise(x * 2.2 + now * (0.02 + wind * 0.12), y * 2.5 - now * 0.015)
-cover = smoothstep(0.75 - clouds * 0.5, 0.95 - clouds * 0.5, drift)
-base = mix(sky, gray(0.35 + 0.5 * sun), cover * (0.3 + 0.5 * clouds))
-# A warm glow rises from the bottom as far as the radiator valve is open.
-glow = smoothstep(valve * 0.9, 0, y) * valve
-warm = palette("fire", 0.35 + 0.5 * glow) * glow
-# Left half twinkles with one work PC, right half with the other (the busier, the more sparkles).
-side = step(0, x)
-load = mix(dima, veron, side)
-s = hash(i, seed)
-lit = step(hash(i, seed + 1), load * 0.6)
-tw = max(1 - fract(now * (0.4 + load * 1.2) + s) * 4, 0) ** 2
-spark = hsv(0.55 + side * 0.25, 0.4, tw * lit)
-# The whole picture warms up when the house draws a lot of power.
-(base + warm + spark) * mix(rgb(0.85, 1.0, 1.2), rgb(1.2, 1.0, 0.8), power)""", "params": [],
-     "inputs": [_in("sun", "sun.sun", -8, 40, 5, 0.4, "elevation"), _in("clouds", "weather.forecast_home_2", 0, 100, 10, 0.5, "cloud_coverage"),
-                _in("wind", "weather.forecast_home_2", 0, 40, 10, 0.3, "wind_speed"), _in("valve", "sensor.living_room_radiator_position", 0, 100, 8, 0.25),
-                _in("power", "sensor.main_energy_sensor_power", 100, 3000, 3, 0.2), _in("dima", "sensor.cabinet_dima_pc_power", 50, 350, 2, 0.3),
-                _in("veron", "sensor.cabinet_veron_pc_power", 30, 250, 2, 0.2)]},
-    {"name": "Rings live", "code": """# Rings spreading from the centre (like the old music visualisers).
-# More rings when the house draws more power, they drift faster when it is windy,
-# the colours move with the sun and the whole thing glows brighter while the radiator valve is open.
-rings = 2 + power * 5
-ph = wind_phase * 0.8 + now * 0.05
-wave = 0.5 + 0.5 * sin(tau * (r * rings - ph))
-cpalette("rainbow", r * 0.8 + sun * 0.9 - ph * 0.1) * smoothstep(0.35, 0.95, wave) * (0.4 + 0.6 * valve)""", "params": [],
-     "inputs": [_in("power", "sensor.main_energy_sensor_power", 100, 3000, 3, 0.3), _in("wind", "weather.forecast_home_2", 0, 40, 10, 0.4, "wind_speed"),
-                _in("sun", "sun.sun", -8, 40, 5, 0.4, "elevation"), _in("valve", "sensor.living_room_radiator_position", 0, 100, 8, 0.4)]},
-    {"name": "Kaleidoscope live", "code": """# A six-fold mirror: one wedge of drifting noise repeated around the centre.
-# It turns with the wind, gets finer with the house power, the colours follow the sun
-# and the PC load of Dima shifts the hue.
-spin = a + wind_phase * 0.03
-m = mirror(spin, 6)
-px = r * cos(m * tau)
-py = r * sin(m * tau)
-zoom = 3 + power * 5
-q = noise(px * zoom + now * 0.1, py * zoom - now * 0.07)
-cpalette("neon", q * 0.8 + sun * 0.6 + r * 0.5 + dima * 0.3) * (0.25 + 0.75 * smoothstep(0.2, 0.8, q))""", "params": [],
-     "inputs": [_in("wind", "weather.forecast_home_2", 0, 40, 10, 0.4, "wind_speed"), _in("power", "sensor.main_energy_sensor_power", 100, 3000, 3, 0.3),
-                _in("sun", "sun.sun", -8, 40, 5, 0.4, "elevation"), _in("dima", "sensor.cabinet_dima_pc_power", 50, 350, 2, 0.4)]},
-    {"name": "Spiral live", "code": """# A spiral with three arms. It winds tighter with the house power, turns with the wind,
-# and the colour moves from cool to warm as the radiator valve opens.
-arms = 3
-twist = 1 + power * 4
-s = fract(a * arms + r * twist - wind_phase * 0.4 - now * 0.03)
-band = smoothstep(0, 0.35, s) * smoothstep(1, 0.65, s)
-cpalette("aurora", r * 0.6 + valve * 0.5 + sun * 0.3) * band * (0.3 + 0.7 * (1 - r * 0.6))""", "params": [],
-     "inputs": [_in("power", "sensor.main_energy_sensor_power", 100, 3000, 3, 0.3), _in("wind", "weather.forecast_home_2", 0, 40, 10, 0.4, "wind_speed"),
-                _in("valve", "sensor.living_room_radiator_position", 0, 100, 8, 0.4), _in("sun", "sun.sun", -8, 40, 5, 0.4, "elevation")]},
-    {"name": "Tunnel live", "code": """# Feedback, like MilkDrop: the previous picture is pulled outward and faded,
-# and a fresh ring is born in the middle. The busier the house, the faster the tunnel;
-# thick clouds make the trails shorter. Needs live mode (stored it runs one warm-up loop).
-zoom = 0.975 - power * 0.03
-old = prev(x * zoom, (y - 0.5) * zoom + 0.5) * (0.985 - clouds * 0.04)
-ring = smoothstep(0.1, 0, abs(r - 0.12 - 0.04 * sin(tau * now * 0.15)))
-old + cpalette("rainbow", sun + now * 0.04) * ring""", "params": [],
-     "inputs": [_in("power", "sensor.main_energy_sensor_power", 100, 3000, 3, 0.4), _in("clouds", "weather.forecast_home_2", 0, 100, 10, 0.5, "cloud_coverage"),
-                _in("sun", "sun.sun", -8, 40, 5, 0.4, "elevation")]},
-    {"name": "Mandala live", "code": """# Two seven-petal flowers turning in opposite directions: the outer one with the load of one work PC,
-# the inner one with the other. Sunset colours follow the sun, the inner flower glows with the radiator valve
-# and with the power draw of the house.
-petals = 7
-big = 0.32 + 0.1 * cos(tau * (a * petals + dima_phase * 0.06))
-small = 0.16 + 0.06 * cos(tau * (a * petals - veron_phase * 0.08))
-g1 = smoothstep(0.1, 0, abs(r - big))
-g2 = smoothstep(0.08, 0, abs(r - small))
-palette("sunset", 0.5 + 0.4 * sun) * g1 + palette("ocean", 0.4 + 0.5 * valve) * g2 * (0.4 + 0.6 * power)""", "params": [],
-     "inputs": [_in("dima", "sensor.cabinet_dima_pc_power", 50, 350, 2, 0.4), _in("veron", "sensor.cabinet_veron_pc_power", 30, 250, 2, 0.3),
-                _in("sun", "sun.sun", -8, 40, 5, 0.4, "elevation"), _in("valve", "sensor.living_room_radiator_position", 0, 100, 8, 0.4),
-                _in("power", "sensor.main_energy_sensor_power", 100, 3000, 3, 0.3)]},
     {"name": "Diagonal waves", "code": """# Soft diagonal bands of colour moving across the window.
 k = 0.5 + 0.5 * sin(tau * (x * 1.5 + y * 2 - t * speed))
 palette("ocean", k)""", "params": [_p("speed", "Speed (whole numbers loop)", 1, 3, 1, 1)]},
 ]
+
+from .examples_live import LIVE_EXAMPLES  # noqa: E402  (data only, no import cycle)
+
+EXAMPLES.extend(LIVE_EXAMPLES)
+

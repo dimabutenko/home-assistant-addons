@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.11.1
+- **Watchdog**: the add-on declares a health URL (`/api/health`, no calls to Home Assistant or the garlands) so the Supervisor can restart it when it hangs or dies. The Supervisor switch "Watchdog" has to be on (it is set through the Supervisor API after the update); at start the add-on switches a device left in real-time mode back to movie mode.
+- **`live:random`**: plays one of the saved formulas that have inputs (live scenes), preferring another one than the current; a `live:<name>` that already plays on the device is kept instead of being restarted (so a periodic automation call does not restart the stream); the Formulas tab passes `restart: true` after you edit and press play. `POST api/live/play` got the `restart` flag.
+- **Contrast and colours inside one picture**: Kaleidoscope (stained glass), Rings, Spiral, Mandala, Tunnel, Heartbeat, Comets and Pulse rings now give every region (a ring, an arm of the spiral, a piece of the kaleidoscope, a beat, a comet lane) its own hue far away from its neighbours (steps of ~137 degrees on the colour wheel, complementary colours in the Mandala), with dark seams between them, instead of one smooth gradient.
+- **Live scenes were being muted by the anti-strobe limit** (330 per second per channel: a full swing took 0.77 s, so heart-beats and event flashes blurred into grey). It is now 900 per second (about 0.3 s for a full swing): fast flashes read clearly, a full-strength strobe above ~2 Hz is still impossible.
+- Formula size limit raised (4000 characters, 900 operations) for the longer scenes.
+
 ## 0.11.0
 Livelier live scenes. The sensors were not static (house power 324-2252 W changed every ~14 s, a PC's GPU 0-75 %, the network 0-58 Mbit/s): the old examples mapped them to too narrow ranges, smoothed them for seconds and used them for slow things.
 - **Auto range** per input: the last 30 minutes of the sensor (fetched from the Home Assistant history at the start) are mapped to 0..1, so every sensor uses its whole range. Smoothing can be 0.3-0.5 s for fast signals; polling is now once a second.

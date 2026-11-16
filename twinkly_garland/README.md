@@ -97,6 +97,9 @@ A saved formula (typically with inputs from Home Assistant) can be played **live
 values and streams them to the garland in real-time mode, instead of storing a movie. Start it with the button "Play live on the
 garland" in the Formulas tab, `POST api/live/play {"scene": "<formula name>"}` or, through the existing `rest_command`, `effect: "live:<name>"`.
 
+- **From the automation:** `effect: "live:<name>"` plays a saved formula; `effect: "live:random"` picks one of the saved formulas that have
+  inputs (every live scene you save joins the rotation), preferring another one than the current; the same scene called again is kept
+  (not restarted), so it is safe to call every few minutes. `POST api/live/play` has a `restart` flag (used after editing).
 - It never loops (no seam), the inputs are smoothed and every colour channel is limited in how fast it may change (no strobing).
 - **Stop:** the Stop button, `POST api/live/stop`, or any explicit `play` of a stored effect / a Sync. The garland returns to what it
   was doing (the same stored movie, or off). `effect: "random"` (the automation) leaves a running live scene alone.

@@ -9,7 +9,7 @@ from . import device, formula, hadata
 
 log = logging.getLogger("twinkly.live")
 
-MAX_SLEW = 330.0  # max change of a colour channel per second (0..255): no strobing even if a formula asks for it
+MAX_SLEW = 900.0  # max change of a colour channel per second (0..255): a full swing takes ~0.3 s, so no strobing even if a formula asks for it
 LOOP_S = 10.0     # `t` runs 0..1 over this many seconds in live mode
 
 

@@ -269,8 +269,27 @@ def api_ha_read(req: HAReadReq):
     return out
 
 
-def start_live(scene_name: str, names: list, fps: float = 12.0) -> list:
-    """Start the formula `scene_name` as a live scene on the devices; a running one on the same device is replaced."""
+@app.get("/api/health")
+def api_health():
+    """Cheap check for the Supervisor watchdog (does not call Home Assistant or the garlands)."""
+    return {"ok": True}
+
+
+def start_live(scene_name: str, names: list, fps: float = 12.0, restart: bool = False) -> list:
+    """Start the formula `scene_name` as a live scene on the devices. A running one on the same device is replaced,
+    unless it already plays the same scene (then it just keeps running, so a periodic call does not restart it).
+    `random` picks one of the saved formulas that have inputs (live scenes), preferring another one than the current."""
+    running = {n: device.live_hosts.get(find_device(n)["host"]) for n in names}
+    if scene_name == "random":
+        pool = [f["name"] for f in formula.load() if f.get("inputs")]
+        if not pool:
+            raise HTTPException(404, "no live scene is saved yet: save a formula with inputs in the Formulas tab")
+        current = {st.name for st in running.values() if st}
+        fresh = [p for p in pool if p not in current]
+        if not fresh:  # nothing else to switch to
+            return [{"device": n, "live": running[n].name, "fps": fps, "kept": True} for n in names if running[n]] or \
+                start_live(pool[0], names, fps, restart)
+        scene_name = random.choice(fresh)
     spec = formula.get(scene_name)
     if spec is None:
         raise HTTPException(404, f"unknown formula {scene_name!r}: save it in the Formulas tab first")
@@ -278,6 +297,9 @@ def start_live(scene_name: str, names: list, fps: float = 12.0) -> list:
     for n in names:
         dev = find_device(n)
         try:
+            if running[n] is not None and running[n].name == scene_name and not restart:
+                out.append({"device": n, "live": scene_name, "fps": fps, "kept": True})
+                continue
             live.stop_for(dev)
             layout = device.render_layout(dev)
             stream = live.LiveStream(dev, live.LiveScene(spec, layout, {}), scene_name, fps)
@@ -294,15 +316,16 @@ def start_live(scene_name: str, names: list, fps: float = 12.0) -> list:
 
 
 class LivePlay(BaseModel):
-    scene: str
+    scene: str  # a saved formula name, or "random"
     devices: list[str] = []
     fps: float = 12.0
+    restart: bool = False  # start again even if this scene is already playing (e.g. after editing it)
 
 
 @app.post("/api/live/play")
 def api_live_play(req: LivePlay):
     names = req.devices or [d["name"] for d in devices()]
-    out = start_live(req.scene, names, req.fps)
+    out = start_live(req.scene, names, req.fps, req.restart)
     if not any("live" in o for o in out):
         raise HTTPException(502, out)
     return out

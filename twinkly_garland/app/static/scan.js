@@ -206,14 +206,20 @@ async function runScan() {
   try {
     scanStatus('Switching the garland to scan mode...', 0.02);
     const info = await send('api/scan/start', { device: dev }); const n = info.leds, nb = info.bits;
-    let level = 170;
+    // LED brightness (1-255). A saturated blob centre is fine for locating an LED, so do not dim the LEDs
+    // below MIN_LEVEL just because the camera is dazzled: a dim LED cannot be seen by eye either.
+    const MIN_LEVEL = 100;
+    let level = 200;
     await pat({ kind: 'dark' }); await sleep(600); let dark = await shot();
     scanStatus('Setting the LED brightness...', 0.06);
-    for (let t = 0; t < 4; t++) {
+    for (let t = 0; t < 3; t++) {
       check(); await pat({ kind: 'all', level }); await sleep(600); const a = await shot();
       const d = new Float32Array(a.data.length); for (let i = 0; i < d.length; i++) d[i] = Math.max(0, a.data[i] - dark.data[i]);
       const peak = ScanLib.percentile(d, 99.9);
-      if (peak > 245 && level > 30) level = Math.round(level * 0.5); else if (peak < 60 && level < 255) level = Math.min(255, level * 2); else break;
+      scanStatus(`Setting the LED brightness: ${level} (camera peak ${peak})...`, 0.06);
+      if (peak >= 250 && level > MIN_LEVEL) level = Math.max(MIN_LEVEL, Math.round(level * 0.7));
+      else if (peak < 60 && level < 255) level = Math.min(255, Math.round(level * 1.6));
+      else break;
     }
     await lockExposure();
     scanStatus('Photo: everything off...', 0.1); await pat({ kind: 'dark' }); await sleep(600); dark = await shot();
@@ -232,8 +238,8 @@ async function runScan() {
     const todo = [...new Set([...pts.map((p, i) => p ? -1 : i).filter(i => i >= 0), ...ScanLib.suspicious(pts)])];
     const limit = Math.min(todo.length, 150); let refined = 0;
     for (let q = 0; q < limit; q++) {
-      check(); const i = todo[q]; scanStatus(`Checking LED ${i} (${q + 1} of ${limit})...`, 0.62 + 0.36 * q / Math.max(1, limit));
-      await pat({ kind: 'leds', leds: [i], level }); await sleep(450);
+      check(); const i = todo[q]; scanStatus(`Checking LED ${i} separately (${q + 1} of ${limit}), brightness ${Math.max(level, 200)}...`, 0.62 + 0.36 * q / Math.max(1, limit));
+      await pat({ kind: 'leds', leds: [i], level: Math.max(level, 200) }); await sleep(450);
       const s = await shot(), b = ScanLib.singleBlob({ w, h, dark: dark.data, frame: s.data, minPeak: Math.max(10, det.peak * 0.3) });
       pts[i] = b ? { ...b, src: 'single' } : null; if (b) refined++;  // a LED that does not show up alone was a false detection
     }
@@ -251,6 +257,26 @@ async function runScan() {
     try { await send('api/scan/stop', {}); } catch { /* ignore */ }
     SC.running = false; renderScan();
   }
+}
+
+// Shows by eye that the garland really lights what the scan asks for (no camera needed).
+async function lightTest() {
+  const dev = document.getElementById('scan-dev').value;
+  SC.running = true; SC.cancel = false; renderScan();
+  const hold = async (ms) => { const end = Date.now() + ms; while (Date.now() < end) { if (SC.cancel) throw new Error('cancelled'); await sleep(100); } };
+  try {
+    scanStatus('Switching the garland to scan mode...', 0.02);
+    const info = await send('api/scan/start', { device: dev });
+    scanStatus('Look at the garland: everything on (3 s)...', 0.1); await pat({ kind: 'all', level: 200 }); await hold(3000);
+    scanStatus('Pattern 1 of the code: every second LED (3 s)...', 0.3); await pat({ kind: 'bit', bit: 0, level: 200 }); await hold(3000);
+    const picks = [0, Math.floor(info.leds / 4), Math.floor(info.leds / 2), Math.floor(info.leds * 3 / 4), info.leds - 1];
+    for (let k = 0; k < picks.length; k++) {
+      scanStatus(`One LED only: number ${picks[k]} (2 s)... you should see a single point`, 0.5 + 0.1 * k);
+      await pat({ kind: 'leds', leds: [picks[k]], level: 255 }); await hold(2000);
+    }
+    scanStatus('Test finished. If you saw the garland follow these steps, scanning will work.', 1);
+  } catch (e) { scanStatus(e.message === 'cancelled' ? 'Cancelled.' : 'Test failed: ' + e.message, undefined); }
+  finally { try { await send('api/scan/stop', {}); } catch { /* ignore */ } SC.running = false; renderScan(); }
 }
 
 function drawScatter(canvas, layout, colors) {
@@ -311,6 +337,7 @@ function renderScan() {
         h('label', {}, 'Garland ', h('select', { id: 'scan-dev', disabled: SC.running }, devs.map(d => h('option', { value: d, selected: d === SC.device }, d)))),
         h('button', { disabled: SC.running, onclick: async () => { try { await scanOpenCamera(); toast('Camera ready.'); renderScan(); } catch (e) { toast(e.message, true, 9000); } } }, 'Open camera'),
         h('button', { class: 'primary', disabled: SC.running || !SC.stream, onclick: runScan }, 'Start scan'),
+        h('button', { disabled: SC.running, title: 'Lights the garland step by step so you can check it by eye. No camera needed.', onclick: lightTest }, 'Light test'),
         h('button', { disabled: !SC.running, onclick: () => { SC.cancel = true; } }, 'Cancel')),
       h('div', { class: 'bar', id: 'scan-bar', style: 'margin-top:8px' }, h('div', { style: 'width:0%' })),
       h('div', { id: 'scan-status', class: 'muted' }, SC.status || 'Idle.')),

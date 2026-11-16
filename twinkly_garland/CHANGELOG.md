@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.1
+- Scan: the LED brightness calibration no longer dims the LEDs towards invisibility when a phone camera is dazzled (it went 170 -> 85 -> 42 -> 21, so single LEDs could not be seen by eye). The floor is 100 of 255, single LEDs are lit at 200+, and the status line shows the brightness used.
+- Scan: new "Light test" button lights the garland step by step (everything, code pattern, single LEDs) so you can check by eye that scanning works, without the camera.
+
 ## 0.7.0
 - Sync no longer wipes the device: stale effects are deleted one by one (`DELETE movies/<id>` works on this firmware, also while playing) and only the missing ones are uploaded. No blackout, much faster, a device that is off stays off.
 - The playing effect stays selected after deletions (the device stores the current movie as an index that shifts).

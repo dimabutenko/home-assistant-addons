@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.0
+- LED position scan (tab "Scan"): the phone camera watches while the garland shows patterns in real-time mode
+  (dark, all on, 10 Gray-code bit patterns), the browser finds every LED, decodes its index, checks doubtful ones
+  one by one and estimates hidden ones from their neighbours on the string. The result can be rotated, mirrored and
+  scaled, previewed next to the current layout and written to the device (the old layout is backed up first).
+- The scan needs the camera, so Home Assistant must be opened through an https address.
+- While a scan runs, play/ensure for that device are refused; playback is restored afterwards.
+
 ## 0.5.1
 - Library thumbnails are still frames and animate only while hovered (tap on touch screens), which removes the lag with many effects.
 

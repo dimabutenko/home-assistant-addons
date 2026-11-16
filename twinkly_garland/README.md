@@ -26,8 +26,16 @@ Open the web UI from the "Garland" sidebar entry (ingress).
 - **In rotation** effects (with a weight 1-5) are the pool for `effect: "random"`.
 - The editor previews an effect in the browser against the real layout before anything is sent.
 
+## Scanning LED positions
+
+Tab **Scan**: open it on a phone through the https address of Home Assistant (browsers give the camera only to https
+pages), darken the room, hold the phone steady with the whole garland in view, press "Open camera", then "Start scan".
+The garland switches to real-time mode and shows patterns while the page takes photos; playback is restored afterwards.
+Check the result (green = recognised, blue = found separately, orange = estimated from neighbours), rotate/mirror if
+needed and press "Apply to the garland". The previous layout is saved in `/data/layouts/<name>.backup-<time>.json`.
+
 ## HTTP API (also usable from HA `rest_command`)
 
 - `POST api/play` with `{"effect": "<key>", "devices": ["<name>", ...]}` (empty list = all devices). `effect` may be `"random"`: one effect that is on every target device and in the rotation is picked (weighted). Returns 502 if no device could play it.
 - `POST api/ensure`, `POST api/devices/<name>/ensure`, `GET api/devices/<name>/plan`
-- `GET|PUT api/instances`, `GET|PUT api/palettes`, `POST api/preview`, `GET api/gallery`, `GET api/status`, `GET api/devices`, `GET api/effects`
+- `GET|PUT api/instances`, `GET|PUT api/palettes`, `POST api/preview`, `GET api/gallery`, `GET api/status`, `POST api/scan/start|pattern|stop|apply`, `GET api/devices`, `GET api/effects`

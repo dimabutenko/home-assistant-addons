@@ -146,6 +146,16 @@ def build_desired(dev: dict, instances: list, render_instance) -> list:
 
 # ---- reconcile ----------------------------------------------------------
 
+def movie_overhead(listing: dict) -> int:
+    """Frames the device spends on each movie besides its own frames (measured: about 3-4)."""
+    movies = listing["movies"]
+    if not movies:
+        return 4
+    used = listing["max_capacity"] - listing["available_frames"]
+    stored = sum(m["frames_number"] for m in movies)
+    return max(2, -(-(used - stored) // len(movies)))
+
+
 def plan(dev: dict, desired: list, listing: dict | None = None) -> dict:
     """Compare the stored movies with `desired`. `listing` = a get_movies() answer already in hand."""
     if listing is None:
@@ -156,10 +166,10 @@ def plan(dev: dict, desired: list, listing: dict | None = None) -> dict:
     want = {m["uid"]: m for m in desired}
     missing = [m["key"] for u, m in want.items() if u not in present]
     extra = [m["name"] for u, m in present.items() if u not in want]
-    need = sum(len(m["frames"]) for m in desired)
+    need = sum(len(m["frames"]) + movie_overhead(d) for m in desired)
     return {
         "device": dev["name"],
-        "action": "ok" if not missing and not extra else "rebuild",
+        "action": "ok" if not missing and not extra else "update",
         "missing": missing,
         "extra": extra,
         "frames_needed": need,
@@ -168,42 +178,99 @@ def plan(dev: dict, desired: list, listing: dict | None = None) -> dict:
     }
 
 
+class _DeleteRefused(Exception):
+    pass
+
+
+def _delete_movie(ci, movie_id: int) -> None:
+    """DELETE /movies/<id> removes one movie (ids above it shift down by one).
+    Works while the LEDs are playing; not documented by the vendor."""
+    r = retry(lambda: ci.session.delete(ci.base_url + f"movies/{movie_id}", timeout=15))
+    try:
+        code = r.json().get("code")
+    except ValueError:
+        code = None
+    if r.status_code != 200 or code != 1000:
+        raise _DeleteRefused(f"DELETE movies/{movie_id} -> HTTP {r.status_code}, code {code}")
+
+
+def _upload(ci, m: dict) -> None:
+    """movies/new must precede movies/full, so a failed pair is retried as a pair."""
+    data = b"".join(m["frames"])
+    last = None
+    for attempt in range(3):
+        try:
+            ci.set_movies_new(m["name"], m["uid"], "rgb_raw", m["n_leds"], len(m["frames"]), m["fps"])
+            ci.set_movies_full(io.BytesIO(data))
+            return
+        except Exception as exc:
+            last = exc
+            resp = getattr(exc, "response", None)
+            if resp is not None and resp.status_code == 406:
+                raise RuntimeError(f"the device refused {m['name']!r}: no room left") from exc
+            time.sleep(1 + attempt)
+    raise last
+
+
 def ensure(dev: dict, desired: list, play_key: str | None = None) -> dict:
-    """Make the device hold exactly `desired`. Rebuilds the whole set on any
-    drift, because the firmware cannot delete a single movie."""
+    """Make the device hold exactly `desired`: delete stale movies one by one and upload
+    the missing ones. The LEDs keep playing meanwhile and a device that is off stays off.
+    If the firmware refuses to delete a single movie, fall back to wiping everything (LEDs off)."""
     if dev["host"] in scanning_hosts:
         raise RuntimeError(f"{dev['name']}: a position scan is running")
     with lock_for(dev["host"]):
-        pl = plan(dev, desired)
+        ci = connect(dev["host"])
+        listing = retry(ci.get_movies)
+        pl = plan(dev, desired, listing)
         if pl["action"] == "ok":
             return pl
-        if not pl["fits"]:
-            raise ValueError(f"{dev['name']}: {pl['frames_needed']} frames > capacity {pl['capacity']}")
-        ci = connect(dev["host"])
+        want = {m["uid"]: m for m in desired}
+        present = listing["movies"]
+        stale = [m for m in present if m["unique_id"].upper() not in want]
+        have = {m["unique_id"].upper() for m in present}
+        missing = [m for m in desired if m["uid"] not in have]
+        oh = movie_overhead(listing)
+        free = listing["available_frames"] + sum(m["frames_number"] + oh for m in stale)
+        need = sum(len(m["frames"]) + oh for m in missing)
+        if need > free:
+            raise ValueError(f"{dev['name']}: the new effects need {need} frames but only {free} will be free "
+                             f"(capacity {pl['capacity']}): turn some effects off")
         try:
             before = retry(ci.get_movies_current)
         except Exception:  # empty answer when no movie is stored
             before = {}
-        orig_mode = retry(ci.get_mode).get("mode")
-        # The firmware refuses to delete movies (code 1102) unless the LEDs are off.
-        retry(ci.set_mode, "off")
-        retry(ci.delete_movies)
-        if retry(ci.get_movies)["movies"]:
-            raise RuntimeError(f"{dev['name']}: the device did not delete its movies")
-        for m in desired:
-            retry(ci.set_movies_new, m["name"], m["uid"], "rgb_raw", m["n_leds"], len(m["frames"]), m["fps"])
-            retry(ci.set_movies_full, io.BytesIO(b"".join(m["frames"])))
-        pl["action"] = "rebuilt"
-        uids = {m["uid"] for m in desired}
+        mode = retry(ci.get_mode).get("mode")
+        cur_uid = (before.get("unique_id") or "").upper()
+        try:
+            if mode == "movie" and any(m["unique_id"].upper() == cur_uid for m in stale):
+                keep = next((m for m in desired if m["uid"] in have), None)  # do not delete what is playing
+                if keep:
+                    _select(ci, keep["uid"])
+            for m in sorted(stale, key=lambda x: x["id"], reverse=True):  # high ids first: ids shift
+                _delete_movie(ci, m["id"])
+            pl["action"] = "updated"
+        except _DeleteRefused as exc:
+            log.warning("single delete refused (%s): wiping all movies instead", exc)
+            retry(ci.set_mode, "off")  # the firmware wipes only while the LEDs are off
+            retry(ci.delete_movies)
+            if retry(ci.get_movies)["movies"]:
+                raise RuntimeError(f"{dev['name']}: the device did not delete its movies")
+            missing = list(desired)
+            pl["action"] = "rebuilt"
+        for m in missing:
+            _upload(ci, m)
         want_uid = next((m["uid"] for m in desired if m["key"] == play_key), None)
-        if want_uid is None and (before.get("unique_id") or "").upper() in uids:
-            want_uid = before["unique_id"].upper()
-        if want_uid is None and desired:
-            want_uid = desired[0]["uid"]  # old selection is gone: play the first effect
+        if want_uid is None and mode == "movie":
+            # The current movie is stored as an index, which moves when movies below it are deleted:
+            # point it back at the movie that was playing (or at a wanted one if that is gone).
+            if cur_uid in want:
+                want_uid = cur_uid
+            elif desired:
+                want_uid = next((m["uid"] for m in desired if m["uid"] in have), desired[0]["uid"])
         if want_uid:
             _select(ci, want_uid)
-        elif orig_mode:
-            retry(ci.set_mode, orig_mode)
+        elif pl["action"] == "rebuilt" and mode:
+            retry(ci.set_mode, mode)  # the wipe path switched the LEDs off: put the mode back
         return pl
 
 

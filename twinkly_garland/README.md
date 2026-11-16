@@ -18,9 +18,13 @@ Open the web UI from the "Garland" sidebar entry (ingress).
 - Each effect marked **On the garland** is rendered against the device's real LED layout and stored on the device as a movie.
   The movie's `unique_id` is derived from the effect name and a hash of the rendered content, so the device itself tells
   which version it holds.
-- **Sync (ensure)** compares the stored movies with the wanted set. On any difference it switches the LEDs off, wipes and
-  re-uploads everything (the firmware can only delete all movies at once, and only while the LEDs are off). This repairs a
-  device after a firmware update wiped its movies.
+- **Sync (ensure)** compares the stored movies with the wanted set, deletes the stale ones one by one
+  (`DELETE movies/<id>`, undocumented but works, also while playing; ids above a deleted movie shift down, so it goes
+  from the highest id) and uploads only the missing ones. The LEDs keep playing, a device that is off stays off, and the
+  playing movie is selected again afterwards (the "current movie" is stored as an index). Each movie costs about 4
+  frames besides its own, which is counted before anything is deleted. If the firmware ever refuses a single delete, it
+  falls back to switching the LEDs off, wiping everything (`DELETE movies`, allowed only while off) and re-uploading.
+  This also repairs a device after a firmware update wiped its movies.
 - **Play** resolves the effect name to the right movie on each device (selection is by index, which shifts, so it is always
   re-resolved) and syncs first if the device drifted. Re-selecting the already playing effect is a no-op.
 - **In rotation** effects (with a weight 1-5) are the pool for `effect: "random"`.

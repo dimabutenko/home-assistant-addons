@@ -75,6 +75,22 @@ stored effect (movie on the garland) uses the default values, so it stays determ
 Access to Home Assistant uses the Supervisor (`homeassistant_api: true`). For development without the Supervisor set
 `TWINKLY_HA_BASE` and `TWINKLY_HA_TOKEN` to a Home Assistant URL and a long-lived token.
 
+### Live scenes on the garland
+
+A saved formula (typically with inputs from Home Assistant) can be played **live**: the add-on computes frames from the current
+values and streams them to the garland in real-time mode, instead of storing a movie. Start it with the button "Play live on the
+garland" in the Formulas tab, `POST api/live/play {"scene": "<formula name>"}` or, through the existing `rest_command`, `effect: "live:<name>"`.
+
+- It never loops (no seam), the inputs are smoothed and every colour channel is limited in how fast it may change (no strobing).
+- **Stop:** the Stop button, `POST api/live/stop`, or any explicit `play` of a stored effect / a Sync. The garland returns to what it
+  was doing (the same stored movie, or off). `effect: "random"` (the automation) leaves a running live scene alone.
+- If somebody else changes the mode of the device (Home Assistant turns the light off, the phone app), the stream ends at once.
+- The device keeps ONE login token and the Home Assistant Twinkly integration logs in about every 30 s, so a live stream sees a re-login
+  every half minute or so (shown in the device card). The stream recovers on its next HTTP ping; if it is visible as a hiccup, switch off
+  polling of the Twinkly integration in Home Assistant.
+- If the add-on dies while streaming, the device stays in real-time mode showing the last frame; the add-on switches it back at its
+  next start and the automation's next `random` restores it as well.
+
 ## Scanning LED positions
 
 Tab **Scan**: open it on a phone through the https address of Home Assistant (browsers give the camera only to https
@@ -114,10 +130,8 @@ needed and press "Apply to the garland". The previous layout is saved in `/data/
   but only once the scan works well.
 - **Not verified:** a local Docker build of the image (only GitHub Actions builds it), the update error seen once at
   02:12 on 2026-11-16 (`update.install ... unknown error`, the update still installed).
-- **Ideas, not started (live mode and data-driven effects).** Formulas could take inputs from Home Assistant (a temperature,
-  a thermostat state, a media player). Two levels: (1) *stored*: the value is sampled when the movie is rendered and the movie is
-  re-rendered and synced only when it changes noticeably (slow things like temperature or heating mode; keeps working without HA);
-  (2) *live*: the add-on streams frames in real-time mode (UDP, 10-25 fps) computed from fast inputs (needs the add-on and HA up; has
-  to fall back to the stored movie when the stream stops; the device keeps one login token, so streaming competes with other
-  clients). HA does not expose an audio spectrum: music reactivity needs the audio analysed somewhere else (a microphone or a
-  stream tapped by the add-on); a media player gives only state, volume, title and position.
+- **Ideas, not started (data-driven stored effects, music).** Live scenes are done. Still open: *stored* effects that re-render and sync only
+  when a Home Assistant value changes noticeably (slow things like temperature or heating mode; would keep working without Home
+  Assistant). Home Assistant has no audio spectrum: music reactivity needs the audio analysed elsewhere (a microphone or a stream
+  tapped by the add-on, or a PC program posting levels); a media player gives only state, volume, title and position.
+  A live scene's `fps` is fixed at 12 and the add-on has not been measured on the real Home Assistant host yet.

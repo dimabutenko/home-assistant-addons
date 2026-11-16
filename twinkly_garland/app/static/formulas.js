@@ -4,7 +4,7 @@
 
 const FM = { items: [], examples: [], reference: null, cur: null, orig: null, vals: {}, previewTimer: null,
   tok: 0, anim: null, info: '', status: null, seam: null, previewData: null, loaded: false,
-  ha: null, live: null, readTimer: null, entTimer: null };
+  ha: null, live: null, readTimer: null, entTimer: null, streams: [] };
 
 async function loadFormulas() {
   const r = await api('api/formulas');
@@ -114,6 +114,30 @@ function fmButtons() {
   const b = document.getElementById('fm-live-btn'); if (!b) return;
   b.textContent = FM.live ? 'Stop live preview' : 'Live preview (real Home Assistant values)';
   b.classList.toggle('primary', !!FM.live);
+  const g = document.getElementById('fm-garland-btn'); if (!g) return;
+  const on = fmOnGarland();
+  g.textContent = on ? `Stop live on the garland (${on.fps} fps)` : 'Play live on the garland';
+  g.classList.toggle('primary', !!on);
+}
+
+function fmOnGarland() { return FM.orig && FM.streams.find(s => s.scene === FM.orig && s.device === fmDevice() && !s.ended); }
+
+async function fmLoadStreams() {
+  try { FM.streams = await api('api/live/status'); } catch { FM.streams = []; }
+  fmButtons();
+}
+
+async function fmToggleGarland() {
+  const dev = fmDevice(); if (!dev) { toast('No device configured.', true); return; }
+  if (fmOnGarland()) {
+    try { await send('api/live/stop', { devices: [dev] }); toast('Live scene stopped, the garland is back to how it was.'); } catch (e) { toast(e.message, true, 8000); }
+    await fmLoadStreams(); loadStatus(); return;
+  }
+  if (!(await fmSave())) return;  // the server plays the saved formula
+  toast(`Starting "${FM.orig}" on ${dev}...`, false, 0);
+  try { await send('api/live/play', { scene: FM.orig, devices: [dev] }); toast('Live on the garland. Any other effect (not "random") or the Stop button ends it.'); }
+  catch (e) { toast('Live failed: ' + e.message, true, 9000); }
+  await fmLoadStreams(); loadStatus();
 }
 
 function fmShowValues() {
@@ -132,8 +156,10 @@ function fmShowStatus() {
     return;
   }
   const seamOk = FM.seam === null || FM.seam <= 2.5;
+  const liveStyle = FM.cur && (FM.cur.inputs.length > 0 || /\bnow\b/.test(FM.cur.code));
   el.append(h('span', { class: 'ok' }, 'The formula works. '), FM.info + '. ',
-    seamOk ? h('span', { class: 'ok' }, 'The loop is seamless.')
+    !seamOk && liveStyle ? h('span', { class: 'muted' }, 'This is a live scene (it uses now or Home Assistant inputs): it runs without a loop, so the jump at the end of this 10 s preview does not matter. Do not store it on the garland as a movie.')
+    : seamOk ? h('span', { class: 'ok' }, 'The loop is seamless.')
       : h('span', { class: 'warn' }, `The loop has a visible jump (${FM.seam}x a normal step). Use whole numbers of cycles of t, e.g. sin(tau*2*t), or tnoise / rise. (Ignore this for live scenes.)`));
 }
 
@@ -243,7 +269,7 @@ function renderFormulas() {
     h('div', { class: 'preview sticky' },
       h('div', { class: 'card' }, h('h2', {}, 'Preview'), canvas, h('div', { id: 'fm-status', class: 'muted' }, 'Rendering...'),
         h('div', { id: 'fm-values', style: 'margin-top:6px' }),
-        h('div', { class: 'row', style: 'margin-top:8px' }, h('button', { id: 'fm-live-btn', disabled: !(FM.ha && FM.ha.available) && !fmInputs().length, onclick: fmToggleLive, title: 'Computes frames on the server from the current values of the inputs' }, 'Live preview (real Home Assistant values)')),
+        h('div', { class: 'row', style: 'margin-top:8px' }, h('button', { id: 'fm-garland-btn', class: '', onclick: fmToggleGarland, title: 'Streams the formula to the garland in real time, with live Home Assistant values' }, 'Play live on the garland'), h('button', { id: 'fm-live-btn', disabled: !(FM.ha && FM.ha.available) && !fmInputs().length, onclick: fmToggleLive, title: 'Computes frames on the server from the current values of the inputs' }, 'Live preview (real Home Assistant values)')),
         defs.length ? h('div', { style: 'margin-top:8px' }, h('h3', {}, 'Try the parameters'),
           h('div', { class: 'params' }, defs.map(d => {
             const v = FM.vals[d.name] !== undefined ? FM.vals[d.name] : d.default, step = (d.max - d.min) / 100;
@@ -275,5 +301,5 @@ function renderFormulas() {
         h('ul', {}, ref.rules.map(t => h('li', {}, t))),
         h('h3', {}, 'Variables'), h('ul', {}, ref.variables.map(t => h('li', {}, t))),
         h('h3', {}, 'Functions'), h('ul', { class: 'fm-funcs' }, ref.functions.map(t => h('li', {}, t)))))));
-  fmShowStatus(); fmButtons(); fmShowValues(); setTimeout(fmReadInputs, 200);
+  fmShowStatus(); fmButtons(); fmShowValues(); setTimeout(fmReadInputs, 200); fmLoadStreams();
 }

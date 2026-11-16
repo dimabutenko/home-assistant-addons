@@ -168,18 +168,29 @@ logging.getLogger("xled.auth").addHandler(_relogins)
 class LiveStream:
     """Streams the frames of a LiveScene to a garland in real-time mode (UDP), and puts the garland back
     the way it was when the stream ends. If somebody else changes the mode of the device (Home Assistant
-    turns the light off, the phone app), the stream ends without fighting back."""
+    turns the light off, the phone app), the stream ends without fighting back.
+
+    Two threads: the frame loop only sends UDP packets (never waits for HTTP), the ping loop asks the device for
+    its mode every 0.25 s. The device keeps ONE login token: when another client logs in (the Home Assistant Twinkly
+    integration polls about every 30 s) our token dies, the device ignores our frames, and the ping notices it
+    (HTTP 401), logs in again and the picture continues. A quick ping keeps that freeze short."""
+
+    PING_S = 0.25
 
     def __init__(self, dev: dict, scene: LiveScene, name: str, fps: float = 12.0):
         self.dev, self.scene, self.name = dev, scene, name
         self.interval = 1.0 / max(2.0, min(25.0, fps))
         self.stop_evt = threading.Event()
         self.thread = threading.Thread(target=self._run, daemon=True)
+        self.ping_thread = threading.Thread(target=self._ping_loop, daemon=True)
         self.restore = True
         self.ended = None          # why the stream ended, if it did
         self.frames = 0
         self.fps_actual = 0.0
         self.compute_ms = 0.0
+        self.ping_ms = 0.0
+        self.ping_max_ms = 0.0     # slowest ping of the last ~minute (a re-login shows up here)
+        self._ping_peaks = []
         self.relogins0 = 0
         self.prev_mode = None
         self.prev_uid = ""
@@ -187,37 +198,46 @@ class LiveStream:
         self.started = None
 
     # -- control ------------------------------------------------------------------------------------------
-    def start(self):
+    def start(self, inherit: tuple | None = None):
+        """`inherit` = (mode, movie uid) of the stream this one replaces: the device is already streaming, so the
+        scene changes without a visit to the stored movie in between."""
         host = self.dev["host"]
         with device.lock_for(host):
             if host in device.scanning_hosts:
                 raise RuntimeError("a position scan is running")
             self.ci = device.connect(host)
-            self.prev_mode = device.retry(self.ci.get_mode).get("mode")
-            try:
-                self.prev_uid = (device.retry(self.ci.get_movies_current).get("unique_id") or "").upper()
-            except Exception:
-                self.prev_uid = ""
-            device.retry(self.ci.set_mode, "rt")
+            if inherit is not None:
+                self.prev_mode, self.prev_uid = inherit
+            else:
+                self.prev_mode = device.retry(self.ci.get_mode).get("mode")
+                try:
+                    self.prev_uid = (device.retry(self.ci.get_movies_current).get("unique_id") or "").upper()
+                except Exception:
+                    self.prev_uid = ""
+                device.retry(self.ci.set_mode, "rt")
         device.live_hosts[host] = self
         self.relogins0 = _relogins.count
         self.started = time.time()
         self.thread.start()
+        self.ping_thread.start()
 
     def stop(self, restore: bool = True):
         self.restore = self.restore and restore
         self.stop_evt.set()
-        if self.thread.is_alive() and threading.current_thread() is not self.thread:
-            self.thread.join(timeout=15)
+        me = threading.current_thread()
+        for th in (self.thread, self.ping_thread):
+            if th.is_alive() and th is not me:
+                th.join(timeout=15)
 
     def status(self) -> dict:
         return {"device": self.dev["name"], "scene": self.name, "fps": round(self.fps_actual, 1), "frames": self.frames,
-                "compute_ms": round(self.compute_ms, 1), "relogins": _relogins.count - self.relogins0,
-                "seconds": round(time.time() - (self.started or time.time())), "ended": self.ended, "values": self.scene.values()}
+                "compute_ms": round(self.compute_ms, 1), "ping_ms": round(self.ping_ms), "ping_max_ms": round(self.ping_max_ms),
+                "relogins": _relogins.count - self.relogins0, "seconds": round(time.time() - (self.started or time.time())),
+                "ended": self.ended, "values": self.scene.values()}
 
-    # -- the loop -----------------------------------------------------------------------------------------------
+    # -- the frame loop: UDP only -----------------------------------------------------------------------------------
     def _run(self):
-        host, last_ping, errors, t_fps, n_fps = self.dev["host"], 0.0, 0, time.time(), 0
+        host, errors, t_fps, n_fps = self.dev["host"], 0, time.time(), 0
         try:
             while not self.stop_evt.is_set():
                 t0 = time.time()
@@ -228,20 +248,12 @@ class LiveStream:
                     break
                 self.compute_ms = self.compute_ms * 0.9 + (time.time() - t0) * 1000 * 0.1
                 try:
-                    with device.lock_for(host):
-                        self.ci.set_rt_frame_socket(io.BytesIO(frame), 3)
-                        if time.time() - last_ping > 1.0:  # static frames stop rendering without an HTTP ping
-                            mode = self.ci.get_mode().get("mode")
-                            last_ping = time.time()
-                            if mode != "rt":
-                                self.ended = f"the mode was changed to {mode!r} by someone else"
-                                self.restore = False
-                                break
+                    self.ci.set_rt_frame_socket(io.BytesIO(frame), 3)  # no HTTP lock: the token is only read
                     errors = 0
-                except Exception as exc:
+                except Exception as exc:  # e.g. the token is being renewed right now
                     errors += 1
-                    if errors > 25:
-                        self.ended = f"the device does not answer ({type(exc).__name__})"
+                    if errors > 60:
+                        self.ended = f"frames cannot be sent ({type(exc).__name__})"
                         self.restore = False
                         break
                 self.frames += 1
@@ -250,10 +262,40 @@ class LiveStream:
                     self.fps_actual, t_fps, n_fps = n_fps / (time.time() - t_fps), time.time(), 0
                 self.stop_evt.wait(max(0.0, self.interval - (time.time() - t0)))
         finally:
-            device.live_hosts.pop(host, None)
+            self.stop_evt.set()
+            if self.ping_thread.is_alive() and self.ping_thread is not threading.current_thread():
+                self.ping_thread.join(timeout=5)
+            if device.live_hosts.get(host) is self:
+                device.live_hosts.pop(host, None)
             if self.restore:
                 self._restore()
             log.info("live stream %s on %s ended (%s)", self.name, self.dev["name"], self.ended or "stopped")
+
+    # -- the ping loop: keeps the token alive, notices a mode change by someone else ----------------------------------------
+    def _ping_loop(self):
+        host, errors = self.dev["host"], 0
+        while not self.stop_evt.is_set():
+            t0 = time.time()
+            try:
+                with device.lock_for(host):
+                    mode = self.ci.get_mode().get("mode")
+                errors = 0
+                self.ping_ms = (time.time() - t0) * 1000
+                self._ping_peaks = [(t, v) for t, v in self._ping_peaks if t0 - t < 60] + [(t0, self.ping_ms)]
+                self.ping_max_ms = max(v for _, v in self._ping_peaks)
+                if mode != "rt":
+                    self.ended = f"the mode was changed to {mode!r} by someone else"
+                    self.restore = False
+                    self.stop_evt.set()
+                    break
+            except Exception as exc:
+                errors += 1
+                if errors > 40:  # about 10 s without an answer
+                    self.ended = f"the device does not answer ({type(exc).__name__})"
+                    self.restore = False
+                    self.stop_evt.set()
+                    break
+            self.stop_evt.wait(max(0.0, self.PING_S - (time.time() - t0)))
 
     def _restore(self):
         try:

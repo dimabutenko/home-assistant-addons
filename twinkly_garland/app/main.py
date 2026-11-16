@@ -300,10 +300,17 @@ def start_live(scene_name: str, names: list, fps: float = 12.0, restart: bool = 
             if running[n] is not None and running[n].name == scene_name and not restart:
                 out.append({"device": n, "live": scene_name, "fps": fps, "kept": True})
                 continue
-            live.stop_for(dev)
             layout = device.render_layout(dev)
-            stream = live.LiveStream(dev, live.LiveScene(spec, layout, {}), scene_name, fps)
-            stream.start()
+            scene = live.LiveScene(spec, layout, {})  # built first (it fetches history), while the old scene keeps playing
+            stream = live.LiveStream(dev, scene, scene_name, fps)
+            old = running[n]
+            if old is not None and old.thread.is_alive():
+                inherit = (old.prev_mode, old.prev_uid)
+                old.stop(restore=False)  # hand over: the garland stays in real-time mode, no flash of the stored movie
+                stream.start(inherit=inherit)
+            else:
+                live.stop_for(dev)
+                stream.start()
             out.append({"device": n, "live": scene_name, "fps": fps})
         except HTTPException:
             raise

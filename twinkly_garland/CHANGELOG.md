@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.1
+- Round shapes: effects are now drawn on the real proportions of the lit area. Twinkly stores a scan stretched to a 2:1 box, so circles became ovals on the wall. Enter the real width x height of the area in the device card ("Real size of the lit area"); preview and thumbnails use the same proportions.
+- Generators no longer assume x in -1..1 (columns of snow/rain/bars, checker cells, storm flashes follow the real extent).
+- Flame: new look with tongues of flame (contrast and fade-with-height parameters, taller and more varied by default).
+- The library no longer redraws while you type in a field.
+
 ## 0.6.0
 - LED position scan (tab "Scan"): the phone camera watches while the garland shows patterns in real-time mode
   (dark, all on, 10 Gray-code bit patterns), the browser finds every LED, decodes its index, checks doubtful ones

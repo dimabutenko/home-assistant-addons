@@ -59,11 +59,56 @@ def get_layout(dev: dict, refresh: bool = False) -> list:
     return json.loads(path.read_text())
 
 
+# ---- per-device settings and the "physical" layout used for rendering -----------
+
+def _settings_path() -> Path:
+    return DATA_DIR / "settings.json"
+
+
+def load_settings() -> dict:
+    try:
+        return json.loads(_settings_path().read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def device_aspect(name: str):
+    return load_settings().get("devices", {}).get(name, {}).get("aspect")
+
+
+def save_device_aspect(name: str, aspect) -> None:
+    st = load_settings()
+    dev = st.setdefault("devices", {}).setdefault(name, {})
+    if aspect is None:
+        dev.pop("aspect", None)
+    else:
+        dev["aspect"] = float(aspect)
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    _settings_path().write_text(json.dumps(st, indent=1))
+
+
+def physical(layout: list, aspect=None) -> list:
+    """Layout in 'height units': y in [0, 1], x centred with the real width/height ratio.
+    Twinkly stretches a scan to x -1..1, y 0..1, which squeezes circles into ovals on a wall
+    that is not 2:1; `aspect` (real width / height) puts the proportions back."""
+    xs = [p["x"] for p in layout]
+    ys = [p["y"] for p in layout]
+    x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
+    w, h = (x1 - x0) or 1.0, (y1 - y0) or 1.0
+    a = aspect or (w / h)
+    xc = (x0 + x1) / 2
+    return [{"x": (p["x"] - xc) / w * a, "y": (p["y"] - y0) / h, "z": p.get("z", 0)} for p in layout]
+
+
+def render_layout(dev: dict) -> list:
+    return physical(get_layout(dev), device_aspect(dev["name"]))
+
+
 # ---- desired state ------------------------------------------------------
 
 def build_desired(dev: dict, instances: list, render_instance) -> list:
     """Render every enabled instance targeting this device -> list of movie specs."""
-    layout = get_layout(dev)
+    layout = render_layout(dev)
     out = []
     for inst in instances:
         if not inst.get("on_device", True):

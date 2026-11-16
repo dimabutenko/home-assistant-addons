@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.0
+- Sync no longer wipes the device: stale effects are deleted one by one (`DELETE movies/<id>` works on this firmware, also while playing) and only the missing ones are uploaded. No blackout, much faster, a device that is off stays off.
+- The playing effect stays selected after deletions (the device stores the current movie as an index that shifts).
+- Capacity check includes the per-movie overhead (about 4 frames) and runs before anything is deleted; a full device (HTTP 406) gives a clear message instead of a half-finished sync. Frame budget in the library is more accurate.
+- Fallback: if a single delete is refused, the old wipe-and-rebuild path is used (and it puts the previous mode back).
+
 ## 0.6.2
 - Fix HTTP 401 / "verify failed" storms in the log and occasional 502 on play: the device keeps a single login token, and parallel requests (status polling, play, scan) each logged in again and invalidated one another. Now there is one shared client per device and all calls to a device are serialised.
 - Status is cached for 10 s, built from fewer requests, the library polls every 45 s instead of 20 s, and the Refresh button forces a fresh read.

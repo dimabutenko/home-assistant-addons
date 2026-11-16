@@ -19,8 +19,11 @@ _locks: dict = {}
 scanning_hosts: set = set()  # devices in real-time mode for a position scan: leave them alone
 
 
-def lock_for(host: str) -> threading.Lock:
-    return _locks.setdefault(host, threading.Lock())
+def lock_for(host: str) -> threading.RLock:
+    """One re-entrant lock per device. The device keeps a single login token, so two
+    requests logging in at the same time invalidate each other (HTTP 401, 'verify failed'):
+    every sequence of calls to a device must run under this lock."""
+    return _locks.setdefault(host, threading.RLock())
 
 
 def retry(fn, *args, tries=4):
@@ -32,12 +35,19 @@ def retry(fn, *args, tries=4):
         except Exception as exc:
             last = exc
             time.sleep(0.5 * (i + 1))
+    _clients.clear()  # start from a fresh login next time
     raise last
 
 
+_clients: dict = {}
+
+
 def connect(host: str) -> ControlInterface:
+    """Shared client per device (keeps its login token). Call it while holding lock_for(host)."""
     socket.create_connection((host, 80), timeout=3).close()  # xled has no timeout
-    return ControlInterface(host)
+    if host not in _clients:
+        _clients[host] = ControlInterface(host)
+    return _clients[host]
 
 
 # ---- layout cache -------------------------------------------------------
@@ -50,8 +60,9 @@ def get_layout(dev: dict, refresh: bool = False) -> list:
     """Returns [{x,y,z}, ...]; reads from the device and caches it."""
     path = _layout_path(dev["name"])
     if refresh or not path.exists():
-        ci = connect(dev["host"])
-        lay = retry(lambda: ci.session.get(ci.base_url + "led/layout/full").json())
+        with lock_for(dev["host"]):
+            ci = connect(dev["host"])
+            lay = retry(lambda: ci.session.get(ci.base_url + "led/layout/full").json())
         coords = [{"x": c["x"], "y": c["y"], "z": c.get("z", 0)} for c in lay["coordinates"]]
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(coords))
@@ -135,9 +146,12 @@ def build_desired(dev: dict, instances: list, render_instance) -> list:
 
 # ---- reconcile ----------------------------------------------------------
 
-def plan(dev: dict, desired: list) -> dict:
-    ci = connect(dev["host"])
-    d = retry(ci.get_movies)
+def plan(dev: dict, desired: list, listing: dict | None = None) -> dict:
+    """Compare the stored movies with `desired`. `listing` = a get_movies() answer already in hand."""
+    if listing is None:
+        with lock_for(dev["host"]):
+            listing = retry(connect(dev["host"]).get_movies)
+    d = listing
     present = {m["unique_id"].upper(): m for m in d["movies"]}
     want = {m["uid"]: m for m in desired}
     missing = [m["key"] for u, m in want.items() if u not in present]

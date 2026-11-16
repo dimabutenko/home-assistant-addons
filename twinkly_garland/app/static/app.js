@@ -105,8 +105,8 @@ function showTab(t) {
 for (const b of document.querySelectorAll('.tab')) b.onclick = () => showTab(b.dataset.tab);
 
 // ---- data loading -----------------------------------------------------------------
-async function loadStatus() {
-  try { S.status = await api('api/status'); } catch (e) { toast('Status failed: ' + e.message, true); return; }
+async function loadStatus(fresh = true) {
+  try { S.status = await api('api/status' + (fresh ? '?fresh=true' : '')); } catch (e) { toast('Status failed: ' + e.message, true); return; }
   if (!S.previewDevice && S.status.length) S.previewDevice = S.status[0].name;
   const typing = document.activeElement && document.activeElement.tagName === 'INPUT' && document.activeElement.closest('#view-library');
   if (S.tab === 'library' && !typing) renderLibrary();
@@ -139,7 +139,7 @@ function deviceCard(d) {
       : h('div', { class: 'warn' }, plan ? `Out of sync. To upload: ${plan.missing.join(', ') || 'nothing'}; to remove: ${plan.extra.join(', ') || 'nothing'}` : 'Checking...'),
     h('div', { class: 'row', style: 'margin-top:8px' },
       h('button', { class: synced ? '' : 'primary', disabled: synced || over, onclick: () => syncDevice(d.name) }, 'Sync now'),
-      h('button', { onclick: loadStatus }, 'Refresh')),
+      h('button', { onclick: () => loadStatus(true) }, 'Refresh')),
     h('div', { class: 'row', style: 'margin-top:8px' },
       h('span', { class: 'muted', title: 'Twinkly stretches the scan to a 2:1 box. Enter the real size of the area covered by the lights (any unit) to make circles round. Empty = as stored on the device.' }, 'Real size of the lit area, w x h:'),
       h('input', { type: 'number', min: 1, step: 'any', id: `pw-${d.name}`, style: 'width:80px', placeholder: 'width', value: d.aspect ? Math.round(d.aspect * 100) : '' }),
@@ -446,5 +446,5 @@ async function deletePalette() {
   } catch (e) { $('#view-library').textContent = 'Failed to load: ' + e.message; return; }
   renderLibrary();
   loadStatus(); loadGallery();
-  setInterval(() => { if (S.tab === 'library' && !document.hidden) loadStatus(); }, 20000);
+  setInterval(() => { if (S.tab === 'library' && !document.hidden) loadStatus(false); }, 45000);
 })();

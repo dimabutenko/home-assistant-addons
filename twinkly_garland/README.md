@@ -44,3 +44,28 @@ needed and press "Apply to the garland". The previous layout is saved in `/data/
 - `POST api/play` with `{"effect": "<key>", "devices": ["<name>", ...]}` (empty list = all devices). `effect` may be `"random"`: one effect that is on every target device and in the rotation is picked (weighted). Returns 502 if no device could play it.
 - `POST api/ensure`, `POST api/devices/<name>/ensure`, `GET api/devices/<name>/plan`
 - `GET|PUT api/instances`, `GET|PUT api/palettes`, `POST api/preview`, `GET api/gallery`, `GET api/status`, `POST api/scan/start|pattern|stop|apply`, `GET api/devices`, `GET api/effects`
+
+## Known issues / tech debt
+
+- **Scan has not been tried with a real phone camera yet.** Tested only on a synthetic camera and on the garland itself
+  ("Light test", confirmed by eye). Open points: exposure lock works only on some phones, the camera permission inside the
+  Home Assistant ingress iframe is unverified, thresholds may need tuning on real photos.
+- **A steady phone (tripod) is required.** Hand shake above ~1.5 px between photos breaks the decoding; the scan now
+  detects this and says so. Remaining weak spot at ~1.5 px shake: the single-LED search can pick the edge of a bright
+  static light inside the garland area (4 wrong LEDs in the synthetic test). Ideas: mask saturated static sources found in the
+  "off" photos, pick the blob nearest to the position predicted from the neighbours instead of the brightest one, confirm
+  single-LED results with a second shot.
+- **Scan is flat (2D, one viewpoint).** The tree needs several angles (3D); the data model keeps results per view but the UI
+  does not do it yet. Syncing two garlands is also open (the tree is not online; group/sync API of the firmware is unexplored).
+- **The device keeps one login token.** Any other client that logs in (the Home Assistant Twinkly integration polls every
+  30 s) invalidates ours; xled re-logins, which shows up as `401` / `verify failed` warnings and rare 502 on play. Fix
+  options: move on/off of the garland into the add-on and disable the integration, or accept the noise.
+- **Single-movie delete (`DELETE movies/<id>`) is undocumented firmware behaviour.** There is a wipe-and-rebuild fallback,
+  but a future firmware could change it. The device refuses new movies with HTTP 406 when full (each movie costs ~4 frames
+  on top of its own); the capacity check runs before anything is deleted.
+- **Library UX:** effects that are not "On the garland" are just dimmed. Wanted: an explicit "not on the garland" label with
+  an "Add" button, a hint how many more effects fit, and a "shorten all effects" shortcut (e.g. 6 s x 8 fps).
+- **Proportions are entered by hand** ("Real size of the lit area"). A scan with "keep proportions" gives them automatically
+  but only once the scan works well.
+- **Not verified:** a local Docker build of the image (only GitHub Actions builds it), the update error seen once at
+  02:12 on 2026-11-16 (`update.install ... unknown error`, the update still installed).

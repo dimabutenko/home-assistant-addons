@@ -116,10 +116,62 @@ const ScanLib = (() => {
     return out;
   }
 
-  // Brightest blob of (frame - dark); null if nothing stands out.
-  function singleBlob({ w, h, dark, frame, minPeak }) {
+  const maxArr = (a, b) => { const o = new Float32Array(a.length); for (let i = 0; i < a.length; i++) o[i] = Math.max(a[i], b[i]); return o; };
+  const minArr = (a, b) => { const o = new Float32Array(a.length); for (let i = 0; i < a.length; i++) o[i] = Math.min(a[i], b[i]); return o; };
+
+  // Pixels that changed between two "everything off" photos: flickering lights, a moving phone. Grown by 3 px.
+  function unstableMask(d1, d2, w, h, thr = 25) {
+    const m = new Uint8Array(w * h), out = new Uint8Array(w * h);
+    for (let i = 0; i < m.length; i++) m[i] = Math.abs(d1[i] - d2[i]) > thr ? 1 : 0;
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      if (!m[y * w + x]) continue;
+      for (let dy = -3; dy <= 3; dy++) for (let dx = -3; dx <= 3; dx++) { const nx = x + dx, ny = y + dy; if (nx >= 0 && ny >= 0 && nx < w && ny < h) out[ny * w + nx] = 1; }
+    }
+    return out;
+  }
+
+  function blobCentres(w, h, dark, all) {
+    const N = w * h, ref = new Float32Array(N);
+    for (let i = 0; i < N; i++) ref[i] = Math.max(0, all[i] - dark[i]);
+    const b = blur3(ref, w, h), T = Math.max(8, 0.25 * percentile(b, 99.9)), mask = new Uint8Array(N);
+    for (let i = 0; i < N; i++) mask[i] = b[i] > T ? 1 : 0;
+    const { labels, count } = components(mask, w, h), sx = new Float64Array(count + 1), sy = new Float64Array(count + 1), sw = new Float64Array(count + 1), ar = new Float64Array(count + 1);
+    for (let i = 0; i < N; i++) { const l = labels[i]; if (!l) continue; const x = i % w, y = (i - x) / w; sx[l] += x * ref[i]; sy[l] += y * ref[i]; sw[l] += ref[i]; ar[l]++; }
+    const out = []; for (let l = 1; l <= count; l++) if (ar[l] >= 2 && sw[l] > 0) out.push([sx[l] / sw[l], sy[l] / sw[l]]);
+    return out;
+  }
+
+  // How far did the phone move between two sets of photos (median shift of the LED blobs, px)?
+  function motion(w, h, dark1, all1, dark2, all2) {
+    const c1 = blobCentres(w, h, dark1, all1), c2 = blobCentres(w, h, dark2, all2), dx = [], dy = [];
+    if (c1.length < 20 || c2.length < 20) return null;
+    for (const [x, y] of c1) {
+      let best = null, bd = 1e9;
+      for (const [u, v] of c2) { const d = Math.hypot(u - x, v - y); if (d < bd) { bd = d; best = [u - x, v - y]; } }
+      if (bd < 15) { dx.push(best[0]); dy.push(best[1]); }
+    }
+    if (dx.length < 20) return null;
+    dx.sort((a, b) => a - b); dy.sort((a, b) => a - b);
+    const mx = dx[dx.length >> 1], my = dy[dy.length >> 1];
+    return { dx: mx, dy: my, shift: Math.hypot(mx, my), n: dx.length };
+  }
+
+  // Bounding box (with a margin) of the LEDs found so far: single-LED shots look only there.
+  function roiOf(pts, w, h) {
+    const got = pts.filter(Boolean); if (got.length < 40) return null;
+    const us = got.map(p => p.u).sort((a, b) => a - b), vs = got.map(p => p.v).sort((a, b) => a - b), q = Math.floor(got.length * 0.01);
+    const mx = Math.max(30, 0.08 * w), my = Math.max(30, 0.08 * h);
+    return { x0: Math.max(0, us[q] - mx), x1: Math.min(w - 1, us[us.length - 1 - q] + mx), y0: Math.max(0, vs[q] - my), y1: Math.min(h - 1, vs[vs.length - 1 - q] + my) };
+  }
+
+  // Brightest blob of (frame - dark) inside `roi` (if given) and outside `exclude` (if given); null if nothing stands out.
+  function singleBlob({ w, h, dark, frame, minPeak, roi, exclude }) {
     const N = w * h, d = new Float32Array(N);
     for (let i = 0; i < N; i++) d[i] = Math.max(0, frame[i] - dark[i]);
+    if (roi || exclude) for (let i = 0; i < N; i++) {
+      const x = i % w, y = (i - x) / w;
+      if ((roi && (x < roi.x0 || x > roi.x1 || y < roi.y0 || y > roi.y1)) || (exclude && exclude[i])) d[i] = 0;
+    }
     const b = blur3(d, w, h); let peak = 0; for (let i = 0; i < N; i++) if (b[i] > peak) peak = b[i];
     if (peak < minPeak) return null;
     const T = Math.max(6, 0.4 * peak), mask = new Uint8Array(N); for (let i = 0; i < N; i++) mask[i] = b[i] > T ? 1 : 0;
@@ -157,7 +209,7 @@ const ScanLib = (() => {
     return c.map(([x, y]) => ({ x: (x - xc) * s, y: (y - y0) * s }));
   }
 
-  return { detect, suspicious, singleBlob, interpolate, toLayout, percentile, blur3 };
+  return { detect, suspicious, singleBlob, interpolate, toLayout, percentile, blur3, maxArr, minArr, unstableMask, motion, roiOf };
 })();
 
 // ---- UI ------------------------------------------------------------------------------------
@@ -223,31 +275,41 @@ async function runScan() {
     }
     await lockExposure();
     scanStatus('Photo: everything off...', 0.1); await pat({ kind: 'dark' }); await sleep(600); dark = await shot();
-    scanStatus('Photo: everything on...', 0.14); await pat({ kind: 'all', level }); await sleep(600); const all = await shot();
+    scanStatus('Photo: everything on...', 0.14); await pat({ kind: 'all', level }); await sleep(600); const all1 = await shot();
     const bits = [];
     for (let k = 0; k < nb; k++) {
       check(); scanStatus(`Photo: pattern ${k + 1} of ${nb}...`, 0.18 + 0.4 * k / nb);
       await pat({ kind: 'bit', bit: k, level }); await sleep(600); bits.push((await shot()).data);
     }
-    scanStatus('Recognising the LEDs...', 0.6); await sleep(30);
-    const w = all.w, h = all.h;
+    // second pair of photos at the end: only what is the same in both counts (drops flickering lights, passing cars)
+    scanStatus('Photo: everything off, again...', 0.58); await pat({ kind: 'dark' }); await sleep(600); const dark2 = await shot();
+    scanStatus('Photo: everything on, again...', 0.6); await pat({ kind: 'all', level }); await sleep(600); const all2 = await shot();
+    scanStatus('Recognising the LEDs...', 0.62); await sleep(30);
+    const w = all1.w, h = all1.h;
+    const mv = ScanLib.motion(w, h, dark.data, all1.data, dark2.data, all2.data);
+    if (mv && mv.shift > 2) throw new Error(`The phone moved by about ${mv.shift.toFixed(1)} px during the scan. Put it on a tripod or a stable surface and try again.`);
+    const dmax = ScanLib.maxArr(dark.data, dark2.data), all = { data: ScanLib.minArr(all1.data, all2.data) };
+    const unstable = ScanLib.unstableMask(dark.data, dark2.data, w, h);
+    dark = { w, h, data: dmax };
     const det = ScanLib.detect({ w, h, dark: dark.data, all: all.data, bits, n });
     let pts = det.pts;
     const decoded = pts.filter(Boolean).length;
+    if (decoded < n * 0.5) throw new Error(`Only ${decoded} of ${n} LEDs could be recognised. The phone probably moved (use a tripod), the garland is not fully in view, or the room is too bright.`);
     // refine: missing and suspicious LEDs one at a time
     const todo = [...new Set([...pts.map((p, i) => p ? -1 : i).filter(i => i >= 0), ...ScanLib.suspicious(pts)])];
     const limit = Math.min(todo.length, 150); let refined = 0;
+    const roi = ScanLib.roiOf(pts, w, h);
     for (let q = 0; q < limit; q++) {
       check(); const i = todo[q]; scanStatus(`Checking LED ${i} separately (${q + 1} of ${limit}), brightness ${Math.max(level, 200)}...`, 0.62 + 0.36 * q / Math.max(1, limit));
       await pat({ kind: 'leds', leds: [i], level: Math.max(level, 200) }); await sleep(450);
-      const s = await shot(), b = ScanLib.singleBlob({ w, h, dark: dark.data, frame: s.data, minPeak: Math.max(10, det.peak * 0.3) });
+      const s = await shot(), b = ScanLib.singleBlob({ w, h, dark: dark.data, frame: s.data, minPeak: Math.max(10, det.peak * 0.3), roi, exclude: unstable });
       pts[i] = b ? { ...b, src: 'single' } : null; if (b) refined++;  // a LED that does not show up alone was a false detection
     }
     const hidden = pts.filter(p => !p).length;
     pts = ScanLib.interpolate(pts);
     if (pts.some(p => !p)) throw new Error('No LED was found. Make sure the garland is in view and the room is dark.');
-    SC.result = { pts, w, h, n, stats: { n, decoded, refined, hidden, blobs: det.blobs, merged: det.merged, invalid: det.invalid, conflicts: det.conflicts, uncertain: det.uncertain, level } };
-    SC.snap = { w, h, data: all.data };
+    SC.result = { pts, w, h, n, stats: { n, decoded, refined, hidden, shift: mv ? +mv.shift.toFixed(1) : null, blobs: det.blobs, merged: det.merged, invalid: det.invalid, conflicts: det.conflicts, uncertain: det.uncertain, level } };
+    SC.snap = { w, h, data: all1.data };
     SC.oldLayout = await api(`api/devices/${encodeURIComponent(dev)}/layout`);
     scanStatus('Done. Check the result below, then apply it.', 1);
   } catch (e) {
@@ -346,6 +408,7 @@ function renderScan() {
       h('h2', {}, 'Result'),
       h('div', {}, `${st.n} LEDs: ${st.decoded} recognised by code, ${st.refined} found one by one, `, h('b', { class: st.hidden ? 'warn' : 'ok' }, `${st.hidden} not visible (estimated from their neighbours)`),
         h('span', { class: 'muted' }, `  ·  blobs ${st.blobs}, merged ${st.merged}, invalid ${st.invalid}, ambiguous ${st.conflicts}, doubtful ${st.uncertain}, brightness ${st.level}`)),
+      st.shift > 1.2 ? h('div', { class: 'warn' }, `The phone moved about ${st.shift} px during the scan. Use a tripod for a more accurate result.`) : null,
       h('div', { class: 'muted' }, 'Green = recognised, blue = found separately, orange = estimated. The grey line is the string in LED order and should run smoothly.'),
       h('div', { class: 'row', style: 'margin:8px 0' },
         h('label', {}, 'Rotate ', h('select', { onchange: e => { SC.opts.rot = Number(e.target.value); drawResults(); } }, [0, 1, 2, 3].map(q => h('option', { value: q, selected: q === SC.opts.rot }, `${q * 90}°`)))),

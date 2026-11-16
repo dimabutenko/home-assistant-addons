@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import compose, device, effects, formula, hadata, live, palettes, scan
+from . import compose, device, effects, formula, hadata, live, mqtt_bridge, palettes, scan
 
 OPTIONS_PATH = Path(os.environ.get("OPTIONS_PATH", "/data/options.json"))
 STATIC = Path(__file__).parent / "static"
@@ -123,12 +123,53 @@ def _recover_rt():
             log.info("startup check of %s skipped: %s", dev["name"], exc)
 
 
+class _BridgeGlue:
+    """What the MQTT bridge needs from this module."""
+
+    def devices(self):
+        return devices()
+
+    def effect_names(self, dev: dict) -> list:
+        keys = [i["key"] for i in load_instances()
+                if i.get("on_device", True) and (not i.get("devices") or dev["name"] in i["devices"])]
+        scenes = [f["name"] for f in formula.load() if f.get("inputs")]
+        return ["random", "live:random"] + [f"live:{n}" for n in scenes] + keys
+
+    def play(self, effect: str, names: list):
+        return api_play(PlayReq(effect=effect, devices=names))
+
+    def changed(self):
+        _drop_status_cache()
+
+
+bridge = None
+
+
+def _changed():
+    """Effects, formulas or devices changed: the MQTT discovery (effect list) is republished."""
+    if bridge is not None:
+        bridge.changed()
+
+
 @asynccontextmanager
 async def lifespan(_app):
+    global bridge
     task = asyncio.create_task(_auto_loop())
     asyncio.get_running_loop().run_in_executor(None, _recover_rt)
+    opts = options()
+    if opts.get("mqtt_host"):
+        try:
+            bridge = mqtt_bridge.Bridge(_BridgeGlue(), opts)
+            bridge.start()
+        except Exception:
+            log.exception("the MQTT bridge could not start")
+            bridge = None
+    else:
+        log.info("MQTT is off (no mqtt_host in the options): the garlands are not shown in Home Assistant")
     yield
     task.cancel()
+    if bridge is not None:
+        bridge.stop()
 
 
 app = FastAPI(title="Twinkly Garland", lifespan=lifespan)
@@ -418,6 +459,7 @@ def api_save_formulas(items: list[FormulaIn]):
         formula.save(clean)
     except formula.FormulaError as exc:
         raise HTTPException(400, str(exc))
+    _changed()
     return {"saved": len(clean)}
 
 
@@ -453,6 +495,7 @@ def api_save_instances(items: list[Instance]):
     for i in items:
         _check_instance(i)
     save_instances([_dump(i) for i in items])
+    _changed()
     return {"saved": len(items)}
 
 

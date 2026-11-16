@@ -16,6 +16,7 @@ log = logging.getLogger("twinkly.device")
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/data"))
 NS = uuid.UUID("6f1d3a52-3b52-4c3e-9d0a-7a3c5b1f0e11")  # fixed namespace for movie ids
 _locks: dict = {}
+scanning_hosts: set = set()  # devices in real-time mode for a position scan: leave them alone
 
 
 def lock_for(host: str) -> threading.Lock:
@@ -111,6 +112,8 @@ def plan(dev: dict, desired: list) -> dict:
 def ensure(dev: dict, desired: list, play_key: str | None = None) -> dict:
     """Make the device hold exactly `desired`. Rebuilds the whole set on any
     drift, because the firmware cannot delete a single movie."""
+    if dev["host"] in scanning_hosts:
+        raise RuntimeError(f"{dev['name']}: a position scan is running")
     with lock_for(dev["host"]):
         pl = plan(dev, desired)
         if pl["action"] == "ok":
@@ -159,6 +162,8 @@ def _select(ci, uid: str) -> None:
 
 
 def play(dev: dict, desired: list, key: str) -> dict:
+    if dev["host"] in scanning_hosts:
+        raise RuntimeError(f"{dev['name']}: a position scan is running")
     with lock_for(dev["host"]):
         spec = next((m for m in desired if m["key"] == key), None)
         if spec is None:

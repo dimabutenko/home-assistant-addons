@@ -15,7 +15,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import compose, device, effects, palettes
+from . import compose, device, effects, palettes, scan
 
 OPTIONS_PATH = Path(os.environ.get("OPTIONS_PATH", "/data/options.json"))
 STATIC = Path(__file__).parent / "static"
@@ -381,6 +381,67 @@ def api_play(req: PlayReq):
         # Lets callers (HA rest_command) detect failure and fall back.
         raise HTTPException(502, out)
     return out
+
+
+# ---- API: position scan -----------------------------------------------------------------
+
+@app.get("/api/devices/{name}/layout")
+def api_layout(name: str):
+    return [[p["x"], p["y"]] for p in device.get_layout(find_device(name))]
+
+
+class ScanStart(BaseModel):
+    device: str
+
+
+@app.post("/api/scan/start")
+def api_scan_start(req: ScanStart):
+    try:
+        return scan.start(find_device(req.device))
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc))
+    except Exception as exc:
+        raise HTTPException(502, f"cannot start the scan: {exc}")
+
+
+class ScanPattern(BaseModel):
+    kind: str
+    bit: int = 0
+    leds: list[int] = []
+    level: int = 200
+
+
+@app.post("/api/scan/pattern")
+def api_scan_pattern(req: ScanPattern):
+    try:
+        return scan.pattern(req.kind, req.bit, req.leds, req.level)
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(409, str(exc))
+
+
+@app.post("/api/scan/stop")
+def api_scan_stop():
+    return scan.stop()
+
+
+@app.get("/api/scan/state")
+def api_scan_state():
+    return scan.state()
+
+
+class ScanApply(BaseModel):
+    device: str
+    coordinates: list[dict]
+
+
+@app.post("/api/scan/apply")
+def api_scan_apply(req: ScanApply):
+    try:
+        return scan.apply_layout(find_device(req.device), req.coordinates)
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(400, str(exc))
+    except Exception as exc:
+        raise HTTPException(502, f"cannot write the layout: {exc}")
 
 
 @app.get("/")

@@ -136,7 +136,7 @@ async function fmToggleGarland() {
   }
   if (!(await fmSave())) return;  // the server plays the saved formula
   toast(`Starting "${FM.orig}" on ${dev}...`, false, 0);
-  try { await send('api/live/play', { scene: FM.orig, devices: [dev] }); toast('Live on the garland. Any other effect (not "random") or the Stop button ends it.'); }
+  try { await send('api/live/play', { scene: FM.orig, devices: [dev], restart: true }); toast('Live on the garland. Any other effect (not "random") or the Stop button ends it.'); }
   catch (e) { toast('Live failed: ' + e.message, true, 9000); }
   await fmLoadStreams(); loadStatus();
 }

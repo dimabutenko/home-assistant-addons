@@ -31,7 +31,7 @@ TAU = 2 * math.pi
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/data"))
 VERSION = 0  # bumped whenever the saved formulas change (part of the render cache key)
 
-MAX_SRC, MAX_NODES, MAX_LINES, MAX_PARAMS = 3000, 500, 60, 8
+MAX_SRC, MAX_NODES, MAX_LINES, MAX_PARAMS = 4000, 900, 60, 8
 TIME_BUDGET = 40.0  # s per render
 NAME_RE = re.compile(r"^[A-Za-z0-9 _-]{1,32}$")
 PARAM_RE = re.compile(r"^[a-z][a-z0-9_]{0,15}$")

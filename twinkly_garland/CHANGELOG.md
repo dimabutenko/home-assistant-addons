@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.5.1
+- Library thumbnails are still frames and animate only while hovered (tap on touch screens), which removes the lag with many effects.
+
 ## 0.5.0
 - New web UI: library of live animated thumbnails with per-device status (what plays, what is stored, frame budget, sync state), a step-by-step editor with automatic preview, and a palette editor.
 - Effects are made of 1-4 layers with palette, mix mode (normal/add/screen/multiply/max), opacity and an x/y/radial mask.

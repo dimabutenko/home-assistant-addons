@@ -2,3 +2,4 @@ fastapi==0.115.6
 pydantic>=2,<3
 uvicorn==0.34.0
 xled==0.7.0
+paho-mqtt==2.1.0

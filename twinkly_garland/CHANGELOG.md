@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.12.0
+- **Garlands as Home Assistant lights (MQTT discovery).** Set `mqtt_host`, `mqtt_port`, `mqtt_user`, `mqtt_password` in the add-on options (the user and password can be `!secret` references) and every configured device appears in Home Assistant as a `light` named after the device (`light.<device name>`, e.g. `light.balcony`): on/off, brightness, and an effect list made of the library effects, `random`, `live:random` and `live:<scene>`. Diagnostic sensors: live scene, fps, slowest ping, re-logins. Availability follows the add-on and the device. Without `mqtt_host` nothing changes.
+- The add-on becomes the only client of the garlands, so the Home Assistant Twinkly integration can be removed (two clients fight for the device's single login token).
+
 ## 0.11.2
 Smoother live scenes (a freeze / jerk every ~30 s and at every scene change was seen on the garland):
 - **The token ping runs in its own thread, every 0.25 s** (was once a second inside the frame loop, blocking it). The device keeps one login token and the Home Assistant Twinkly integration logs in about every 30 s, which kills ours: the device ignores the frames until the ping notices (HTTP 401) and logs in again. The frame loop never waits for HTTP any more, and the freeze after a foreign login is about four times shorter. Status shows `ping_ms` / `ping_max_ms`.

@@ -154,3 +154,21 @@ needed and press "Apply to the garland". The previous layout is saved in `/data/
   Assistant). Home Assistant has no audio spectrum: music reactivity needs the audio analysed elsewhere (a microphone or a stream
   tapped by the add-on, or a PC program posting levels); a media player gives only state, volume, title and position.
   A live scene's `fps` is fixed at 12 and the add-on has not been measured on the real Home Assistant host yet.
+
+## Home Assistant entities (MQTT)
+
+Set the broker in the add-on options (the add-on does not look for it by itself):
+
+```yaml
+mqtt_host: <broker host, e.g. the EMQX or Mosquitto add-on hostname>
+mqtt_port: 1883
+mqtt_user: "!secret twinkly_mqtt_user"
+mqtt_password: "!secret twinkly_mqtt_password"
+```
+
+Every device from `devices` then shows up in Home Assistant through MQTT discovery as `light.<device name in lowercase>`
+(spaces and symbols become `_`). Turn it on or off, set the brightness, pick an effect (`random`, `live:random`,
+`live:<scene>` or any library effect); the `light.turn_on` call with `effect:` does what `POST api/play` does. The state is read
+from the device every 15 s (not while a live scene runs, then the add-on already knows). The broker user needs access to
+`homeassistant/#` and `twinkly/#`. Remove the Home Assistant Twinkly integration of the same devices first or
+afterwards, otherwise the entity ids are taken.

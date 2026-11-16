@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.9.1
+- **Geometry in formulas** (music-visualiser style): new helpers `rotx`/`roty` (rotation), `mirror` (fold an angle into n mirrored segments: kaleidoscope), `wrap` (tiling), `sat`; with `r` and `a` (distance and angle from the centre) rings, spirals, kaleidoscopes and mandalas are a few lines.
+- **`<input>_phase`**: every input also gives its running total over time, so a speed that follows data (rotation, expansion) never jumps when the value changes.
+- **Feedback with `prev(x, y)`** (the colour of the previous frame, interpolated between the LEDs): trails, zooming tunnels, fading, as in MilkDrop. Live scenes use the real previous frame; stored effects run one warm-up loop first.
+- Five new examples bound to Home Assistant data: "Rings live" (more rings with house power, drift with wind, colours with the sun), "Kaleidoscope live", "Spiral live", "Tunnel live" (feedback), "Mandala live" (two flowers turning with the two work PCs).
+- Fix: a crash risk in the interpreter (copying compiled functions for `prev` shared code between two global scopes); `prev` is now an ordinary argument.
+
 ## 0.9.0
 - **Inputs from Home Assistant in formulas.** A formula can bind variables to entities (or their attributes): the value is mapped to 0..1 with a min/max range and smoothed over a chosen number of seconds. Table "Inputs from Home Assistant" in the Formulas tab with entity suggestions, the current raw and mapped value next to each input, and a new variable `now` (seconds since the start).
 - **Live preview** in the browser: the server computes frames from the current Home Assistant values (about 8 per second), so you see the formula follow real data. Frame cost is about 10 ms for 600 LEDs.

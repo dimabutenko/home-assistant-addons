@@ -18,6 +18,8 @@ class LiveScene:
         self.pvals = [float(self.params.get(d["name"], d["default"])) for d in defs]
         self.k = float(self.params.get("intensity", 0.9))
         self.seed = float(self.params.get("seed", 1))
+        self.prevfn, self.fb = formula.make_prev(self.prep, self.k)  # prev(x, y) reads the previous frame
+        self.phase = {i["name"]: 0.0 for i in self.inputs}
         self.loop = float(self.params.get("loop", LOOP_S))
         self.source = source or hadata.read_input  # (input) -> (raw, normalized) | (None, None)
         self.smoothed = {i["name"]: float(i["default"]) for i in self.inputs}
@@ -34,6 +36,8 @@ class LiveScene:
                 continue  # unavailable: keep the last value
             a = 1.0 if inp["smooth"] <= 0.01 else 1 - math.exp(-dt / inp["smooth"])
             self.smoothed[inp["name"]] += (norm - self.smoothed[inp["name"]]) * a
+        for inp in self.inputs:  # running total of the value: a speed that follows data without jumps
+            self.phase[inp["name"]] += self.smoothed[inp["name"]] * dt
 
     def values(self) -> dict:
         return {i["name"]: {"raw": self.raw[i["name"]], "value": round(self.smoothed[i["name"]], 3)} for i in self.inputs}
@@ -44,10 +48,11 @@ class LiveScene:
         self.last = now
         self._update_inputs(dt)
         el = now - self.t0
-        vals = self.pvals + [self.smoothed[i["name"]] for i in self.inputs]
-        out = formula.eval_frame(self.fn, self.prep, (el / self.loop) % 1.0, el, self.seed, vals, self.k)
+        vals = self.pvals + [self.smoothed[i["name"]] for i in self.inputs] + [self.phase[i["name"]] for i in self.inputs]
+        out = formula.eval_frame(self.fn, self.prep, (el / self.loop) % 1.0, el, self.seed, vals, self.k, self.prevfn)
         if self.prev is not None:
             lim = max(1, int(MAX_SLEW * dt))
             out = bytes(p + max(-lim, min(lim, c - p)) for p, c in zip(self.prev, out))
         self.prev = out
+        self.fb["frame"] = out
         return out

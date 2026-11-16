@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.11.2
+Smoother live scenes (a freeze / jerk every ~30 s and at every scene change was seen on the garland):
+- **The token ping runs in its own thread, every 0.25 s** (was once a second inside the frame loop, blocking it). The device keeps one login token and the Home Assistant Twinkly integration logs in about every 30 s, which kills ours: the device ignores the frames until the ping notices (HTTP 401) and logs in again. The frame loop never waits for HTTP any more, and the freeze after a foreign login is about four times shorter. Status shows `ping_ms` / `ping_max_ms`.
+- **Scene changes are handed over**: the next scene is built while the old one still plays, then the stream continues in real-time mode with no visit to the stored movie in between (there was a flash of the stored effect and a pause every time the automation switched scenes).
+- A mode change by someone else is noticed within a ping (0.25 s).
+
 ## 0.11.1
 - **Watchdog**: the add-on declares a health URL (`/api/health`, no calls to Home Assistant or the garlands) so the Supervisor can restart it when it hangs or dies. The Supervisor switch "Watchdog" has to be on (it is set through the Supervisor API after the update); at start the add-on switches a device left in real-time mode back to movie mode.
 - **`live:random`**: plays one of the saved formulas that have inputs (live scenes), preferring another one than the current; a `live:<name>` that already plays on the device is kept instead of being restarted (so a periodic automation call does not restart the stream); the Formulas tab passes `restart: true` after you edit and press play. `POST api/live/play` got the `restart` flag.

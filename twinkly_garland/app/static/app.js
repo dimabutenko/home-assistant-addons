@@ -50,29 +50,42 @@ const frameCount = i => i.duration * i.fps;
 const anims = new Set();
 function decode(frames) { return frames.map(b => Uint8Array.from(atob(b), c => c.charCodeAt(0))); }
 
-function makeAnim(canvas, layout, frames, fps, radius) {
+function drawFrame(a, idx) {
+  const g = a.canvas.getContext('2d'), fr = a.frames[idx];
+  g.clearRect(0, 0, a.canvas.width, a.canvas.height);
+  for (let i = 0; i < a.pos.length; i++) {
+    g.fillStyle = `rgb(${fr[3 * i]},${fr[3 * i + 1]},${fr[3 * i + 2]})`;
+    g.beginPath(); g.arc(a.pos[i][0], a.pos[i][1], a.radius, 0, 6.2832); g.fill();
+  }
+}
+
+// hover = true: draw one still "poster" frame and animate only while a.active (mouse over / tapped).
+function makeAnim(canvas, layout, frames, fps, radius, hover = false) {
   const xs = layout.map(p => p[0]), ys = layout.map(p => p[1]);
   const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
   const pad = radius * 2 + 2, W = canvas.width;
   const sc = (W - 2 * pad) / ((x1 - x0) || 1);
   canvas.height = Math.round((y1 - y0) * sc + 2 * pad);
   const pos = layout.map(p => [pad + (p[0] - x0) * sc, canvas.height - pad - (p[1] - y0) * sc]);
-  const a = { canvas, pos, frames, fps, radius, t0: performance.now(), last: -1 };
-  anims.add(a); return a;
+  const a = { canvas, pos, frames, fps, radius, t0: performance.now(), last: -1, hover, active: !hover, poster: Math.floor(frames.length * 0.4) };
+  anims.add(a);
+  if (hover) drawFrame(a, a.poster);
+  return a;
+}
+function setActive(a, on) {
+  if (a.active === on) return;
+  a.active = on; a.t0 = performance.now(); a.last = -1;
+  if (!on) drawFrame(a, a.poster);
 }
 function stopAnim(a) { if (a) anims.delete(a); }
 function tick(now) {
   for (const a of anims) {
     if (!a.canvas.isConnected) { anims.delete(a); continue; }
+    if (!a.active) continue;
     const idx = Math.floor((now - a.t0) / 1000 * a.fps) % a.frames.length;
     if (idx === a.last) continue;
     a.last = idx;
-    const g = a.canvas.getContext('2d'), fr = a.frames[idx];
-    g.clearRect(0, 0, a.canvas.width, a.canvas.height);
-    for (let i = 0; i < a.pos.length; i++) {
-      g.fillStyle = `rgb(${fr[3 * i]},${fr[3 * i + 1]},${fr[3 * i + 2]})`;
-      g.beginPath(); g.arc(a.pos[i][0], a.pos[i][1], a.radius, 0, 6.2832); g.fill();
-    }
+    drawFrame(a, idx);
   }
   requestAnimationFrame(tick);
 }
@@ -139,9 +152,13 @@ function pendingKeys() { const s = new Set(); for (const d of S.status) if (d.pl
 function fxCard(inst, playing, pending) {
   const canvas = h('canvas', { width: 190 });
   const th = S.gallery && S.gallery.items[inst.key];
-  if (th) makeAnim(canvas, S.gallery.layout, th.frames, th.fps, 1.4); else canvas.height = 120;
+  let anim = null;
+  if (th) anim = makeAnim(canvas, S.gallery.layout, th.frames, th.fps, 1.4, true); else canvas.height = 120;
   const upd = async fn => { fn(); try { await saveInsts(S.insts); } catch (e) { toast(e.message, true); } renderLibrary(); loadStatus(); };
-  return h('div', { class: 'card fx' + (inst.on_device ? '' : ' off') },
+  const noHover = window.matchMedia('(hover: none)').matches;
+  if (anim && noHover) canvas.onclick = () => setActive(anim, !anim.active);  // touch screens: tap to play
+  return h('div', { class: 'card fx' + (inst.on_device ? '' : ' off'),
+      onmouseenter: () => anim && !noHover && setActive(anim, true), onmouseleave: () => anim && !noHover && setActive(anim, false) },
     canvas,
     h('div', { class: 'name' }, inst.key),
     h('div', { class: 'muted' }, `${inst.layers.length} layer${inst.layers.length > 1 ? 's' : ''} · ${frameCount(inst)} frames`),

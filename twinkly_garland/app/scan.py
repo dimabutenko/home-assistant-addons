@@ -26,16 +26,17 @@ def gray(i: int) -> int:
 class Session:
     def __init__(self, dev: dict):
         self.dev = dev
-        self.ci = device.connect(dev["host"])
-        try:
-            self.n = int(device.retry(self.ci.get_device_info)["number_of_led"])
-        except Exception:
-            self.n = len(device.get_layout(dev))
-        self.prev_mode = device.retry(self.ci.get_mode).get("mode")
-        try:
-            self.prev_uid = (device.retry(self.ci.get_movies_current).get("unique_id") or "").upper()
-        except Exception:
-            self.prev_uid = ""
+        with device.lock_for(dev["host"]):
+            self.ci = device.connect(dev["host"])
+            try:
+                self.n = int(device.retry(self.ci.get_device_info)["number_of_led"])
+            except Exception:
+                self.n = len(device.get_layout(dev))
+            self.prev_mode = device.retry(self.ci.get_mode).get("mode")
+            try:
+                self.prev_uid = (device.retry(self.ci.get_movies_current).get("unique_id") or "").upper()
+            except Exception:
+                self.prev_uid = ""
         self.frame = bytes(3 * self.n)
         self.lock = threading.Lock()
         self.stop_evt = threading.Event()
@@ -45,15 +46,17 @@ class Session:
     def _run(self):
         last_ping = 0.0
         try:
-            device.retry(self.ci.set_mode, "rt")
+            with device.lock_for(self.dev["host"]):
+                device.retry(self.ci.set_mode, "rt")
             while not self.stop_evt.is_set() and time.time() - self.touched < IDLE_TIMEOUT:
                 with self.lock:
                     frame = self.frame
                 try:
-                    self.ci.set_rt_frame_socket(io.BytesIO(frame), 3)
-                    if time.time() - last_ping > 1.0:  # static frames stop rendering without an HTTP ping
-                        self.ci.get_mode()
-                        last_ping = time.time()
+                    with device.lock_for(self.dev["host"]):
+                        self.ci.set_rt_frame_socket(io.BytesIO(frame), 3)
+                        if time.time() - last_ping > 1.0:  # static frames stop rendering without an HTTP ping
+                            self.ci.get_mode()
+                            last_ping = time.time()
                 except Exception as exc:
                     log.warning("rt frame failed: %s", exc)
                 self.stop_evt.wait(0.15)
@@ -62,10 +65,11 @@ class Session:
 
     def _restore(self):
         try:
-            if self.prev_mode == "movie" and self.prev_uid:
-                device._select(self.ci, self.prev_uid)
-            else:
-                device.retry(self.ci.set_mode, self.prev_mode or "off")
+            with device.lock_for(self.dev["host"]):
+                if self.prev_mode == "movie" and self.prev_uid:
+                    device._select(self.ci, self.prev_uid)
+                else:
+                    device.retry(self.ci.set_mode, self.prev_mode or "off")
         except Exception as exc:
             log.warning("restore failed: %s", exc)
         device.scanning_hosts.discard(self.dev["host"])
@@ -147,7 +151,6 @@ def apply_layout(dev: dict, coords: list) -> dict:
     """Back up the current layout, write the new one to the device and refresh the cache."""
     if dev["host"] in device.scanning_hosts:
         raise RuntimeError("stop the scan first")
-    ci = device.connect(dev["host"])
     old = device.get_layout(dev, refresh=True)
     if len(coords) != len(old):
         raise ValueError(f"expected {len(old)} coordinates, got {len(coords)}")
@@ -160,6 +163,7 @@ def apply_layout(dev: dict, coords: list) -> dict:
         clean.append({"x": round(x, 6), "y": round(y, 6), "z": z})
     backup = device.DATA_DIR / "layouts" / f"{dev['name']}.backup-{datetime.now():%Y%m%d-%H%M%S}.json"
     backup.write_text(json.dumps(old))
-    device.retry(ci.set_led_layout, "2d", clean)
+    with device.lock_for(dev["host"]):
+        device.retry(device.connect(dev["host"]).set_led_layout, "2d", clean)
     new = device.get_layout(dev, refresh=True)
     return {"leds": len(new), "backup": backup.name}

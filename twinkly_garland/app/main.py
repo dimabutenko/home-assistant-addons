@@ -255,10 +255,23 @@ def api_gallery(device_name: str = ""):
 
 def probe(dev: dict) -> dict:
     info = {"name": dev["name"], "host": dev["host"], "online": False}
+    if dev["host"] in device.scanning_hosts:
+        return {**info, "online": True, "scanning": True, "aspect": device.device_aspect(dev["name"])}
+    try:
+        with device.lock_for(dev["host"]):
+            return _probe_locked(dev, info)
+    except Exception as exc:
+        info["error"] = type(exc).__name__
+    info["aspect"] = device.device_aspect(dev["name"])
+    return info
+
+
+def _probe_locked(dev: dict, info: dict) -> dict:
     try:
         ci = device.connect(dev["host"])
         info["firmware"] = device.retry(ci.firmware_version)["version"]
         movies = device.retry(ci.get_movies)
+        info["_listing"] = movies
         info["movies"] = [
             {"id": m["id"], "name": m["name"], "unique_id": m["unique_id"], "frames": m["frames_number"]}
             for m in movies["movies"]
@@ -282,16 +295,27 @@ def api_devices():
     return [probe(d) for d in devices()]
 
 
+_status_cache = {"t": 0.0, "data": None}
+STATUS_TTL = 10  # s: the device is slow and polling it too often makes its logins collide
+
+
+def _drop_status_cache():
+    _status_cache["t"] = 0.0
+
+
 @app.get("/api/status")
-def api_status():
+def api_status(fresh: bool = False):
     """Per device: what is stored, what is playing, what is wanted and whether they match."""
+    if not fresh and _status_cache["data"] is not None and time.time() - _status_cache["t"] < STATUS_TTL:
+        return _status_cache["data"]
     out = []
     for dev in devices():
         info = probe(dev)
-        if info["online"]:
+        listing = info.pop("_listing", None)
+        if info["online"] and listing is not None:
             try:
                 desired = desired_for(dev)
-                pl = device.plan(dev, desired)
+                pl = device.plan(dev, desired, listing)
                 by_uid = {m["uid"]: m["key"] for m in desired}
                 info["stored"] = [{"key": by_uid.get(m["unique_id"].upper()), "name": m["name"], "frames": m["frames"]}
                                   for m in info["movies"]]
@@ -302,6 +326,7 @@ def api_status():
             except Exception as exc:
                 info["status_error"] = str(exc)
         out.append(info)
+    _status_cache.update(t=time.time(), data=out)
     return out
 
 
@@ -315,6 +340,7 @@ def api_device_settings(name: str, req: DevSettings):
     if req.aspect is not None and not 0.2 <= req.aspect <= 6:
         raise HTTPException(400, "width / height must be between 0.2 and 6")
     device.save_device_aspect(name, req.aspect)
+    _drop_status_cache()
     return {"aspect": req.aspect}
 
 
@@ -332,6 +358,7 @@ def api_plan(name: str):
 @app.post("/api/devices/{name}/ensure")
 def api_ensure(name: str):
     dev = find_device(name)
+    _drop_status_cache()
     try:
         return device.ensure(dev, desired_for(dev))
     except ValueError as exc:
@@ -353,6 +380,7 @@ def api_play(req: PlayReq):
     """Play an effect on the given devices. Reconciles first when a device drifted
     (e.g. a firmware update wiped the movies), so playback never breaks.
     `random` picks one effect, common to all target devices, among those marked for rotation (weighted)."""
+    _drop_status_cache()
     names = req.devices or [d["name"] for d in devices()]
     desired_by_dev = {}
     errors = {}

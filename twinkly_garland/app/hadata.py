@@ -1,0 +1,154 @@
+"""Reading Home Assistant entities (for live scenes).
+
+In the add-on the Supervisor proxy is used (`homeassistant_api: true`, token from SUPERVISOR_TOKEN, base
+http://supervisor/core). For development TWINKLY_HA_BASE / TWINKLY_HA_TOKEN can point at a Home Assistant directly.
+A small background thread polls the entities that live scenes use, so reading a value never blocks a frame.
+"""
+import logging
+import os
+import threading
+import time
+
+import requests
+
+log = logging.getLogger("twinkly.ha")
+POLL_S = 2.0
+KEEP_S = 120.0  # stop polling an entity nobody asked for during this long
+
+
+class HAError(RuntimeError):
+    pass
+
+
+def base_url() -> str:
+    return (os.environ.get("TWINKLY_HA_BASE") or "http://supervisor/core").rstrip("/")
+
+
+def token() -> str:
+    return os.environ.get("TWINKLY_HA_TOKEN") or os.environ.get("SUPERVISOR_TOKEN") or ""
+
+
+def available() -> bool:
+    return bool(token())
+
+
+def _get(path: str):
+    if not available():
+        raise HAError("Home Assistant access is not available (needs the add-on permission homeassistant_api)")
+    try:
+        r = requests.get(base_url() + "/api" + path, headers={"Authorization": f"Bearer {token()}"}, timeout=6)
+    except requests.RequestException as exc:
+        raise HAError(f"cannot reach Home Assistant: {type(exc).__name__}") from None
+    if r.status_code == 404:
+        raise HAError("entity not found")
+    if r.status_code != 200:
+        raise HAError(f"Home Assistant answered HTTP {r.status_code}")
+    return r.json()
+
+
+# ---- value of a binding -------------------------------------------------------------------------------
+
+def raw_value(state: dict, attribute: str, on_states: list):
+    """Number from a state object, or None when unavailable. Numbers are read as they are; other states
+    count as 1 when listed in on_states and 0 otherwise."""
+    if state is None:
+        return None
+    val = state.get("attributes", {}).get(attribute) if attribute else state.get("state")
+    if val is None or str(val).lower() in ("unavailable", "unknown", "none", ""):
+        return None
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        return 1.0 if str(val).lower() in on_states else 0.0
+
+
+def normalize(raw: float, lo: float, hi: float) -> float:
+    return min(1.0, max(0.0, (raw - lo) / (hi - lo)))
+
+
+# ---- background poller ----------------------------------------------------------------------------------
+
+class Watcher:
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.wanted: dict = {}   # entity -> last time somebody asked
+        self.states: dict = {}   # entity -> {"state":..., "attributes":..., "at": time}
+        self.errors: dict = {}
+        self.thread = None
+
+    def _ensure_thread(self):
+        if self.thread is None or not self.thread.is_alive():
+            self.thread = threading.Thread(target=self._run, daemon=True)
+            self.thread.start()
+
+    def get(self, entity: str):
+        """Latest known state object (starts polling the entity if needed)."""
+        with self.lock:
+            self.wanted[entity] = time.time()
+            known = entity in self.states
+        self._ensure_thread()
+        if not known:
+            self._fetch(entity)
+        return self.states.get(entity)
+
+    def error(self, entity: str):
+        return self.errors.get(entity)
+
+    def _fetch(self, entity: str):
+        try:
+            st = _get(f"/states/{entity}")
+            with self.lock:
+                self.states[entity] = {"state": st.get("state"), "attributes": st.get("attributes", {}), "at": time.time()}
+                self.errors.pop(entity, None)
+        except HAError as exc:
+            with self.lock:
+                self.errors[entity] = str(exc)
+
+    def _run(self):
+        while True:
+            time.sleep(POLL_S)
+            now = time.time()
+            with self.lock:
+                for e in [e for e, t in self.wanted.items() if now - t > KEEP_S]:
+                    self.wanted.pop(e, None)
+                    self.states.pop(e, None)
+                todo = list(self.wanted)
+            if not todo:
+                return
+            for e in todo:
+                self._fetch(e)
+
+
+WATCHER = Watcher()
+
+
+def read_input(inp: dict):
+    """(raw, normalized) for an input binding; (None, None) when the value is not available."""
+    st = WATCHER.get(inp["entity"])
+    raw = raw_value(st, inp.get("attribute", ""), inp.get("on_states", []))
+    if raw is None:
+        return None, None
+    return raw, normalize(raw, inp["min"], inp["max"])
+
+
+# ---- entity search for the editor -------------------------------------------------------------------------
+
+_all: dict = {"t": 0.0, "items": []}
+
+
+def search(q: str, limit: int = 30) -> list:
+    if time.time() - _all["t"] > 30:
+        _all["items"] = _get("/states")
+        _all["t"] = time.time()
+    q = q.strip().lower()
+    out = []
+    for s in _all["items"]:
+        eid = s["entity_id"]
+        name = str(s.get("attributes", {}).get("friendly_name", ""))
+        if not q or q in eid.lower() or q in name.lower():
+            out.append((0 if eid.lower().startswith(q) else 1, eid, name, s))
+    out.sort(key=lambda r: (r[0], r[1]))
+    return [{"entity_id": e, "name": n, "state": str(s.get("state"))[:24],
+             "unit": s.get("attributes", {}).get("unit_of_measurement", ""),
+             "attributes": [a for a, v in s.get("attributes", {}).items() if isinstance(v, (int, float)) and not isinstance(v, bool)][:10]}
+            for _, e, n, s in out[:limit]]

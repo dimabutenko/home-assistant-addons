@@ -35,7 +35,7 @@ MAX_SRC, MAX_NODES, MAX_LINES, MAX_PARAMS = 3000, 500, 60, 8
 TIME_BUDGET = 40.0  # s per render
 NAME_RE = re.compile(r"^[A-Za-z0-9 _-]{1,32}$")
 PARAM_RE = re.compile(r"^[a-z][a-z0-9_]{0,15}$")
-BASE_VARS = ["x", "y", "u", "v", "r", "a", "i", "n", "t", "w", "h", "seed"]
+BASE_VARS = ["x", "y", "u", "v", "r", "a", "i", "n", "t", "w", "h", "seed", "now"]
 CONSTS = ["tau", "pi"]
 
 
@@ -241,6 +241,8 @@ REFERENCE = {
         "r, a: distance and angle (in turns, -0.5..0.5) from the centre of the area",
         "i, n: number of this LED along the string and how many LEDs there are",
         "t: loop phase 0..1. Use whole cycles (sin(tau*2*t)) so the loop is seamless",
+        "now: seconds since the effect started (live mode) or t * loop length (stored effect). Do not make loops with it",
+        "inputs from Home Assistant: 0..1 numbers named by you (a temperature, a power, a valve...); a stored effect uses their default value, a live scene the real value",
         "w, h: width and height of the area; seed: the Seed slider; tau, pi",
         "your own parameters (they become sliders) and any name you assign: speed = 2",
     ],
@@ -370,6 +372,10 @@ def compile_formula(src: str, param_names: tuple = ()):
 
 # ---- parameters, storage -----------------------------------------------------------------------------
 
+def all_names(defs: list, inputs: list) -> tuple:
+    return tuple(d["name"] for d in defs) + tuple(i["name"] for i in inputs)
+
+
 def clean_params(defs) -> list:
     out, seen = [], set()
     if len(defs) > MAX_PARAMS:
@@ -390,13 +396,47 @@ def clean_params(defs) -> list:
     return out
 
 
+ENTITY_RE = re.compile(r"^[a-z0-9_]+\.[a-z0-9_]+$")
+DEFAULT_ON_STATES = ["on", "home", "playing", "cleaning", "heat", "heating", "open", "detected"]
+MAX_INPUTS = 8
+
+
+def clean_inputs(inputs, taken: set) -> list:
+    """Bindings of formula variables to Home Assistant entities (the value is mapped to 0..1)."""
+    out = []
+    if len(inputs) > MAX_INPUTS:
+        raise FormulaError(f"at most {MAX_INPUTS} inputs")
+    seen = set(taken)
+    for d in inputs:
+        name = str(d.get("name", "")).strip()
+        if not PARAM_RE.match(name):
+            raise FormulaError(f"input name '{name}': lowercase letters, digits and _, starting with a letter")
+        if name in set(BASE_VARS) | set(CONSTS) | set(FUNCS) or name in seen or name in ("intensity", "color"):
+            raise FormulaError(f"input name '{name}' is taken")
+        seen.add(name)
+        entity = str(d.get("entity", "")).strip()
+        if not ENTITY_RE.match(entity):
+            raise FormulaError(f"input '{name}': entity must look like sensor.power_total")
+        lo, hi = float(d.get("min", 0)), float(d.get("max", 1))
+        if lo == hi:
+            raise FormulaError(f"input '{name}': min and max must differ")
+        on_states = d.get("on_states") or DEFAULT_ON_STATES
+        if isinstance(on_states, str):
+            on_states = [x.strip().lower() for x in on_states.split(",") if x.strip()]
+        out.append({"name": name, "entity": entity, "attribute": str(d.get("attribute") or "").strip(), "min": lo, "max": hi,
+                    "smooth": min(120.0, max(0.0, float(d.get("smooth", 2)))), "default": min(1.0, max(0.0, float(d.get("default", 0.5)))),
+                    "on_states": [str(x).lower() for x in on_states]})
+    return out
+
+
 def validate_item(item: dict) -> dict:
     name = str(item.get("name", "")).strip()
     if not NAME_RE.match(name):
         raise FormulaError("name: 1-32 letters, digits, space, _ or -")
     defs = clean_params(item.get("params", []))
-    compile_formula(str(item.get("code", "")), tuple(d["name"] for d in defs))
-    return {"name": name, "code": str(item["code"]), "params": defs}
+    inputs = clean_inputs(item.get("inputs", []), {d["name"] for d in defs})
+    compile_formula(str(item.get("code", "")), tuple(d["name"] for d in defs) + tuple(i["name"] for i in inputs))
+    return {"name": name, "code": str(item["code"]), "params": defs, "inputs": inputs}
 
 
 _items: list | None = None
@@ -486,38 +526,51 @@ def _rgb(res, k):
     return bytes(out)
 
 
+class Prepared:
+    """Per-LED constants of a layout, computed once."""
+    def __init__(self, layout: list):
+        xs, ys = [p["x"] for p in layout], [p["y"] for p in layout]
+        x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
+        self.w, self.h = (x1 - x0) or 1.0, (y1 - y0) or 1.0
+        cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+        self.n = len(layout)
+        self.per = [(p["x"], p["y"], (p["x"] - x0) / self.w, (p["y"] - y0) / self.h, math.hypot(p["x"] - cx, p["y"] - cy),
+                     math.atan2(p["y"] - cy, p["x"] - cx) / TAU, i) for i, p in enumerate(layout)]
+
+
+def eval_frame(fn, prep: Prepared, t: float, now: float, seed: float, vals: list, k: float) -> bytes:
+    """One frame: the formula for every LED. Raises FormulaError for mistakes in the formula."""
+    buf = bytearray()
+    n, w, h = prep.n, prep.w, prep.h
+    for x, y, u, v, r, a, i in prep.per:
+        try:
+            res = fn(x, y, u, v, r, a, i, n, t, w, h, seed, now, *vals)
+        except (ZeroDivisionError, OverflowError, ValueError):
+            res = 0.0
+        except Exception as exc:  # a mistake in the formula (e.g. a colour used as a number)
+            raise FormulaError(f"{type(exc).__name__}: {exc}", _line_of(exc)) from None
+        try:
+            buf += _rgb(res, k)
+        except TypeError as exc:
+            raise FormulaError(str(exc)) from None
+    return bytes(buf)
+
+
 def render_spec(layout: list, params: dict, spec: dict) -> Rendered:
-    defs = spec["params"]
-    names = tuple(d["name"] for d in defs)
-    fn = compile_formula(spec["code"], names)
-    vals = [float(params.get(d["name"], d["default"])) for d in defs]
+    """A looping movie. Inputs use their default value (a stored effect does not follow live data)."""
+    defs, inputs = spec["params"], spec.get("inputs", [])
+    fn = compile_formula(spec["code"], all_names(defs, inputs))
+    vals = [float(params.get(d["name"], d["default"])) for d in defs] + [float(i["default"]) for i in inputs]
     k = float(params.get("intensity", 0.9))
     seed = float(params.get("seed", 1))
     fps = int(params.get("fps", 10))
-    frames_n = int(params.get("duration", 10)) * fps
-    xs, ys = [p["x"] for p in layout], [p["y"] for p in layout]
-    x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
-    w, h = (x1 - x0) or 1.0, (y1 - y0) or 1.0
-    cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
-    n = len(layout)
-    per = [(p["x"], p["y"], (p["x"] - x0) / w, (p["y"] - y0) / h, math.hypot(p["x"] - cx, p["y"] - cy),
-            math.atan2(p["y"] - cy, p["x"] - cx) / TAU, i) for i, p in enumerate(layout)]
+    duration = int(params.get("duration", 10))
+    frames_n = duration * fps
+    prep = Prepared(layout)
     start, frames = time.time(), []
     for f in range(frames_n):
         t = f / frames_n
-        buf = bytearray()
-        for x, y, u, v, r, a, i in per:
-            try:
-                res = fn(x, y, u, v, r, a, i, n, t, w, h, seed, *vals)
-            except (ZeroDivisionError, OverflowError, ValueError):
-                res = 0.0
-            except Exception as exc:  # a mistake in the formula (e.g. a colour used as a number)
-                raise FormulaError(f"{type(exc).__name__}: {exc}", _line_of(exc)) from None
-            try:
-                buf += _rgb(res, k)
-            except TypeError as exc:
-                raise FormulaError(str(exc)) from None
-        frames.append(bytes(buf))
+        frames.append(eval_frame(fn, prep, t, t * duration, seed, vals, k))
         if time.time() - start > TIME_BUDGET:
             raise FormulaError(f"too slow: rendering takes more than {int(TIME_BUDGET)} s, simplify the formula")
     return Rendered(fps=fps, frames=frames)
@@ -527,6 +580,10 @@ def render_spec(layout: list, params: dict, spec: dict) -> Rendered:
 
 def _p(name, label, lo, hi, default, step=None):
     return {"name": name, "label": label, "min": lo, "max": hi, "default": default, **({"step": step} if step else {})}
+
+
+def _in(name, entity, lo, hi, smooth, default, attribute=""):
+    return {"name": name, "entity": entity, "attribute": attribute, "min": lo, "max": hi, "smooth": smooth, "default": default}
 
 
 EXAMPLES = [
@@ -553,6 +610,32 @@ hsv(fract(s * 3), 0.6, flash * on)""", "params": [_p("rate", "Flashes per loop",
 tt = fract(t * beats - dist(x, y, 0, 0.4) * spread * 0.5)
 g = min(exp(-((tt - 0.1) / 0.09) ** 2) + 0.7 * exp(-((tt - 0.3) / 0.1) ** 2), 1)
 palette("lava", g) * (0.08 + 0.92 * g)""", "params": [_p("beats", "Beats per loop", 1, 4, 2, 1), _p("spread", "Wave spread", 0, 2, 0.6, 0.1)]},
+    {"name": "House live", "code": """# The garland shows the state of the home. Meant for live mode (it follows Home Assistant);
+# stored on the garland it shows the default values of the inputs.
+# Sky follows the sun (night blue, orange dusk, blue day), clouds thicken with cloud cover and drift with the wind.
+night = palette("ocean", 0.3) * 0.3
+dusk = palette("sunset", 0.6)
+day = palette("ocean", 0.6)
+sky = mix(mix(night, dusk, smoothstep(0.05, 0.3, sun)), day, smoothstep(0.3, 0.6, sun))
+drift = noise(x * 2.2 + now * (0.02 + wind * 0.12), y * 2.5 - now * 0.015)
+cover = smoothstep(0.75 - clouds * 0.5, 0.95 - clouds * 0.5, drift)
+base = mix(sky, gray(0.35 + 0.5 * sun), cover * (0.3 + 0.5 * clouds))
+# A warm glow rises from the bottom as far as the radiator valve is open.
+glow = smoothstep(valve * 0.9, 0, y) * valve
+warm = palette("fire", 0.35 + 0.5 * glow) * glow
+# Left half twinkles with one work PC, right half with the other (the busier, the more sparkles).
+side = step(0, x)
+load = mix(dima, veron, side)
+s = hash(i, seed)
+lit = step(hash(i, seed + 1), load * 0.6)
+tw = max(1 - fract(now * (0.4 + load * 1.2) + s) * 4, 0) ** 2
+spark = hsv(0.55 + side * 0.25, 0.4, tw * lit)
+# The whole picture warms up when the house draws a lot of power.
+(base + warm + spark) * mix(rgb(0.85, 1.0, 1.2), rgb(1.2, 1.0, 0.8), power)""", "params": [],
+     "inputs": [_in("sun", "sun.sun", -8, 40, 5, 0.4, "elevation"), _in("clouds", "weather.forecast_home_2", 0, 100, 10, 0.5, "cloud_coverage"),
+                _in("wind", "weather.forecast_home_2", 0, 40, 10, 0.3, "wind_speed"), _in("valve", "sensor.living_room_radiator_position", 0, 100, 8, 0.25),
+                _in("power", "sensor.main_energy_sensor_power", 100, 3000, 3, 0.2), _in("dima", "sensor.cabinet_dima_pc_power", 50, 350, 2, 0.3),
+                _in("veron", "sensor.cabinet_veron_pc_power", 30, 250, 2, 0.2)]},
     {"name": "Diagonal waves", "code": """# Soft diagonal bands of colour moving across the window.
 k = 0.5 + 0.5 * sin(tau * (x * 1.5 + y * 2 - t * speed))
 palette("ocean", k)""", "params": [_p("speed", "Speed (whole numbers loop)", 1, 3, 1, 1)]},

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.9.0
+- **Inputs from Home Assistant in formulas.** A formula can bind variables to entities (or their attributes): the value is mapped to 0..1 with a min/max range and smoothed over a chosen number of seconds. Table "Inputs from Home Assistant" in the Formulas tab with entity suggestions, the current raw and mapped value next to each input, and a new variable `now` (seconds since the start).
+- **Live preview** in the browser: the server computes frames from the current Home Assistant values (about 8 per second), so you see the formula follow real data. Frame cost is about 10 ms for 600 LEDs.
+- Live scenes limit how fast any colour channel can change (no strobing even if a formula asks for it) and keep the last value of an input that becomes unavailable.
+- New example "House live": sky follows the sun, clouds follow cloud cover and wind, a warm glow rises with the radiator valve, the left/right half twinkle with the load of two PCs, the whole picture warms up with the power draw of the house.
+- The add-on now asks for `homeassistant_api` (reads states through the Supervisor, no long-lived token). Stored effects use the default value of an input, so they stay deterministic.
+- Streaming a live scene to the garland (real-time mode) is the next step.
+
 ## 0.8.0
 - **Formula effects** (new tab "Formulas"): write the colour of every LED as a few lines of maths in `x`, `y`, loop time `t`, your own sliders, noise and palettes; live preview on the real layout, error messages with line numbers, a check that the loop is seamless, 6 examples. Saved formulas become generators ("<name> (formula)") usable in layers like the built-in ones. The language is a small safe subset (parsed with `ast`, whitelisted nodes only: no attributes, indexing, loops, imports or strings except palette names) with limits on size and render time.
 - Fix: the flame texture drifted **down** (since 0.2.0); it now rises. Meteors flew up-left; they now fall along their direction with the tail behind.

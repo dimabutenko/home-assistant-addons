@@ -52,6 +52,19 @@ every LED and every frame, so it is a function of the position and the loop time
 - Saved formulas live in `/data/formulas.json` and appear as generators in the effect editor ("<name> (formula)"), so they can be
   layered, masked and given a palette-free colour of their own. A formula that is used by an effect cannot be deleted.
 
+### Inputs from Home Assistant and live preview
+
+A formula can have **inputs**: a name, an entity (and optionally an attribute, e.g. `sun.sun` / `elevation`), the value that maps to
+0 and to 1, a smoothing time in seconds and a default. The input is then an ordinary variable 0..1 in the formula, for example
+
+    glow = smoothstep(valve * 0.9, 0, y) * valve      # a warm glow as high as the radiator valve is open
+
+Non-numeric states count as 1 when they are "on", "home", "playing", "cleaning", "heat", "heating", "open", "detected", else 0.
+Unavailable values keep the last one. "Live preview" computes frames on the server from the current values of Home Assistant; a
+stored effect (movie on the garland) uses the default values, so it stays deterministic and keeps working without Home Assistant.
+Access to Home Assistant uses the Supervisor (`homeassistant_api: true`). For development without the Supervisor set
+`TWINKLY_HA_BASE` and `TWINKLY_HA_TOKEN` to a Home Assistant URL and a long-lived token.
+
 ## Scanning LED positions
 
 Tab **Scan**: open it on a phone through the https address of Home Assistant (browsers give the camera only to https
@@ -65,7 +78,7 @@ needed and press "Apply to the garland". The previous layout is saved in `/data/
 
 - `POST api/play` with `{"effect": "<key>", "devices": ["<name>", ...]}` (empty list = all devices). `effect` may be `"random"`: one effect that is on every target device and in the rotation is picked (weighted). Returns 502 if no device could play it.
 - `POST api/ensure`, `POST api/devices/<name>/ensure`, `GET api/devices/<name>/plan`
-- `GET|PUT api/instances`, `GET|PUT api/formulas`, `POST api/formulas/check`, `GET|PUT api/palettes`, `POST api/preview`, `GET api/gallery`, `GET api/status`, `POST api/scan/start|pattern|stop|apply`, `GET api/devices`, `GET api/effects`
+- `GET|PUT api/instances`, `GET|PUT api/formulas`, `GET api/ha/status|entities`, `POST api/ha/read`, `POST api/live/preview/start|<id>/stop`, `GET api/live/preview/<id>/frame`, `POST api/formulas/check`, `GET|PUT api/palettes`, `POST api/preview`, `GET api/gallery`, `GET api/status`, `POST api/scan/start|pattern|stop|apply`, `GET api/devices`, `GET api/effects`
 
 ## Known issues / tech debt
 

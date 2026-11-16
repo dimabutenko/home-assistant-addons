@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.14.0
+- Three new live examples built on the signal quality of the radios in the house (Wi-Fi and Bluetooth in dBm, Zigbee link quality): **Signal towers live** (eight towers, height and colour follow the quality, weak ones flicker, strong ones send radio rings), **Zigbee mesh live** (five radiators as wave sources, waves interfere and mix colours) and **Signal stars live** (a night sky, strong signal is a big steady blue-white star, weak is a small flickering red one). The ranges are fixed (not auto), so the picture means something.
+
 ## 0.13.0
 - **Watch and try the inputs** (Formulas tab, under the inputs table): a chart per input with the last 30 minutes of the sensor in its own units, the range that becomes 0..1 (your "→ 0" / "→ 1" or the auto range) as a shaded band, the value now as a dot, parts beyond the range in red and the events that would fire (your "event" threshold) as orange lines. Changing a number above redraws the chart at once.
 - **By hand**: a slider and an event button per input. The preview starts by itself and the formula gets your value instead of the sensor (smoothing and events work as usual), so you see what each input does.

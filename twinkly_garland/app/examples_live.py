@@ -11,6 +11,21 @@ UP = "sensor.keenetic_titan_wifistation_internal_uplink_speed"
 HOUSE = "sensor.main_energy_sensor_power"
 PHB = "sensor.main_energy_sensor_power_b"
 
+# signal quality: Wi-Fi / Bluetooth in dBm (about -95 weak .. -40 strong), Zigbee link quality 0..255
+WIFI_LIVING = "sensor.livingroom_speaker_livingroom_speaker_wifi_signal"
+WIFI_BED = "sensor.bedroom_speaker_bedroom_speaker_wifi_signal"
+WIFI_DPC = "sensor.esp_32_dima_pc_wifi_signal_db"
+WIFI_VPC = "sensor.esp_32_veron_pc_wifi_signal_db"
+WIFI_METERS = "sensor.esp_32_meters_wifi_signal_db"
+WIFI_DOOR = "sensor.domofon_wifi_signal"
+WIFI_WATER = "sensor.esp32_c6_water_hot_water_rssi"
+BLE_PLANT = "sensor.plant_sensor_436a_signal_strength"
+ZB_CAB = "sensor.cabinet_radiator_linkquality"
+ZB_BIG = "sensor.living_room_radiator_big_linkquality"
+ZB_LIV = "sensor.living_room_radiator_linkquality"
+ZB_BATH = "sensor.bath_room_radiator_linkquality"
+ZB_BED = "sensor.bed_room_radiator_linkquality"
+
 
 def _in(name, entity, lo, hi, smooth=0.4, default=0.4, attribute="", auto=True, kick=0.12):
     return {"name": name, "entity": entity, "attribute": attribute, "min": lo, "max": hi, "smooth": smooth, "default": default,
@@ -168,4 +183,70 @@ h1 = fract(a * 0.5 + sun * 0.6 + dcpu * 0.5 + now * 0.03)
 hsv(h1, 1, 1) * g1 + hsv(fract(h1 + 0.5), 1, 1) * g2 * (0.4 + 0.6 * house) + hsv(fract(h1 + 0.25), 1, 1) * g3""", "params": [],
      "inputs": [_in("dcpu", DCPU, 0, 30, 0.4), _in("vcpu", VCPU, 0, 100, 0.4), _slow("sun", "sun.sun", -8, 40, 5, 0.4, "elevation"),
                 _in("house", HOUSE, 300, 2300, 0.6), _in("vgpu", VGPU, 0, 80, 0.3, 0.3, kick=0.15)]},
+    {"name": "Signal towers live", "code": """# Eight towers, one per radio in the house (two speakers, the ESP boards of both PCs, the meters, the door phone, the hot water
+# board, the plant sensor). The height and the colour are the signal quality: red and short is weak, green and tall is strong.
+# A weak tower flickers like a bad connection, a strong one is steady and sends rings of radio waves over its top.
+col = min(floor(u * 8), 7)
+xf = fract(u * 8)
+q = (living if col == 0 else (bed if col == 1 else (dpc if col == 2 else (vpc if col == 3 else (meters if col == 4 else (door if col == 5 else (water if col == 6 else plant)))))))
+top = 0.1 + 0.8 * q
+inside = step(0.14, xf) * step(xf, 0.86)
+shake = 1 - (1 - q) * 0.85 * noise(col * 7.3, now * 7)
+fill = step(y, top) * inside * shake
+hue = 0.02 + 0.36 * q
+body = hsv(hue, 1, 0.3 + 0.7 * min(y / max(top, 0.1), 1)) * fill
+d = dist((xf - 0.5) * w / 8, y, 0, top)
+f = fract(d * 7 - now * (0.3 + 0.9 * q))
+ring = smoothstep(0, 0.25, f) * smoothstep(0.6, 0.25, f) * sat(1 - d * 3.5) * q * step(top, y)
+body + hsv(fract(hue + 0.5), 0.8, 1) * ring * 1.8""", "params": [],
+     "inputs": [_slow("living", WIFI_LIVING, -95, -40, 3, 0.7), _slow("bed", WIFI_BED, -95, -40, 3, 0.5), _slow("dpc", WIFI_DPC, -95, -40, 3, 0.5),
+                _slow("vpc", WIFI_VPC, -95, -40, 3, 0.5), _slow("meters", WIFI_METERS, -95, -40, 3, 0.3), _slow("door", WIFI_DOOR, -95, -40, 3, 0.2),
+                _slow("water", WIFI_WATER, -95, -40, 3, 0.7), _slow("plant", BLE_PLANT, -95, -40, 3, 0.5)]},
+    {"name": "Zigbee mesh live", "code": """# Five radiators of the Zigbee mesh are five wave sources, like drops in a pond. The link quality of a radiator sets its colour
+# (red is weak, green is strong), how bright and far its waves reach and how fast they run. Where the waves of two radiators meet they
+# interfere and mix their colours, so a mesh with very different links makes a rich, uneven picture.
+p1x = (0.12 - 0.5) * w
+p2x = (0.32 - 0.5) * w
+p3x = (0.52 - 0.5) * w
+p4x = (0.72 - 0.5) * w
+p5x = (0.9 - 0.5) * w
+d1 = dist(x, y, p1x, 0.68)
+d2 = dist(x, y, p2x, 0.28)
+d3 = dist(x, y, p3x, 0.78)
+d4 = dist(x, y, p4x, 0.3)
+d5 = dist(x, y, p5x, 0.62)
+w1 = (0.5 + 0.5 * sin(tau * (d1 * 4 - now * (0.15 + 0.7 * cab)))) ** 3 * (0.2 + 0.8 * cab) * exp(-d1 * 2.2)
+w2 = (0.5 + 0.5 * sin(tau * (d2 * 4 - now * (0.15 + 0.7 * big)))) ** 3 * (0.2 + 0.8 * big) * exp(-d2 * 2.2)
+w3 = (0.5 + 0.5 * sin(tau * (d3 * 4 - now * (0.15 + 0.7 * liv)))) ** 3 * (0.2 + 0.8 * liv) * exp(-d3 * 2.2)
+w4 = (0.5 + 0.5 * sin(tau * (d4 * 4 - now * (0.15 + 0.7 * bath)))) ** 3 * (0.2 + 0.8 * bath) * exp(-d4 * 2.2)
+w5 = (0.5 + 0.5 * sin(tau * (d5 * 4 - now * (0.15 + 0.7 * bed)))) ** 3 * (0.2 + 0.8 * bed) * exp(-d5 * 2.2)
+waves = hsv(cab * 0.36, 1, 1) * w1 + hsv(big * 0.36, 1, 1) * w2 + hsv(liv * 0.36, 1, 1) * w3 + hsv(bath * 0.36, 1, 1) * w4 + hsv(bed * 0.36, 1, 1) * w5
+core = gray(1) * (exp(-(d1 * 14) ** 2) + exp(-(d2 * 14) ** 2) + exp(-(d3 * 14) ** 2) + exp(-(d4 * 14) ** 2) + exp(-(d5 * 14) ** 2))
+waves * 1.6 + core * 0.8""", "params": [],
+     "inputs": [_slow("cab", ZB_CAB, 40, 255, 3, 0.5), _slow("big", ZB_BIG, 40, 255, 3, 0.2), _slow("liv", ZB_LIV, 40, 255, 3, 0.8),
+                _slow("bath", ZB_BATH, 40, 255, 3, 0.4), _slow("bed", ZB_BED, 40, 255, 3, 0.3)]},
+    {"name": "Signal stars live", "code": """# A night sky with eight stars, one per radio in the house. A strong signal is a big, steady, blue-white star; a weak one is a small
+# red star that flickers hard, like a bad connection. The sky itself drifts slowly in deep blue.
+q1 = living
+q2 = bed
+q3 = dpc
+q4 = vpc
+q5 = meters
+q6 = door
+q7 = water
+q8 = plant
+s1 = exp(-(dist(x, y, (0.1 - 0.5) * w, 0.8) / (0.025 + 0.05 * q1)) ** 2) * (1 - (1 - q1) * 0.9 * noise(1.1, now * 5))
+s2 = exp(-(dist(x, y, (0.25 - 0.5) * w, 0.35) / (0.025 + 0.05 * q2)) ** 2) * (1 - (1 - q2) * 0.9 * noise(2.2, now * 5))
+s3 = exp(-(dist(x, y, (0.38 - 0.5) * w, 0.7) / (0.025 + 0.05 * q3)) ** 2) * (1 - (1 - q3) * 0.9 * noise(3.3, now * 5))
+s4 = exp(-(dist(x, y, (0.5 - 0.5) * w, 0.25) / (0.025 + 0.05 * q4)) ** 2) * (1 - (1 - q4) * 0.9 * noise(4.4, now * 5))
+s5 = exp(-(dist(x, y, (0.62 - 0.5) * w, 0.85) / (0.025 + 0.05 * q5)) ** 2) * (1 - (1 - q5) * 0.9 * noise(5.5, now * 5))
+s6 = exp(-(dist(x, y, (0.74 - 0.5) * w, 0.45) / (0.025 + 0.05 * q6)) ** 2) * (1 - (1 - q6) * 0.9 * noise(6.6, now * 5))
+s7 = exp(-(dist(x, y, (0.86 - 0.5) * w, 0.75) / (0.025 + 0.05 * q7)) ** 2) * (1 - (1 - q7) * 0.9 * noise(7.7, now * 5))
+s8 = exp(-(dist(x, y, (0.93 - 0.5) * w, 0.3) / (0.025 + 0.05 * q8)) ** 2) * (1 - (1 - q8) * 0.9 * noise(8.8, now * 5))
+sky = hsv(0.62, 0.9, 0.04 + 0.1 * noise(x * 3 + now * 0.03, y * 3))
+stars = hsv(q1 * 0.6, 1 - 0.55 * q1, 1) * s1 + hsv(q2 * 0.6, 1 - 0.55 * q2, 1) * s2 + hsv(q3 * 0.6, 1 - 0.55 * q3, 1) * s3 + hsv(q4 * 0.6, 1 - 0.55 * q4, 1) * s4
+stars + hsv(q5 * 0.6, 1 - 0.55 * q5, 1) * s5 + hsv(q6 * 0.6, 1 - 0.55 * q6, 1) * s6 + hsv(q7 * 0.6, 1 - 0.55 * q7, 1) * s7 + hsv(q8 * 0.6, 1 - 0.55 * q8, 1) * s8 + sky""", "params": [],
+     "inputs": [_slow("living", WIFI_LIVING, -95, -40, 3, 0.7), _slow("bed", WIFI_BED, -95, -40, 3, 0.5), _slow("dpc", WIFI_DPC, -95, -40, 3, 0.5),
+                _slow("vpc", WIFI_VPC, -95, -40, 3, 0.5), _slow("meters", WIFI_METERS, -95, -40, 3, 0.3), _slow("door", WIFI_DOOR, -95, -40, 3, 0.2),
+                _slow("water", WIFI_WATER, -95, -40, 3, 0.7), _slow("plant", BLE_PLANT, -95, -40, 3, 0.5)]},
 ]

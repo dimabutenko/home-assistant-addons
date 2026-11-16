@@ -6,7 +6,9 @@ import logging
 import os
 import random
 import re
+import threading
 import time
+import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -15,7 +17,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import compose, device, effects, formula, palettes, scan
+from . import compose, device, effects, formula, hadata, live, palettes, scan
 
 OPTIONS_PATH = Path(os.environ.get("OPTIONS_PATH", "/data/options.json"))
 STATIC = Path(__file__).parent / "static"
@@ -188,11 +190,13 @@ class FormulaIn(BaseModel):
     name: str
     code: str
     params: list[dict] = []
+    inputs: list[dict] = []
 
 
 class FormulaCheck(BaseModel):
     code: str
     params: list[dict] = []
+    inputs: list[dict] = []
 
 
 @app.post("/api/formulas/check")
@@ -200,10 +204,102 @@ def api_formula_check(req: FormulaCheck):
     """Compile only (no render): quick feedback while typing."""
     try:
         defs = formula.clean_params(req.params)
-        formula.compile_formula(req.code, tuple(d["name"] for d in defs))
+        inputs = formula.clean_inputs(req.inputs, {d["name"] for d in defs})
+        formula.compile_formula(req.code, formula.all_names(defs, inputs))
         return {"ok": True}
     except formula.FormulaError as exc:
         return {"ok": False, "error": exc.msg, "line": exc.line}
+
+
+# ---- API: Home Assistant data and live scenes -------------------------------------------------
+
+@app.get("/api/ha/status")
+def api_ha_status():
+    if not hadata.available():
+        return {"available": False, "error": "no access token: enable homeassistant_api for the add-on"}
+    try:
+        hadata._get("/")
+        return {"available": True}
+    except hadata.HAError as exc:
+        return {"available": False, "error": str(exc)}
+
+
+@app.get("/api/ha/entities")
+def api_ha_entities(q: str = ""):
+    try:
+        return hadata.search(q)
+    except hadata.HAError as exc:
+        raise HTTPException(502, str(exc))
+
+
+class HAReadReq(BaseModel):
+    inputs: list[dict]
+
+
+@app.post("/api/ha/read")
+def api_ha_read(req: HAReadReq):
+    """Current value of each input binding (raw and mapped to 0..1)."""
+    out = []
+    try:
+        clean = formula.clean_inputs(req.inputs, set())
+    except formula.FormulaError as exc:
+        raise HTTPException(400, str(exc))
+    for inp in clean:
+        try:
+            raw, norm = hadata.read_input(inp)
+            err = hadata.WATCHER.error(inp["entity"]) if raw is None else None
+        except hadata.HAError as exc:
+            raw, norm, err = None, None, str(exc)
+        out.append({"name": inp["name"], "raw": raw, "value": None if norm is None else round(norm, 3), "error": err})
+    return out
+
+
+_live: dict = {}
+_live_lock = threading.Lock()
+LIVE_IDLE_S = 30
+
+
+class LiveStart(BaseModel):
+    device: str
+    formula: dict
+    params: dict = {}
+
+
+@app.post("/api/live/preview/start")
+def api_live_preview_start(req: LiveStart):
+    """A live preview in the browser: frames computed on request from the current Home Assistant values."""
+    layout = device.render_layout(find_device(req.device))
+    try:
+        scene = live.LiveScene(req.formula, layout, req.params)
+    except (formula.FormulaError, ValueError) as exc:
+        raise HTTPException(400, str(exc))
+    sid = uuid.uuid4().hex[:12]
+    with _live_lock:
+        for k in [k for k, v in _live.items() if time.time() - v["touched"] > LIVE_IDLE_S]:
+            _live.pop(k, None)
+        _live[sid] = {"scene": scene, "touched": time.time(), "lock": threading.Lock()}
+    return {"id": sid, "layout": [[p["x"], p["y"]] for p in layout], "ha": hadata.available()}
+
+
+@app.get("/api/live/preview/{sid}/frame")
+def api_live_preview_frame(sid: str):
+    s = _live.get(sid)
+    if s is None:
+        raise HTTPException(404, "the live preview expired")
+    s["touched"] = time.time()
+    with s["lock"]:
+        try:
+            frame = s["scene"].frame()
+        except formula.FormulaError as exc:
+            raise HTTPException(400, str(exc))
+        return {"frame": base64.b64encode(frame).decode(), "values": s["scene"].values()}
+
+
+@app.post("/api/live/preview/{sid}/stop")
+def api_live_preview_stop(sid: str):
+    with _live_lock:
+        _live.pop(sid, None)
+    return {"stopped": True}
 
 
 @app.put("/api/formulas")

@@ -97,6 +97,7 @@ function showTab(t) {
   for (const b of document.querySelectorAll('.tab')) b.classList.toggle('active', b.dataset.tab === t);
   for (const v of ['library', 'editor', 'palettes', 'formulas', 'scan']) $('#view-' + v).hidden = v !== t;
   if (t !== 'scan' && typeof scanStopCamera === 'function' && !SC.running) scanStopCamera();
+  if (t !== 'formulas' && typeof fmLiveStop === 'function') fmLiveStop();
   if (t === 'library') { renderLibrary(); loadStatus(); }
   if (t === 'editor') renderEditor();
   if (t === 'palettes') renderPalettes();

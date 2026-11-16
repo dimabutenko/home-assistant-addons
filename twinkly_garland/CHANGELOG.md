@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.10.0
+- **Live scenes on the garland.** A saved formula can be streamed to a garland in real-time mode (UDP, about 10-12 frames per second; a frame costs about 1 ms on a PC): button "Play live on the garland" in the Formulas tab, `POST api/live/play {scene, devices}`, or through the existing `rest_command` with `effect: "live:<formula name>"`. The scene follows Home Assistant values (smoothed, with the running phase) and never loops, so there is no seam.
+- **Stopping and restoring.** "Stop", any explicit `play` of a stored effect or a Sync stops the stream and puts the garland back the way it was (the same stored movie, or off). The automation's `effect: "random"` does NOT cut a live scene short (answers `kept`). If somebody else changes the device mode (Home Assistant turns the light off, the phone app), the stream ends at once without fighting back; if the device stops answering or the formula fails, it ends and restores.
+- **Crash safety.** A device left in real-time mode by a dead add-on (it freezes on the last frame) is switched back to movie mode when the add-on starts; the automation's next `random` restores it too.
+- The device card shows the running live scene (fps, uptime, frame cost, token re-logins) with a Stop button; the Formulas tab shows a calm note instead of the seam warning for live-style formulas.
+- Measured on the real garland: 10.6 fps for 70 s, about 2 token re-logins per minute (the Home Assistant Twinkly integration polling).
+
 ## 0.9.1
 - **Geometry in formulas** (music-visualiser style): new helpers `rotx`/`roty` (rotation), `mirror` (fold an angle into n mirrored segments: kaleidoscope), `wrap` (tiling), `sat`; with `r` and `a` (distance and angle from the centre) rings, spirals, kaleidoscopes and mandalas are a few lines.
 - **`<input>_phase`**: every input also gives its running total over time, so a speed that follows data (rotation, expansion) never jumps when the value changes.

@@ -109,9 +109,24 @@ async def _auto_loop():
             await asyncio.get_running_loop().run_in_executor(None, ensure_all)
 
 
+def _recover_rt():
+    """If the add-on died while streaming, the device may be stuck in real-time mode: put it back to movies."""
+    for dev in devices():
+        try:
+            with device.lock_for(dev["host"]):
+                ci = device.connect(dev["host"])
+                if device.retry(ci.get_mode).get("mode") == "rt" and dev["host"] not in device.live_hosts \
+                        and dev["host"] not in device.scanning_hosts:
+                    log.warning("%s was left in real-time mode: switching back to movie mode", dev["name"])
+                    device.retry(ci.set_mode, "movie")
+        except Exception as exc:
+            log.info("startup check of %s skipped: %s", dev["name"], exc)
+
+
 @asynccontextmanager
 async def lifespan(_app):
     task = asyncio.create_task(_auto_loop())
+    asyncio.get_running_loop().run_in_executor(None, _recover_rt)
     yield
     task.cancel()
 
@@ -252,6 +267,62 @@ def api_ha_read(req: HAReadReq):
             raw, norm, err = None, None, str(exc)
         out.append({"name": inp["name"], "raw": raw, "value": None if norm is None else round(norm, 3), "error": err})
     return out
+
+
+def start_live(scene_name: str, names: list, fps: float = 12.0) -> list:
+    """Start the formula `scene_name` as a live scene on the devices; a running one on the same device is replaced."""
+    spec = formula.get(scene_name)
+    if spec is None:
+        raise HTTPException(404, f"unknown formula {scene_name!r}: save it in the Formulas tab first")
+    out = []
+    for n in names:
+        dev = find_device(n)
+        try:
+            live.stop_for(dev)
+            layout = device.render_layout(dev)
+            stream = live.LiveStream(dev, live.LiveScene(spec, layout, {}), scene_name, fps)
+            stream.start()
+            out.append({"device": n, "live": scene_name, "fps": fps})
+        except HTTPException:
+            raise
+        except (formula.FormulaError, ValueError) as exc:
+            out.append({"device": n, "error": str(exc)})
+        except Exception as exc:
+            out.append({"device": n, "error": f"cannot start the live scene: {exc}"})
+    _drop_status_cache()
+    return out
+
+
+class LivePlay(BaseModel):
+    scene: str
+    devices: list[str] = []
+    fps: float = 12.0
+
+
+@app.post("/api/live/play")
+def api_live_play(req: LivePlay):
+    names = req.devices or [d["name"] for d in devices()]
+    out = start_live(req.scene, names, req.fps)
+    if not any("live" in o for o in out):
+        raise HTTPException(502, out)
+    return out
+
+
+class LiveStop(BaseModel):
+    devices: list[str] = []
+
+
+@app.post("/api/live/stop")
+def api_live_stop(req: LiveStop):
+    names = req.devices or [d["name"] for d in devices()]
+    stopped = [n for n in names if live.stop_for(find_device(n))]
+    _drop_status_cache()
+    return {"stopped": stopped}
+
+
+@app.get("/api/live/status")
+def api_live_status():
+    return [st.status() for st in list(device.live_hosts.values())]
 
 
 _live: dict = {}
@@ -416,6 +487,9 @@ def probe(dev: dict) -> dict:
     info = {"name": dev["name"], "host": dev["host"], "online": False}
     if dev["host"] in device.scanning_hosts:
         return {**info, "online": True, "scanning": True, "aspect": device.device_aspect(dev["name"])}
+    st = device.live_hosts.get(dev["host"])
+    if st is not None:  # streaming: asking the device would only disturb the stream
+        return {**info, "online": True, "mode": "rt", "live": st.status(), "aspect": device.device_aspect(dev["name"])}
     try:
         with device.lock_for(dev["host"]):
             return _probe_locked(dev, info)
@@ -522,6 +596,8 @@ def api_ensure(name: str):
         return device.ensure(dev, desired_for(dev))
     except ValueError as exc:
         raise HTTPException(400, str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc))
 
 
 @app.post("/api/ensure")
@@ -541,6 +617,22 @@ def api_play(req: PlayReq):
     `random` picks one effect, common to all target devices, among those marked for rotation (weighted)."""
     _drop_status_cache()
     names = req.devices or [d["name"] for d in devices()]
+    if req.effect.startswith("live:"):
+        out = start_live(req.effect[5:], names)
+        if not any("live" in o for o in out):
+            raise HTTPException(502, out)
+        return out
+    kept = []
+    if req.effect == "random":
+        # the automation calls random every few minutes: it must not cut a live scene short
+        kept = [{"device": n, "playing": f"live:{device.live_hosts[find_device(n)['host']].name}", "reconcile": "kept"}
+                for n in names if find_device(n)["host"] in device.live_hosts]
+        names = [n for n in names if find_device(n)["host"] not in device.live_hosts]
+        if not names:
+            return kept
+    else:
+        for n in names:
+            live.stop_for(find_device(n))
     desired_by_dev = {}
     errors = {}
     for n in names:
@@ -566,7 +658,7 @@ def api_play(req: PlayReq):
         pool = sorted(common)
         key = random.choices(pool, weights=[weights[k] for k in pool])[0]
 
-    out = [{"device": n, "error": e} for n, e in errors.items()]
+    out = kept + [{"device": n, "error": e} for n, e in errors.items()]
     for n, desired in desired_by_dev.items():
         dev = find_device(n)
         try:

@@ -95,12 +95,13 @@ requestAnimationFrame(tick);
 function showTab(t) {
   S.tab = t;
   for (const b of document.querySelectorAll('.tab')) b.classList.toggle('active', b.dataset.tab === t);
-  for (const v of ['library', 'editor', 'palettes', 'scan']) $('#view-' + v).hidden = v !== t;
+  for (const v of ['library', 'editor', 'palettes', 'formulas', 'scan']) $('#view-' + v).hidden = v !== t;
   if (t !== 'scan' && typeof scanStopCamera === 'function' && !SC.running) scanStopCamera();
   if (t === 'library') { renderLibrary(); loadStatus(); }
   if (t === 'editor') renderEditor();
   if (t === 'palettes') renderPalettes();
   if (t === 'scan') renderScan();
+  if (t === 'formulas') renderFormulas();
 }
 for (const b of document.querySelectorAll('.tab')) b.onclick = () => showTab(b.dataset.tab);
 

@@ -15,7 +15,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import compose, device, effects, palettes, scan
+from . import compose, device, effects, formula, palettes, scan
 
 OPTIONS_PATH = Path(os.environ.get("OPTIONS_PATH", "/data/options.json"))
 STATIC = Path(__file__).parent / "static"
@@ -148,7 +148,7 @@ class Instance(BaseModel):
     devices: list[str] = []
 
 
-def _check_instance(i: Instance) -> None:
+def _check_instance(i: Instance, allow_inline: bool = False) -> None:
     if not KEY_RE.match(i.key):
         raise HTTPException(400, f"bad name {i.key!r}: 1-32 letters, digits, space, _ or -")
     if not 1 <= len(i.layers) <= 4:
@@ -158,7 +158,9 @@ def _check_instance(i: Instance) -> None:
     if not 1 <= i.weight <= 5:
         raise HTTPException(400, "weight must be 1-5")
     for ly in i.layers:
-        if ly.effect not in effects.GENERATORS:
+        if ly.effect == "formula" and not allow_inline:
+            raise HTTPException(400, "save the formula first, then use it as an effect layer")
+        if not effects.known(ly.effect):
             raise HTTPException(400, f"unknown generator {ly.effect!r}")
         if ly.blend not in compose.BLENDS or ly.mask.type not in compose.MASKS:
             raise HTTPException(400, "bad blend or mask type")
@@ -172,7 +174,54 @@ def _dump(i: Instance) -> dict:
 
 @app.get("/api/effects")
 def api_effects():
-    return {k: {"title": v["title"], "params": v["params"]} for k, v in effects.GENERATORS.items()}
+    return effects.catalog()
+
+
+# ---- API: formula effects ---------------------------------------------------------------------
+
+@app.get("/api/formulas")
+def api_formulas():
+    return {"items": formula.load(), "examples": formula.EXAMPLES, "reference": formula.REFERENCE}
+
+
+class FormulaIn(BaseModel):
+    name: str
+    code: str
+    params: list[dict] = []
+
+
+class FormulaCheck(BaseModel):
+    code: str
+    params: list[dict] = []
+
+
+@app.post("/api/formulas/check")
+def api_formula_check(req: FormulaCheck):
+    """Compile only (no render): quick feedback while typing."""
+    try:
+        defs = formula.clean_params(req.params)
+        formula.compile_formula(req.code, tuple(d["name"] for d in defs))
+        return {"ok": True}
+    except formula.FormulaError as exc:
+        return {"ok": False, "error": exc.msg, "line": exc.line}
+
+
+@app.put("/api/formulas")
+def api_save_formulas(items: list[FormulaIn]):
+    try:
+        clean = [formula.validate_item(i.model_dump()) for i in items]
+    except formula.FormulaError as exc:
+        raise HTTPException(400, str(exc))
+    names = {c["name"] for c in clean}
+    used = sorted({f"{i['key']}" for i in load_instances() for ly in i["layers"]
+                   if ly["effect"].startswith("custom:") and ly["effect"][7:] not in names})
+    if used:
+        raise HTTPException(400, f"a formula that is still used by effects cannot be removed or renamed: {', '.join(used)}")
+    try:
+        formula.save(clean)
+    except formula.FormulaError as exc:
+        raise HTTPException(400, str(exc))
+    return {"saved": len(clean)}
 
 
 @app.get("/api/palettes")
@@ -212,6 +261,17 @@ def api_save_instances(items: list[Instance]):
 
 # ---- API: preview / gallery ----------------------------------------------------
 
+def _seam(frames: list) -> float:
+    """Jump from the last frame to the first, relative to the usual change between frames (about 1 = seamless)."""
+    def d(a, b):
+        return sum(abs(x - y) for x, y in zip(a, b)) / len(a)
+    if len(frames) < 3:
+        return 0.0
+    steps = [d(frames[i], frames[i + 1]) for i in range(len(frames) - 1)]
+    avg = sum(steps) / len(steps)
+    return round(d(frames[-1], frames[0]) / max(avg, 0.5), 2)
+
+
 def _b64(frames: list, step: int = 1) -> list:
     return [base64.b64encode(f).decode() for f in frames[::step]]
 
@@ -224,12 +284,15 @@ class PreviewReq(BaseModel):
 @app.post("/api/preview")
 def api_preview(req: PreviewReq):
     """Render on the server, play in the browser against the real layout."""
-    _check_instance(req.instance)
+    _check_instance(req.instance, allow_inline=True)
     layout = device.render_layout(find_device(req.device))
     t0 = time.time()
-    r = compose.render_instance(_dump(req.instance), layout)
+    try:
+        r = compose.render_instance(_dump(req.instance), layout)
+    except (formula.FormulaError, ValueError) as exc:
+        raise HTTPException(400, str(exc))
     return {"fps": r.fps, "layout": [[p["x"], p["y"]] for p in layout], "frames": _b64(r.frames),
-            "render_ms": int((time.time() - t0) * 1000)}
+            "render_ms": int((time.time() - t0) * 1000), "seam": _seam(r.frames)}
 
 
 @app.get("/api/gallery")

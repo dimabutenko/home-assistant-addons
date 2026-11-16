@@ -122,7 +122,7 @@ def _flame(layout, p, P):
     cells = int(p["speed"]) * period
 
     def pix(i, x, y, t):
-        ny = y * sy * 2 + cells * t
+        ny = y * sy * 2 - cells * t  # minus: the pattern rises
         n = (0.55 * _noise(x * sx, ny, period, seed)
              + 0.30 * _noise(x * sx * 2.1 + 9, ny * 2, period * 2, seed + 1)
              + 0.15 * _noise(x * sx * 4.3 + 21, ny * 4, period * 4, seed + 2))
@@ -228,7 +228,7 @@ def _meteors(layout, p, P):
     def pix(i, x, y, t):
         along, perp = (x * ca + y * sa) * 0.7, -x * sa + y * ca
         lane = int(math.floor(perp * lanes))
-        u = _fract(along + sp * t + _hh(lane, 7, seed))
+        u = _fract(-along + sp * t + _hh(lane, 7, seed))  # the streak moves along +direction, head first
         if u >= tail:
             return (0, 0, 0)
         return _sc(P.cyc(_hh(lane, 8, seed)), ((1 - u / tail) ** 2) * k)
@@ -615,7 +615,20 @@ _register("pulse", "Heartbeat", [
 # ---- registry API ---------------------------------------------------------
 
 def default_params(effect: str) -> dict:
-    return {x["name"]: x["default"] for x in GENERATORS[effect]["params"]}
+    return {x["name"]: x["default"] for x in catalog()[effect]["params"]}
+
+
+def catalog() -> dict:
+    """Built-in generators plus the user's formula effects ("custom:<name>")."""
+    from . import formula
+    out = {k: {"title": v["title"], "params": v["params"]} for k, v in GENERATORS.items()}
+    out.update(formula.catalog())
+    return out
+
+
+def known(effect: str) -> bool:
+    from . import formula
+    return effect in GENERATORS or effect == "formula" or formula.exists(effect)
 
 
 _cache: dict = {}
@@ -624,10 +637,14 @@ _cache: dict = {}
 def render(effect: str, layout: list, params: dict) -> Rendered:
     """Cached: ensure/play re-renders every configured effect on each call.
     `params` may carry `duration` (s) and `fps`."""
+    from . import formula
     sig = hashlib.md5(repr([(round(p["x"], 5), round(p["y"], 5)) for p in layout]).encode()).hexdigest()
-    key = (effect, json.dumps(params, sort_keys=True), sig, palettes.VERSION)
+    key = (effect, json.dumps(params, sort_keys=True), sig, palettes.VERSION, formula.VERSION)
     if key not in _cache:
         if len(_cache) >= 80:
             _cache.pop(next(iter(_cache)))
-        _cache[key] = GENERATORS[effect]["render"](layout, params)
+        if effect in GENERATORS:
+            _cache[key] = GENERATORS[effect]["render"](layout, params)
+        else:
+            _cache[key] = formula.render_effect(effect, layout, params)
     return _cache[key]

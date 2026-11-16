@@ -146,6 +146,85 @@ def history(entity: str, minutes: float = 30.0) -> list:
     return out
 
 
+def history_points(entity: str, minutes: float = 30.0, on_states=()) -> list:
+    """(epoch seconds, number) of the entity over the last minutes (oldest first). Non-numeric states count as 1 when
+    listed in on_states and as 0 otherwise; unavailable / unknown are skipped."""
+    start = datetime.now(timezone.utc) - timedelta(minutes=minutes)
+    q = urllib.parse.quote(start.strftime("%Y-%m-%dT%H:%M:%S+00:00"))
+    data = _get(f"/history/period/{q}?filter_entity_id={entity}&minimal_response&no_attributes")
+    out = []
+    for st in (data[0] if data else []):
+        text = str(st.get("state", "")).lower()
+        if text in ("unavailable", "unknown", "none", ""):
+            continue
+        try:
+            val = float(text)
+        except ValueError:
+            val = 1.0 if text in on_states else 0.0
+        try:
+            t = datetime.fromisoformat(st.get("last_changed") or st.get("last_updated")).timestamp()
+        except (TypeError, ValueError):
+            t = start.timestamp()
+        out.append((max(t, start.timestamp()), val))
+    return out
+
+
+def resample(points: list, t0: float, t1: float, n: int) -> list:
+    """Values at n evenly spaced moments between t0 and t1: a state holds until the next change (before the first
+    known state the first value is used)."""
+    if not points or n < 1:
+        return []
+    out, k, cur = [], 0, points[0][1]
+    for i in range(n):
+        t = t0 + (t1 - t0) * (i + 1) / n
+        while k < len(points) and points[k][0] <= t:
+            cur = points[k][1]
+            k += 1
+        out.append(cur)
+    return out
+
+
+class ReplaySource:
+    """Plays the history of the inputs back as if it was live: `hours` of data in `seconds` of real time, looping.
+    Works as the `source` of a LiveScene (and its `history` seeds the auto range with the whole replayed period)."""
+
+    def __init__(self, inputs: list, hours: float = 24.0, seconds: float = 90.0, points=None):
+        points = points or history_points
+        self.t1 = time.time()
+        self.t0 = self.t1 - hours * 3600
+        self.n = int(max(60, min(8640, hours * 360)))
+        self.seconds = max(5.0, float(seconds))
+        self.series, self.missing = {}, []
+        for inp in inputs:
+            if inp.get("attribute"):
+                self.missing.append(inp["name"])
+                continue
+            try:
+                self.series[inp["name"]] = resample(points(inp["entity"], hours * 60, inp.get("on_states", ())), self.t0, self.t1, self.n)
+            except HAError as exc:
+                log.info("no history of %s for the replay: %s", inp["entity"], exc)
+            if not self.series.get(inp["name"]):
+                self.series.pop(inp["name"], None)
+                self.missing.append(inp["name"])
+        self.start = time.time()
+
+    def pos(self) -> float:
+        return ((time.time() - self.start) / self.seconds) % 1.0
+
+    def at(self) -> float:
+        """The moment of the replayed period that is on now (epoch seconds)."""
+        return self.t0 + self.pos() * (self.t1 - self.t0)
+
+    def __call__(self, inp: dict):
+        arr = self.series.get(inp["name"])
+        if not arr:
+            return None, None
+        return arr[min(self.n - 1, int(self.pos() * self.n))], None
+
+    def history(self, inp: dict) -> list:
+        return self.series.get(inp["name"]) or []
+
+
 # ---- entity search for the editor -------------------------------------------------------------------------
 
 _all: dict = {"t": 0.0, "items": []}

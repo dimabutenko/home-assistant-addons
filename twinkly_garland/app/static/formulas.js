@@ -4,7 +4,7 @@
 
 const FM = { items: [], examples: [], reference: null, cur: null, orig: null, vals: {}, previewTimer: null,
   tok: 0, anim: null, info: '', status: null, seam: null, previewData: null, loaded: false,
-  ha: null, live: null, readTimer: null, entTimer: null, streams: [] };
+  ha: null, live: null, readTimer: null, entTimer: null, streams: [], hist: {}, histTimer: null, raw: {}, manual: {}, replaySec: 90 };
 
 async function loadFormulas() {
   const r = await api('api/formulas');
@@ -50,8 +50,9 @@ function fmInputs() {
 function fmSpec() { return { code: FM.cur.code, params: fmDefs(), inputs: fmInputs() }; }
 
 function fmSchedule(delay = 700) {
+  fmDrawCharts();  // the charts of the inputs react at once, without waiting for the preview
   clearTimeout(FM.previewTimer);
-  FM.previewTimer = setTimeout(() => { if (FM.live) fmLiveStart(); else fmPreview(); }, delay);
+  FM.previewTimer = setTimeout(() => { if (FM.live) fmLiveStart(!!FM.live.replay); else fmPreview(); }, delay);
 }
 
 function fmDevice() { return (S.status[0] && S.status[0].name) || S.previewDevice; }
@@ -73,15 +74,18 @@ async function fmPreview() {
 }
 
 // ---- live preview: the server computes frames from the current Home Assistant values -------------------------
-async function fmLiveStart() {
+async function fmLiveStart(replay) {
   fmLiveStop(true);
   const dev = fmDevice(); if (!dev) { toast('No device configured.', true); return; }
   const params = {}; for (const d of fmDefs()) params[d.name] = FM.vals[d.name] !== undefined ? FM.vals[d.name] : d.default;
   try {
-    const r = await send('api/live/preview/start', { device: dev, formula: { name: 'live', ...fmSpec() }, params });
+    const r = await send('api/live/preview/start', { device: dev, formula: { name: 'live', ...fmSpec() }, params,
+      replay: replay ? { hours: 24, seconds: FM.replaySec } : undefined });
     const canvas = document.getElementById('fm-canvas'); stopAnim(FM.anim);
     const a = makeAnim(canvas, r.layout, [new Uint8Array(3 * r.layout.length)], 10, 2.6);
-    FM.live = { id: r.id, a, layout: r.layout, timer: null, values: {}, error: null }; FM.status = { ok: true, live: true };
+    FM.live = { id: r.id, a, layout: r.layout, timer: null, values: {}, error: null, replay: !!replay, at: null }; FM.status = { ok: true, live: true };
+    if (r.replay_missing && r.replay_missing.length) toast(`No history for: ${r.replay_missing.join(', ')} (attributes and unknown entities); they keep their default value.`, true, 7000);
+    for (const [name, m] of Object.entries(FM.manual)) if (m.on) fmManualSend(name);
     fmLiveTick(); fmButtons();
   } catch (e) { FM.live = null; FM.status = { ok: false, msg: e.message }; fmShowStatus(); fmButtons(); }
 }
@@ -91,12 +95,12 @@ async function fmLiveTick() {
   try {
     const r = await api(`api/live/preview/${L.id}/frame`);
     if (FM.live !== L) return;
-    L.a.frames[0] = Uint8Array.from(atob(r.frame), c => c.charCodeAt(0)); L.a.last = -1; L.values = r.values; L.error = null;
+    L.a.frames[0] = Uint8Array.from(atob(r.frame), c => c.charCodeAt(0)); L.a.last = -1; L.values = r.values; L.error = null; L.at = r.replay ? r.replay.at : null;
   } catch (e) {
     if (FM.live !== L) return;
     L.error = e.message; if (/expired/.test(e.message)) { fmLiveStart(); return; }
   }
-  fmShowStatus(); fmShowValues();
+  fmShowStatus(); fmShowValues(); fmShowReplay();
   L.timer = setTimeout(fmLiveTick, 125);
 }
 
@@ -108,13 +112,26 @@ function fmLiveStop(keepButtons) {
 }
 
 function fmToggleLive() {
-  if (FM.live) { fmLiveStop(); fmSchedule(0); } else fmLiveStart();
+  if (FM.live && !FM.live.replay) { fmLiveStop(); fmSchedule(0); } else fmLiveStart(false);
+}
+
+function fmToggleReplay() {
+  if (FM.live && FM.live.replay) { fmLiveStop(); fmSchedule(0); } else fmLiveStart(true);
+}
+
+function fmShowReplay() {
+  const el = document.getElementById('fm-replay-clock'); if (!el) return;
+  const L = FM.live;
+  el.textContent = L && L.replay && L.at ? `Replaying: ${new Date(L.at * 1000).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' })} (24 h in ${FM.replaySec} s)` : '';
 }
 
 function fmButtons() {
   const b = document.getElementById('fm-live-btn'); if (!b) return;
-  b.textContent = FM.live ? 'Stop live preview' : 'Live preview (real Home Assistant values)';
-  b.classList.toggle('primary', !!FM.live);
+  const isLive = !!FM.live && !FM.live.replay, isReplay = !!FM.live && FM.live.replay;
+  b.textContent = isLive ? 'Stop live preview' : 'Live preview (real Home Assistant values)';
+  b.classList.toggle('primary', isLive);
+  const rb = document.getElementById('fm-replay-btn');
+  if (rb) { rb.textContent = isReplay ? 'Stop replay' : 'Replay the last 24 h'; rb.classList.toggle('primary', isReplay); }
   const g = document.getElementById('fm-garland-btn'); if (!g) return;
   const on = fmOnGarland();
   g.textContent = on ? `Stop live on the garland (${on.fps} fps)` : 'Play live on the garland';
@@ -141,8 +158,18 @@ async function fmToggleGarland() {
   await fmLoadStreams(); loadStatus();
 }
 
+function fmSetBar(i, v) {
+  const b = document.getElementById(`fm-bar-${i}`); if (b) b.style.width = `${Math.round(Math.max(0, Math.min(1, v)) * 100)}%`;
+}
+
 function fmShowValues() {
   const el = document.getElementById('fm-values'); if (!el || !FM.live) return;
+  FM.cur.inputs.forEach((p, i) => {
+    const v = FM.live.values[(p.name || '').trim()]; if (!v) return;
+    fmSetBar(i, v.value); FM.raw[(p.name || '').trim()] = v.raw;
+    const t = document.getElementById(`fm-vnow-${i}`); if (t) t.textContent = v.value.toFixed(2);
+  });
+  fmDrawCharts();
   el.replaceChildren(...Object.entries(FM.live.values).map(([k, v]) => h('span', { class: 'badge', style: 'margin-right:6px' },
     `${v.kick > 0.25 ? '⚡ ' : ''}${k} ${v.value}` + (v.raw !== null && v.raw !== undefined ? ` (${v.raw})` : ' (n/a)') + (v.count ? ` #${v.count}` : ''))));
 }
@@ -153,7 +180,9 @@ function fmShowStatus() {
   if (!FM.status) { el.textContent = 'Rendering...'; return; }
   if (!FM.status.ok) { el.append(h('span', { class: 'bad' }, FM.status.msg)); return; }
   if (FM.status.live) {
-    el.append(h('span', { class: FM.live && FM.live.error ? 'bad' : 'ok' }, FM.live && FM.live.error ? FM.live.error : 'Live: computed on the server from the current values, about 8 frames per second.'));
+    el.append(h('span', { class: FM.live && FM.live.error ? 'bad' : 'ok' }, FM.live && FM.live.error ? FM.live.error
+      : FM.live && FM.live.replay ? 'Replay: the history of the inputs is played back fast, so you can see how the scene looks through a whole day.'
+        : 'Live: computed on the server from the current values, about 8 frames per second.'));
     return;
   }
   const seamOk = FM.seam === null || FM.seam <= 2.5;
@@ -215,11 +244,117 @@ function fmSuggest(q) {
   }, 300);
 }
 
+// ---- charts and manual values of the inputs ---------------------------------------------------------------------------------------
+async function fmLoadHist(force) {
+  if (!FM.cur || !FM.ha || !FM.ha.available) return;
+  const need = fmInputs().filter(i => { const k = `${i.entity}|${i.attribute}`, h0 = FM.hist[k]; return force || !h0 || Date.now() - h0.at > 120000; });
+  if (!need.length) { fmDrawCharts(); return; }
+  try {
+    const res = await send('api/ha/history', { inputs: need, minutes: 30 });
+    for (const r of res) { const i = need.find(x => x.name === r.name); if (i) FM.hist[`${i.entity}|${i.attribute}`] = { ...r, at: Date.now() }; }
+  } catch { /* the charts stay as they were */ }
+  fmDrawCharts();
+}
+
+function fmChartSim(vals, lo, hi, thr, dt) {  // the same event rule as the live scene: a jump of the target away from its slow baseline
+  const ev = []; let base = null, last = -1e9;
+  vals.forEach((v, k) => {
+    const tg = Math.min(1, Math.max(0, (v - lo) / (hi - lo))); if (base === null) base = tg;
+    const t = k * dt, jump = tg - base;
+    if (t > 4 && Math.abs(jump) > thr && t - last > 0.8) { ev.push(k); base = tg; last = t; } else base += (tg - base) * (1 - Math.exp(-dt / 5));
+  });
+  return ev;
+}
+
+const BLUE = '#3b82f6';
+function fmDrawChart(cv, p, hist) {
+  const ctx = cv.getContext('2d'), W = cv.width, H = cv.height, css = getComputedStyle(document.documentElement);
+  const col = n => css.getPropertyValue(n).trim();
+  ctx.clearRect(0, 0, W, H); ctx.fillStyle = col('--bg'); ctx.fillRect(0, 0, W, H);
+  ctx.font = '11px system-ui, sans-serif'; ctx.textBaseline = 'middle';
+  const msg = t => { ctx.fillStyle = col('--muted'); ctx.fillText(t, 8, H / 2); };
+  if (!FM.ha || !FM.ha.available) return msg('Home Assistant data is not available here.');
+  if (!p.entity) return msg('Pick an entity to see its last 30 minutes.');
+  if (!hist) return msg('Loading the history...');
+  if (hist.error || !hist.values || !hist.values.length) return msg(hist.error || 'No history.');
+  const vals = hist.values, n = vals.length, mn = Number(p.min), mx = Number(p.max), thr = Number(p.kick === '' || p.kick === undefined ? 0.12 : p.kick);
+  let lo = mn, hi = mx;
+  if (p.auto) {
+    lo = Math.min(...vals); hi = Math.max(...vals);
+    const span = Math.max(Math.abs(mx - mn) * 0.05, 1e-9);
+    if (hi - lo < span) { const mid = (hi + lo) / 2; lo = mid - span / 2; hi = mid + span / 2; }
+  }
+  if (!(hi > lo)) return msg('"→ 1" must be larger than "→ 0".');
+  const raw = FM.raw[(p.name || '').trim()];
+  const all = [lo, hi, ...vals].concat(raw !== undefined && raw !== null ? [raw] : []);
+  let vmin = Math.min(...all), vmax = Math.max(...all); const pad = (vmax - vmin) * 0.08 || 1; vmin -= pad; vmax += pad;
+  const L = 6, R = W - 6, T = 8, B = H - 16, y = v => B - (v - vmin) / (vmax - vmin) * (B - T), x = k => L + (R - L) * k / (n - 1);
+  ctx.fillStyle = BLUE; ctx.globalAlpha = 0.1; ctx.fillRect(L, y(hi), R - L, y(lo) - y(hi)); ctx.globalAlpha = 1;  // the range that maps to 0..1
+  ctx.setLineDash([4, 3]); ctx.strokeStyle = col('--muted'); ctx.lineWidth = 1;
+  for (const v of [lo, hi]) { ctx.beginPath(); ctx.moveTo(L, y(v)); ctx.lineTo(R, y(v)); ctx.stroke(); }
+  ctx.setLineDash([]); ctx.fillStyle = col('--muted');
+  const fmt = v => Math.abs(v) >= 100 ? String(Math.round(v)) : String(Math.round(v * 100) / 100);
+  ctx.fillText(`1 = ${fmt(hi)}${p.auto ? ' (auto)' : ''}`, L + 2, y(hi) - 6); ctx.fillText(`0 = ${fmt(lo)}${p.auto ? ' (auto)' : ''}`, L + 2, y(lo) - 6);
+  const dt = (hist.t1 - hist.t0) / n, ev = fmChartSim(vals, lo, hi, thr, dt);
+  ctx.strokeStyle = col('--warn'); ctx.globalAlpha = 0.55; ctx.lineWidth = 1.5;
+  for (const k of ev) { ctx.beginPath(); ctx.moveTo(x(k), T); ctx.lineTo(x(k), B); ctx.stroke(); }
+  ctx.globalAlpha = 1; ctx.lineWidth = 1.6;
+  for (let k = 1; k < n; k++) {
+    const out = vals[k] < lo || vals[k] > hi; ctx.strokeStyle = out ? col('--bad') : BLUE;
+    ctx.beginPath(); ctx.moveTo(x(k - 1), y(vals[k - 1])); ctx.lineTo(x(k), y(vals[k])); ctx.stroke();
+  }
+  if (raw !== undefined && raw !== null) { ctx.fillStyle = col('--fg'); ctx.beginPath(); ctx.arc(R - 2, y(raw), 3.5, 0, 7); ctx.fill(); }
+  ctx.fillStyle = col('--muted'); ctx.textBaseline = 'alphabetic';
+  const mins = Math.round((hist.t1 - hist.t0) / 60); ctx.fillText(`-${mins} min`, L, H - 3);
+  ctx.textAlign = 'right'; ctx.fillText(`${ev.length} event${ev.length === 1 ? '' : 's'} in ${mins} min · red = beyond the range (clipped) · orange = event`, R, H - 3); ctx.textAlign = 'left';
+}
+
+function fmDrawCharts() {
+  if (!FM.cur) return;
+  FM.cur.inputs.forEach((p, i) => {
+    const cv = document.getElementById(`fm-ch-${i}`); if (!cv) return;
+    fmDrawChart(cv, p, FM.hist[`${(p.entity || '').trim()}|${(p.attribute || '').trim()}`]);
+  });
+}
+
+async function fmManualSend(name, kick) {
+  if (!FM.live) return;
+  const m = FM.manual[name] || {};
+  try { await send(`api/live/preview/${FM.live.id}/manual`, { name, value: m.on ? m.v : null, kick: !!kick }); } catch { /* the input was removed or the preview expired */ }
+}
+
+async function fmEnsureLive() { if (!FM.live) await fmLiveStart(false); return !!FM.live; }
+
+function fmTryRow(p, i) {
+  const name = (p.name || '').trim(), m = FM.manual[name] || (FM.manual[name] = { on: false, v: 0.5 });
+  let busy = false;
+  const val = h('span', { id: `fm-vnow-${i}`, class: 'muted' }, ''), cb = h('input', { type: 'checkbox', checked: m.on });
+  const rng = h('input', { type: 'range', min: 0, max: 1, step: 0.01, value: m.v });
+  rng.oninput = () => {
+    m.v = Number(rng.value); m.on = true; cb.checked = true;
+    if (!busy) { busy = true; setTimeout(async () => { busy = false; if (await fmEnsureLive()) fmManualSend(name); }, 80); }
+  };
+  cb.onchange = async () => { m.on = cb.checked; if (await fmEnsureLive()) fmManualSend(name); };
+  return h('div', { class: 'fm-try' },
+    h('strong', {}, name || `input ${i + 1}`), h('label', { class: 'muted' }, cb, ' by hand'), rng,
+    h('button', { class: 'small', title: 'fire an event of this input (name_kick, name_count...)', onclick: async () => { if (await fmEnsureLive()) fmManualSend(name, true); } }, '⚡ event'),
+    h('div', { class: 'bar', title: 'the value the formula gets now (0..1, smoothed)' }, h('div', { id: `fm-bar-${i}`, style: 'width:0%' })), val);
+}
+
+function fmMonitor(c) {
+  if (!c.inputs.length) return null;
+  return h('div', { class: 'card', style: 'margin-bottom:10px' },
+    h('h3', {}, 'Watch and try the inputs'),
+    h('div', { class: 'muted', style: 'margin-bottom:8px' }, 'Each chart shows the last 30 minutes of the sensor in its own units. The shaded band is the range that becomes 0..1 (the "→ 0" and "→ 1" values, or the auto range): change them above and the chart follows at once. The dot at the right edge is the value now. Below each chart you can take the input into your own hands: move the slider (or press the event button) and the preview shows what the formula does, whatever the sensor says. The preview starts by itself. "Replay the last 24 h" under the preview plays the whole past day back fast.'),
+    c.inputs.map((p, i) => h('div', { style: 'margin-bottom:12px' },
+      h('canvas', { id: `fm-ch-${i}`, class: 'fm-chart', width: 640, height: 96 }), fmTryRow(p, i))));
+}
+
 function fmInputRow(p, i) {
   return h('div', { class: 'fm-input' },
     h('input', { type: 'text', placeholder: 'name', value: p.name, size: 6, oninput: e => { p.name = e.target.value; fmSchedule(); } }),
-    h('input', { type: 'text', placeholder: 'sensor.entity_id', list: 'fm-ents', value: p.entity, oninput: e => { p.entity = e.target.value; fmSuggest(e.target.value); }, onchange: () => fmSchedule() }),
-    h('input', { type: 'text', placeholder: 'attribute (optional)', value: p.attribute || '', onchange: e => { p.attribute = e.target.value; fmSchedule(); } }),
+    h('input', { type: 'text', placeholder: 'sensor.entity_id', list: 'fm-ents', value: p.entity, oninput: e => { p.entity = e.target.value; fmSuggest(e.target.value); }, onchange: () => { fmSchedule(); fmLoadHist(); } }),
+    h('input', { type: 'text', placeholder: 'attribute (optional)', value: p.attribute || '', onchange: e => { p.attribute = e.target.value; fmSchedule(); fmLoadHist(); } }),
     h('input', { type: 'number', step: 'any', value: p.min, title: 'value mapped to 0', onchange: e => { p.min = e.target.value; fmSchedule(); } }),
     h('input', { type: 'number', step: 'any', value: p.max, title: 'value mapped to 1', onchange: e => { p.max = e.target.value; fmSchedule(); } }),
     h('input', { type: 'number', step: 'any', value: p.smooth === undefined ? 2 : p.smooth, title: 'smoothing, seconds', onchange: e => { p.smooth = e.target.value; fmSchedule(); } }),
@@ -239,7 +374,9 @@ async function fmReadInputs() {
       const el = document.getElementById(`fm-now-${i}`), r = res.find(x => x.name === (p.name || '').trim()); if (!el) return;
       el.textContent = !r ? '' : r.error ? r.error : r.value === null ? 'n/a' : `${r.raw} → ${r.value}`;
       el.className = r && r.error ? 'bad' : 'muted';
+      if (r && r.raw !== null && r.raw !== undefined && !FM.live) { FM.raw[r.name] = r.raw; fmSetBar(i, r.value); }
     });
+    fmDrawCharts();
   } catch { /* ignore */ }
 }
 
@@ -248,6 +385,7 @@ function renderFormulas() {
   if (!FM.loaded) { root.textContent = 'Loading...'; loadFormulas().then(renderFormulas).catch(e => root.textContent = 'Failed to load: ' + e.message); return; }
   const c = FM.cur;
   if (!FM.readTimer) FM.readTimer = setInterval(fmReadInputs, 3000);
+  if (!FM.histTimer) FM.histTimer = setInterval(() => { if (!document.getElementById('view-formulas').hidden) fmLoadHist(); }, 60000);
   const top = h('div', { class: 'card', style: 'margin-bottom:12px' },
     h('h2', {}, 'Formula effects'),
     h('div', { class: 'muted', style: 'margin-bottom:8px' }, 'Describe the colour of every LED with a few lines of maths: it is a function of the position (x, y), the loop time t, your own sliders and, if you like, live data from Home Assistant. The preview shows it on the real layout. Saved formulas appear as generators in the effect editor, so they can be mixed in layers like the built-in ones.'),
@@ -273,6 +411,11 @@ function renderFormulas() {
       h('div', { class: 'card' }, h('h2', {}, 'Preview'), canvas, h('div', { id: 'fm-status', class: 'muted' }, 'Rendering...'),
         h('div', { id: 'fm-values', style: 'margin-top:6px' }),
         h('div', { class: 'row', style: 'margin-top:8px' }, h('button', { id: 'fm-garland-btn', class: '', onclick: fmToggleGarland, title: 'Streams the formula to the garland in real time, with live Home Assistant values' }, 'Play live on the garland'), h('button', { id: 'fm-live-btn', disabled: !(FM.ha && FM.ha.available) && !fmInputs().length, onclick: fmToggleLive, title: 'Computes frames on the server from the current values of the inputs' }, 'Live preview (real Home Assistant values)')),
+        h('div', { class: 'row', style: 'margin-top:8px' },
+          h('button', { id: 'fm-replay-btn', disabled: !fmInputs().length || !(FM.ha && FM.ha.available), onclick: fmToggleReplay, title: 'Plays the last 24 hours of the inputs back fast, so you see the scene through a whole day' }, 'Replay the last 24 h'),
+          h('select', { title: 'how long the 24 hours take', onchange: e => { FM.replaySec = Number(e.target.value); if (FM.live && FM.live.replay) fmLiveStart(true); } },
+            [45, 90, 180, 360].map(sec => h('option', { value: sec, selected: sec === FM.replaySec }, sec < 100 ? `24 h in ${sec} s` : `24 h in ${sec / 60} min`))),
+          h('span', { id: 'fm-replay-clock', class: 'muted' }, '')),
         defs.length ? h('div', { style: 'margin-top:8px' }, h('h3', {}, 'Try the parameters'),
           h('div', { class: 'params' }, defs.map(d => {
             const v = FM.vals[d.name] !== undefined ? FM.vals[d.name] : d.default, step = (d.max - d.min) / 100;
@@ -296,6 +439,7 @@ function renderFormulas() {
         c.inputs.map(fmInputRow),
         h('datalist', { id: 'fm-ents' }),
         h('button', { class: 'small', disabled: c.inputs.length >= 8, onclick: () => { c.inputs.push({ name: 'in' + (c.inputs.length + 1), entity: '', attribute: '', min: 0, max: 100, smooth: 0.4, default: 0.5, auto: true, kick: 0.12 }); renderFormulas(); } }, '+ input')),
+      fmMonitor(c),
       h('div', { class: 'row', style: 'margin-bottom:10px' },
         h('button', { class: 'primary', onclick: fmSave }, 'Save'),
         h('button', { onclick: fmMakeEffect, title: 'Save and create an effect in the library that uses this formula' }, 'Save & make an effect'),
@@ -304,5 +448,5 @@ function renderFormulas() {
         h('ul', {}, ref.rules.map(t => h('li', {}, t))),
         h('h3', {}, 'Variables'), h('ul', {}, ref.variables.map(t => h('li', {}, t))),
         h('h3', {}, 'Functions'), h('ul', { class: 'fm-funcs' }, ref.functions.map(t => h('li', {}, t)))))));
-  fmShowStatus(); fmButtons(); fmShowValues(); setTimeout(fmReadInputs, 200); fmLoadStreams();
+  fmShowStatus(); fmButtons(); fmShowValues(); fmShowReplay(); setTimeout(fmReadInputs, 200); fmLoadStreams(); fmLoadHist(); setTimeout(fmDrawCharts, 50);
 }

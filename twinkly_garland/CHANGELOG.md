@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.13.0
+- **Watch and try the inputs** (Formulas tab, under the inputs table): a chart per input with the last 30 minutes of the sensor in its own units, the range that becomes 0..1 (your "→ 0" / "→ 1" or the auto range) as a shaded band, the value now as a dot, parts beyond the range in red and the events that would fire (your "event" threshold) as orange lines. Changing a number above redraws the chart at once.
+- **By hand**: a slider and an event button per input. The preview starts by itself and the formula gets your value instead of the sensor (smoothing and events work as usual), so you see what each input does.
+- **Replay the last 24 h**: plays the history of the inputs back fast (24 h in 45 s to 6 min, looping, with a clock) to see how a scene looks through a whole day. Inputs with an attribute have no history and keep their default.
+- New API: `POST api/ha/history`, `POST api/live/preview/<id>/manual`, `replay` in `api/live/preview/start`.
+
 ## 0.12.0
 - **Garlands as Home Assistant lights (MQTT discovery).** Set `mqtt_host`, `mqtt_port`, `mqtt_user`, `mqtt_password` in the add-on options (the user and password can be `!secret` references) and every configured device appears in Home Assistant as a `light` named after the device (`light.<device name>`, e.g. `light.balcony`): on/off, brightness, and an effect list made of the library effects, `random`, `live:random` and `live:<scene>`. Diagnostic sensors: live scene, fps, slowest ping, re-logins. Availability follows the add-on and the device. Without `mqtt_host` nothing changes.
 - The add-on becomes the only client of the garlands, so the Home Assistant Twinkly integration can be removed (two clients fight for the device's single login token).

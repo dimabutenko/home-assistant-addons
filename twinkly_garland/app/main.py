@@ -310,6 +310,37 @@ def api_ha_read(req: HAReadReq):
     return out
 
 
+class HAHistoryReq(BaseModel):
+    inputs: list[dict]
+    minutes: float = 30.0
+
+
+@app.post("/api/ha/history")
+def api_ha_history(req: HAHistoryReq):
+    """The recent course of each input (raw numbers, evenly spaced) for the charts of the editor."""
+    minutes = max(5.0, min(1440.0, req.minutes))
+    try:
+        clean = formula.clean_inputs(req.inputs, set())
+    except formula.FormulaError as exc:
+        raise HTTPException(400, str(exc))
+    out, t1 = [], time.time()
+    for inp in clean:
+        item = {"name": inp["name"], "t0": t1 - minutes * 60, "t1": t1}
+        if inp.get("attribute"):
+            item["error"] = "no history for attributes"
+        else:
+            try:
+                pts = hadata.history_points(inp["entity"], minutes, inp.get("on_states", ()))
+                vals = hadata.resample(pts, t1 - minutes * 60, t1, 900)
+                item["values"] = [round(v, 4) for v in vals]
+                if not vals:
+                    item["error"] = "no history in this period"
+            except hadata.HAError as exc:
+                item["error"] = str(exc)
+        out.append(item)
+    return out
+
+
 @app.get("/api/health")
 def api_health():
     """Cheap check for the Supervisor watchdog (does not call Home Assistant or the garlands)."""
@@ -405,22 +436,33 @@ class LiveStart(BaseModel):
     device: str
     formula: dict
     params: dict = {}
+    replay: dict | None = None  # {"hours": 24, "seconds": 90}: play the history back instead of the current values
 
 
 @app.post("/api/live/preview/start")
 def api_live_preview_start(req: LiveStart):
     """A live preview in the browser: frames computed on request from the current Home Assistant values."""
     layout = device.render_layout(find_device(req.device))
+    replay = None
     try:
-        scene = live.LiveScene(req.formula, layout, req.params)
+        if req.replay is not None:
+            spec = formula.validate_item({"name": "live", **req.formula})
+            hours = max(1.0, min(168.0, float(req.replay.get("hours", 24))))
+            replay = hadata.ReplaySource(spec["inputs"], hours, float(req.replay.get("seconds", 90)))
+            scene = live.LiveScene(req.formula, layout, req.params, source=replay, history=replay.history)
+        else:
+            scene = live.LiveScene(req.formula, layout, req.params)
+    except hadata.HAError as exc:
+        raise HTTPException(502, str(exc))
     except (formula.FormulaError, ValueError) as exc:
         raise HTTPException(400, str(exc))
     sid = uuid.uuid4().hex[:12]
     with _live_lock:
         for k in [k for k, v in _live.items() if time.time() - v["touched"] > LIVE_IDLE_S]:
             _live.pop(k, None)
-        _live[sid] = {"scene": scene, "touched": time.time(), "lock": threading.Lock()}
-    return {"id": sid, "layout": [[p["x"], p["y"]] for p in layout], "ha": hadata.available()}
+        _live[sid] = {"scene": scene, "touched": time.time(), "lock": threading.Lock(), "replay": replay}
+    return {"id": sid, "layout": [[p["x"], p["y"]] for p in layout], "ha": hadata.available(),
+            "replay_missing": replay.missing if replay else []}
 
 
 @app.get("/api/live/preview/{sid}/frame")
@@ -434,7 +476,33 @@ def api_live_preview_frame(sid: str):
             frame = s["scene"].frame()
         except formula.FormulaError as exc:
             raise HTTPException(400, str(exc))
-        return {"frame": base64.b64encode(frame).decode(), "values": s["scene"].values()}
+        out = {"frame": base64.b64encode(frame).decode(), "values": s["scene"].values()}
+        if s.get("replay") is not None:
+            out["replay"] = {"pos": round(s["replay"].pos(), 4), "at": round(s["replay"].at())}
+        return out
+
+
+class LiveManual(BaseModel):
+    name: str
+    value: float | None = None  # 0..1 by hand, null = back to the sensor
+    kick: bool = False          # fire an event of this input
+
+
+@app.post("/api/live/preview/{sid}/manual")
+def api_live_preview_manual(sid: str, req: LiveManual):
+    s = _live.get(sid)
+    if s is None:
+        raise HTTPException(404, "the live preview expired")
+    s["touched"] = time.time()
+    scene = s["scene"]
+    if req.name not in scene.trk:
+        raise HTTPException(404, f"unknown input {req.name!r}")
+    with s["lock"]:
+        if req.kick:
+            scene.fire(req.name)
+        else:
+            scene.set_manual(req.name, req.value)
+    return {"ok": True}
 
 
 @app.post("/api/live/preview/{sid}/stop")

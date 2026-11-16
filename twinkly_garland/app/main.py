@@ -6,18 +6,21 @@ import logging
 import os
 import random
 import re
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
 
-from . import device, effects
+from . import compose, device, effects, palettes
 
 OPTIONS_PATH = Path(os.environ.get("OPTIONS_PATH", "/data/options.json"))
 STATIC = Path(__file__).parent / "static"
 KEY_RE = re.compile(r"^[A-Za-z0-9 _-]{1,32}$")
+GALLERY_STEP = 3  # thumbnails use every 3rd frame
 
 log = logging.getLogger("twinkly")
 logging.basicConfig(level=logging.INFO)
@@ -51,12 +54,18 @@ def _seeded_path() -> Path:
     return device.DATA_DIR / "seeded.json"
 
 
+def save_instances(items: list) -> None:
+    p = _instances_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(items, indent=1))
+
+
 def load_instances() -> list:
-    """Saved instances plus one default instance per generator that was never
-    seeded before (so new generators appear after an add-on update; a deleted
-    instance is not brought back)."""
+    """Saved instances (old single-effect ones converted to layers) plus one default
+    instance per generator that was never seeded before, so new generators appear
+    after an add-on update; a deleted instance is not brought back."""
     try:
-        items = json.loads(_instances_path().read_text())
+        items = [compose.normalize(i) for i in json.loads(_instances_path().read_text())]
     except (OSError, ValueError):
         items = []
     try:
@@ -68,20 +77,14 @@ def load_instances() -> list:
         have = {i["key"] for i in items}
         for g in new:
             if g not in have:
-                items.append({"key": g, "effect": g, "params": {}, "devices": []})
+                items.append(compose.default_instance(g))
         save_instances(items)
         _seeded_path().write_text(json.dumps(sorted(seeded | set(new))))
     return items
 
 
-def save_instances(items: list) -> None:
-    p = _instances_path()
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(items, indent=1))
-
-
 def desired_for(dev: dict) -> list:
-    return device.build_desired(dev, load_instances(), effects.render)
+    return device.build_desired(dev, load_instances(), compose.render_instance)
 
 
 # ---- background reconcile ----------------------------------------------
@@ -99,8 +102,7 @@ def ensure_all() -> list:
 
 async def _auto_loop():
     while True:
-        opts = options()
-        await asyncio.sleep(int(opts.get("ensure_interval_min", 60)) * 60)
+        await asyncio.sleep(int(options().get("ensure_interval_min", 60)) * 60)
         if options().get("auto_ensure"):
             await asyncio.get_running_loop().run_in_executor(None, ensure_all)
 
@@ -113,9 +115,143 @@ async def lifespan(_app):
 
 
 app = FastAPI(title="Twinkly Garland", lifespan=lifespan)
+app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
 
-# ---- API ----------------------------------------------------------------
+# ---- models -----------------------------------------------------------------
+
+class Mask(BaseModel):
+    type: str = "none"
+    from_: float = Field(0.0, alias="from")
+    to: float = 1.0
+    invert: bool = False
+
+    model_config = {"populate_by_name": True}
+
+
+class Layer(BaseModel):
+    effect: str
+    params: dict = {}
+    blend: str = "normal"
+    opacity: float = 1.0
+    mask: Mask = Mask()
+
+
+class Instance(BaseModel):
+    key: str
+    layers: list[Layer]
+    duration: int = 10
+    fps: int = 10
+    on_device: bool = True
+    rotation: bool = True
+    weight: int = 1
+    devices: list[str] = []
+
+
+def _check_instance(i: Instance) -> None:
+    if not KEY_RE.match(i.key):
+        raise HTTPException(400, f"bad name {i.key!r}: 1-32 letters, digits, space, _ or -")
+    if not 1 <= len(i.layers) <= 4:
+        raise HTTPException(400, "an effect needs 1-4 layers")
+    if not 4 <= i.duration <= 30 or not 5 <= i.fps <= 15:
+        raise HTTPException(400, "duration must be 4-30 s and fps 5-15")
+    if not 1 <= i.weight <= 5:
+        raise HTTPException(400, "weight must be 1-5")
+    for ly in i.layers:
+        if ly.effect not in effects.GENERATORS:
+            raise HTTPException(400, f"unknown generator {ly.effect!r}")
+        if ly.blend not in compose.BLENDS or ly.mask.type not in compose.MASKS:
+            raise HTTPException(400, "bad blend or mask type")
+
+
+def _dump(i: Instance) -> dict:
+    return compose.normalize(i.model_dump(by_alias=True))
+
+
+# ---- API: static data ---------------------------------------------------------
+
+@app.get("/api/effects")
+def api_effects():
+    return {k: {"title": v["title"], "params": v["params"]} for k, v in effects.GENERATORS.items()}
+
+
+@app.get("/api/palettes")
+def api_palettes():
+    return palettes.listing()
+
+
+class PaletteIn(BaseModel):
+    name: str
+    stops: list[list]
+
+
+@app.put("/api/palettes")
+def api_save_palettes(items: list[PaletteIn]):
+    try:
+        palettes.save([i.model_dump() for i in items])
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(400, str(exc))
+    return {"saved": len(items)}
+
+
+@app.get("/api/instances")
+def api_instances():
+    return load_instances()
+
+
+@app.put("/api/instances")
+def api_save_instances(items: list[Instance]):
+    keys = [i.key for i in items]
+    if len(set(keys)) != len(keys):
+        raise HTTPException(400, "duplicate names")
+    for i in items:
+        _check_instance(i)
+    save_instances([_dump(i) for i in items])
+    return {"saved": len(items)}
+
+
+# ---- API: preview / gallery ----------------------------------------------------
+
+def _b64(frames: list, step: int = 1) -> list:
+    return [base64.b64encode(f).decode() for f in frames[::step]]
+
+
+class PreviewReq(BaseModel):
+    instance: Instance
+    device: str
+
+
+@app.post("/api/preview")
+def api_preview(req: PreviewReq):
+    """Render on the server, play in the browser against the real layout."""
+    _check_instance(req.instance)
+    layout = device.get_layout(find_device(req.device))
+    t0 = time.time()
+    r = compose.render_instance(_dump(req.instance), layout)
+    return {"fps": r.fps, "layout": [[p["x"], p["y"]] for p in layout], "frames": _b64(r.frames),
+            "render_ms": int((time.time() - t0) * 1000)}
+
+
+@app.get("/api/gallery")
+def api_gallery(device_name: str = ""):
+    """Small animated thumbnails of every saved effect on a device's layout."""
+    dev = find_device(device_name) if device_name else (devices() or [None])[0]
+    if dev is None:
+        return {"layout": [], "items": []}
+    layout = device.get_layout(dev)
+    items = []
+    for inst in load_instances():
+        try:
+            r = compose.render_instance(inst, layout)
+        except Exception as exc:
+            log.warning("gallery render %s failed: %s", inst["key"], exc)
+            continue
+        items.append({"key": inst["key"], "fps": r.fps / GALLERY_STEP, "frames": _b64(r.frames, GALLERY_STEP),
+                      "frames_total": len(r.frames)})
+    return {"layout": [[p["x"], p["y"]] for p in layout], "items": items}
+
+
+# ---- API: devices ---------------------------------------------------------------
 
 def probe(dev: dict) -> dict:
     info = {"name": dev["name"], "host": dev["host"], "online": False}
@@ -128,6 +264,12 @@ def probe(dev: dict) -> dict:
             for m in movies["movies"]
         ]
         info["available_frames"] = movies["available_frames"]
+        info["capacity"] = movies["max_capacity"]
+        info["mode"] = device.retry(ci.get_mode).get("mode")
+        try:
+            info["current_uid"] = (device.retry(ci.get_movies_current).get("unique_id") or "").upper()
+        except Exception:
+            info["current_uid"] = ""
         info["online"] = True
     except Exception as exc:
         info["error"] = type(exc).__name__
@@ -139,55 +281,27 @@ def api_devices():
     return [probe(d) for d in devices()]
 
 
-@app.get("/api/effects")
-def api_effects():
-    return {k: {"title": v["title"], "params": v["params"]} for k, v in effects.GENERATORS.items()}
-
-
-@app.get("/api/instances")
-def api_instances():
-    return load_instances()
-
-
-class Instance(BaseModel):
-    key: str
-    effect: str
-    params: dict = {}
-    devices: list[str] = []
-
-
-@app.put("/api/instances")
-def api_save_instances(items: list[Instance]):
-    keys = [i.key for i in items]
-    if len(set(keys)) != len(keys):
-        raise HTTPException(400, "duplicate keys")
-    for i in items:
-        if not KEY_RE.match(i.key):
-            raise HTTPException(400, f"bad key {i.key!r}")
-        if i.effect not in effects.GENERATORS:
-            raise HTTPException(400, f"unknown effect {i.effect!r}")
-    save_instances([i.model_dump() for i in items])
-    return {"saved": len(items)}
-
-
-class PreviewReq(BaseModel):
-    effect: str
-    params: dict = {}
-    device: str
-
-
-@app.post("/api/preview")
-def api_preview(req: PreviewReq):
-    """Render on the server, play in the browser against the real layout."""
-    if req.effect not in effects.GENERATORS:
-        raise HTTPException(400, "unknown effect")
-    layout = device.get_layout(find_device(req.device))
-    r = effects.render(req.effect, layout, req.params)
-    return {
-        "fps": r.fps,
-        "layout": [[p["x"], p["y"]] for p in layout],
-        "frames": [base64.b64encode(f).decode() for f in r.frames],
-    }
+@app.get("/api/status")
+def api_status():
+    """Per device: what is stored, what is playing, what is wanted and whether they match."""
+    out = []
+    for dev in devices():
+        info = probe(dev)
+        if info["online"]:
+            try:
+                desired = desired_for(dev)
+                pl = device.plan(dev, desired)
+                by_uid = {m["uid"]: m["key"] for m in desired}
+                info["stored"] = [{"key": by_uid.get(m["unique_id"].upper()), "name": m["name"], "frames": m["frames"]}
+                                  for m in info["movies"]]
+                info["playing_key"] = by_uid.get(info["current_uid"]) if info["mode"] == "movie" else None
+                info["desired_frames"] = pl["frames_needed"]
+                info["plan"] = {"action": pl["action"], "missing": pl["missing"], "extra": pl["extra"]}
+                info["fits"] = pl["fits"]
+            except Exception as exc:
+                info["status_error"] = str(exc)
+        out.append(info)
+    return out
 
 
 @app.post("/api/devices/{name}/layout/refresh")
@@ -216,14 +330,15 @@ def api_ensure_all():
 
 
 class PlayReq(BaseModel):
-    effect: str  # instance key
+    effect: str  # instance name, or "random"
     devices: list[str] = []  # empty = every configured device
 
 
 @app.post("/api/play")
 def api_play(req: PlayReq):
-    """Play effect `key` on the given devices. Reconciles first when the device
-    drifted (e.g. a firmware update wiped the movies), so playback never breaks."""
+    """Play an effect on the given devices. Reconciles first when a device drifted
+    (e.g. a firmware update wiped the movies), so playback never breaks.
+    `random` picks one effect, common to all target devices, among those marked for rotation (weighted)."""
     names = req.devices or [d["name"] for d in devices()]
     desired_by_dev = {}
     errors = {}
@@ -236,21 +351,26 @@ def api_play(req: PlayReq):
 
     key = req.effect
     if key == "random":
-        # One key for every device, so garlands stay in sync with each other.
         common = None
+        weights = {}
         for desired in desired_by_dev.values():
-            keys = {m["key"] for m in desired}
+            keys = set()
+            for m in desired:
+                if m["rotation"]:
+                    keys.add(m["key"])
+                    weights[m["key"]] = m["weight"]
             common = keys if common is None else common & keys
         if not common:
-            raise HTTPException(404, "no effect is configured for all of the target devices")
-        key = random.choice(sorted(common))
+            raise HTTPException(404, "no effect is both on the garland and in the rotation for all target devices")
+        pool = sorted(common)
+        key = random.choices(pool, weights=[weights[k] for k in pool])[0]
 
     out = [{"device": n, "error": e} for n, e in errors.items()]
     for n, desired in desired_by_dev.items():
         dev = find_device(n)
         try:
             if not any(m["key"] == key for m in desired):
-                raise KeyError(f"effect {key!r} is not configured for {n}")
+                raise KeyError(f"effect {key!r} is not enabled on {n}")
             res = device.ensure(dev, desired, play_key=key)
             if res["action"] == "ok":
                 device.play(dev, desired, key)

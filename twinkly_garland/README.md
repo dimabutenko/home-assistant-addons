@@ -13,19 +13,21 @@ Open the web UI from the "Garland" sidebar entry (ingress).
 
 ## How it works
 
-- Effects are code (generators in `app/effects.py`), saved as named instances in `/data/instances.json`.
-- Each instance is rendered against the device's real LED layout and stored on the device as a movie.
-  The movie's `unique_id` is derived from the instance key and a hash of the rendered content,
-  so the device itself tells which version it holds.
-- **Ensure** compares the stored movies with the desired set. On any difference it wipes and re-uploads
-  everything (the firmware cannot delete a single movie). This repairs a device after a firmware update
-  wiped its movies.
-- **Play** resolves the instance key to the right movie on each device (selection is by index, which shifts,
-  so it is always re-resolved) and reconciles first if the device drifted.
+- An **effect** is 1-4 **layers** (generator + palette + parameters + mix mode + opacity + mask) saved in the library
+  (`/data/instances.json`). Palettes are shared gradients (`/data/palettes.json`).
+- Each effect marked **On the garland** is rendered against the device's real LED layout and stored on the device as a movie.
+  The movie's `unique_id` is derived from the effect name and a hash of the rendered content, so the device itself tells
+  which version it holds.
+- **Sync (ensure)** compares the stored movies with the wanted set. On any difference it switches the LEDs off, wipes and
+  re-uploads everything (the firmware can only delete all movies at once, and only while the LEDs are off). This repairs a
+  device after a firmware update wiped its movies.
+- **Play** resolves the effect name to the right movie on each device (selection is by index, which shifts, so it is always
+  re-resolved) and syncs first if the device drifted. Re-selecting the already playing effect is a no-op.
+- **In rotation** effects (with a weight 1-5) are the pool for `effect: "random"`.
 - The editor previews an effect in the browser against the real layout before anything is sent.
 
 ## HTTP API (also usable from HA `rest_command`)
 
-- `POST api/play` with `{"effect": "<key>", "devices": ["<name>", ...]}` (empty list = all devices). `effect` may be `"random"`: one key common to all target devices is picked. Returns 502 if no device could play it.
+- `POST api/play` with `{"effect": "<key>", "devices": ["<name>", ...]}` (empty list = all devices). `effect` may be `"random"`: one effect that is on every target device and in the rotation is picked (weighted). Returns 502 if no device could play it.
 - `POST api/ensure`, `POST api/devices/<name>/ensure`, `GET api/devices/<name>/plan`
-- `GET|PUT api/instances`, `POST api/preview`, `GET api/devices`, `GET api/effects`
+- `GET|PUT api/instances`, `GET|PUT api/palettes`, `POST api/preview`, `GET api/gallery`, `GET api/status`, `GET api/devices`, `GET api/effects`

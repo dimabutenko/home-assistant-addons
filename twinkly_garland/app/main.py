@@ -225,7 +225,7 @@ class PreviewReq(BaseModel):
 def api_preview(req: PreviewReq):
     """Render on the server, play in the browser against the real layout."""
     _check_instance(req.instance)
-    layout = device.get_layout(find_device(req.device))
+    layout = device.render_layout(find_device(req.device))
     t0 = time.time()
     r = compose.render_instance(_dump(req.instance), layout)
     return {"fps": r.fps, "layout": [[p["x"], p["y"]] for p in layout], "frames": _b64(r.frames),
@@ -238,7 +238,7 @@ def api_gallery(device_name: str = ""):
     dev = find_device(device_name) if device_name else (devices() or [None])[0]
     if dev is None:
         return {"layout": [], "items": []}
-    layout = device.get_layout(dev)
+    layout = device.render_layout(dev)
     items = []
     for inst in load_instances():
         try:
@@ -273,6 +273,7 @@ def probe(dev: dict) -> dict:
         info["online"] = True
     except Exception as exc:
         info["error"] = type(exc).__name__
+    info["aspect"] = device.device_aspect(dev["name"])
     return info
 
 
@@ -302,6 +303,19 @@ def api_status():
                 info["status_error"] = str(exc)
         out.append(info)
     return out
+
+
+class DevSettings(BaseModel):
+    aspect: float | None = None  # real width / height of the area the garland covers
+
+
+@app.put("/api/devices/{name}/settings")
+def api_device_settings(name: str, req: DevSettings):
+    find_device(name)
+    if req.aspect is not None and not 0.2 <= req.aspect <= 6:
+        raise HTTPException(400, "width / height must be between 0.2 and 6")
+    device.save_device_aspect(name, req.aspect)
+    return {"aspect": req.aspect}
 
 
 @app.post("/api/devices/{name}/layout/refresh")

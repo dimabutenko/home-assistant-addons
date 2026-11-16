@@ -116,24 +116,28 @@ def _register(name: str, title: str, own: list, build) -> None:
 
 def _flame(layout, p, P):
     k, sx, sy, seed, height = p["intensity"], p["scale_x"], p["scale_y"], int(p["seed"]), p["height"]
+    contrast, prof = p["contrast"], p["profile"]
     # Lattice cells in y per vertical period; the pattern scrolls by whole periods per loop.
     period = max(2, int(sy * 2))
     cells = int(p["speed"]) * period
 
     def pix(i, x, y, t):
         ny = y * sy * 2 + cells * t
-        n = (0.65 * _noise(x * sx, ny, period, seed)
-             + 0.35 * _noise(x * sx * 2.1 + 9, ny * 2, period * 2, seed + 1))
-        base = max(0.0, 1.0 - y / height)
-        heat = n * (0.35 + 0.65 * base) * (0.4 + 0.9 * base) * 1.5
+        n = (0.55 * _noise(x * sx, ny, period, seed)
+             + 0.30 * _noise(x * sx * 2.1 + 9, ny * 2, period * 2, seed + 1)
+             + 0.15 * _noise(x * sx * 4.3 + 21, ny * 4, period * 4, seed + 2))
+        h = max(0.0, 1.0 - y / height) ** prof          # 1 at the bottom, 0 at the tip
+        # Only noise peaks above a threshold that rises with height survive: tongues of flame
+        heat = (n - (1.0 - h) * 0.85) * contrast
         return _sc(P.at(heat), k)
     return pix
 
 
 _register("flame", "Flame", [
     _PAL("fire"), _P("speed", "Rise speed (periods per loop)", 1, 6, 1, 2),
-    _P("scale_x", "Horizontal scale", 1, 12, 0.5, 4), _P("scale_y", "Vertical scale", 1, 12, 0.5, 4),
-    _P("height", "Flame height", 0.3, 2.0, 0.05, 1.0)], _flame)
+    _P("scale_x", "Horizontal scale", 1, 12, 0.5, 5), _P("scale_y", "Vertical scale", 1, 12, 0.5, 2.5),
+    _P("height", "Flame height", 0.3, 2.0, 0.05, 1.8), _P("contrast", "Contrast (tongues)", 1, 5, 0.1, 2.8),
+    _P("profile", "Fade with height", 0.5, 3, 0.1, 1.5)], _flame)
 
 
 def _twinkle(layout, p, P):
@@ -185,9 +189,11 @@ _register("aurora", "Aurora", [_PAL("aurora"), _P("drift", "Drift speed", 1, 3, 
 def _snow(layout, p, P):
     k, seed = p["intensity"], int(p["seed"])
     lanes, dens, fall, size = int(p["lanes"]), p["flakes"], int(p["fall"]), p["size"]
+    bx0, bx1, _, _ = _bounds(layout)
+    bw = (bx1 - bx0) or 1.0
 
     def pix(i, x, y, t):
-        lane = int(math.floor((x + 1) * lanes / 2))
+        lane = int(math.floor((x - bx0) / bw * lanes))
         u = _fract(y * dens + fall * t + _hh(lane, 5, seed))
         b = max(0.0, 1 - abs(u - 0.5) / size) ** 2
         return _sc(P.at(0.35 + 0.65 * b), b * k)
@@ -366,7 +372,8 @@ _register("stars", "Slow stars", [
 
 def _storm(layout, p, P):
     k, seed, nf, decay = p["intensity"], int(p["seed"]), int(p["flashes"]), p["decay"]
-    fl = [(_hh(j, 31, seed), -1 + 2 * _hh(j, 32, seed)) for j in range(nf)]
+    bx0, bx1, _, _ = _bounds(layout)
+    fl = [(_hh(j, 31, seed), bx0 + (bx1 - bx0) * _hh(j, 32, seed)) for j in range(nf)]
     cache = {"t": None, "v": []}
 
     def pix(i, x, y, t):
@@ -407,9 +414,11 @@ _register("ocean", "Ocean waves", [
 
 def _rain(layout, p, P):
     k, seed, lanes, dens, fall, tail = p["intensity"], int(p["seed"]), int(p["lanes"]), p["density"], int(p["fall"]), p["tail"]
+    bx0, bx1, _, _ = _bounds(layout)
+    bw = (bx1 - bx0) or 1.0
 
     def pix(i, x, y, t):
-        lane = int(math.floor((x + 1) * lanes / 2))
+        lane = int(math.floor((x - bx0) / bw * lanes))
         u = _fract(y * dens + fall * t + _hh(lane, 61, seed))
         if u >= tail:
             return (0, 0, 0)
@@ -427,9 +436,11 @@ def _bars(layout, p, P):
     k, seed, nb, sp = p["intensity"], int(p["seed"]), int(p["bars"]), int(p["speed"])
     fr = [1 + int(_hh(c, 71, seed) * sp) for c in range(nb)]
     ph = [_hh(c, 72, seed) for c in range(nb)]
+    bx0, bx1, _, _ = _bounds(layout)
+    bw = (bx1 - bx0) or 1.0
 
     def pix(i, x, y, t):
-        pos = (x + 1) * nb / 2
+        pos = (x - bx0) / bw * nb
         c = min(nb - 1, max(0, int(math.floor(pos))))
         xf = pos - math.floor(pos)
         if xf < 0.12 or xf > 0.88:
@@ -529,9 +540,11 @@ _register("helix", "Double helix", [
 
 def _checker(layout, p, P):
     k, cells, sp = p["intensity"], p["cells"], int(p["speed"])
+    bx0, bx1, by0, _ = _bounds(layout)
+    cs = ((bx1 - bx0) or 1.0) / cells  # square cells
 
     def pix(i, x, y, t):
-        par = (int(math.floor((x + 1) * cells / 2)) + int(math.floor(y * cells / 2))) % 2
+        par = (int(math.floor((x - bx0) / cs)) + int(math.floor((y - by0) / cs))) % 2
         v = 0.5 + 0.5 * math.sin(TAU * (sp * t + 0.5 * par))
         return _sc(P.at(v), k)
     return pix

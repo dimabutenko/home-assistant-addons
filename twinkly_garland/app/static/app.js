@@ -108,7 +108,8 @@ for (const b of document.querySelectorAll('.tab')) b.onclick = () => showTab(b.d
 async function loadStatus() {
   try { S.status = await api('api/status'); } catch (e) { toast('Status failed: ' + e.message, true); return; }
   if (!S.previewDevice && S.status.length) S.previewDevice = S.status[0].name;
-  if (S.tab === 'library') renderLibrary();
+  const typing = document.activeElement && document.activeElement.tagName === 'INPUT' && document.activeElement.closest('#view-library');
+  if (S.tab === 'library' && !typing) renderLibrary();
 }
 async function loadGallery() {
   try {
@@ -138,7 +139,23 @@ function deviceCard(d) {
       : h('div', { class: 'warn' }, plan ? `Out of sync. To upload: ${plan.missing.join(', ') || 'nothing'}; to remove: ${plan.extra.join(', ') || 'nothing'}` : 'Checking...'),
     h('div', { class: 'row', style: 'margin-top:8px' },
       h('button', { class: synced ? '' : 'primary', disabled: synced || over, onclick: () => syncDevice(d.name) }, 'Sync now'),
-      h('button', { onclick: loadStatus }, 'Refresh')));
+      h('button', { onclick: loadStatus }, 'Refresh')),
+    h('div', { class: 'row', style: 'margin-top:8px' },
+      h('span', { class: 'muted', title: 'Twinkly stretches the scan to a 2:1 box. Enter the real size of the area covered by the lights (any unit) to make circles round. Empty = as stored on the device.' }, 'Real size of the lit area, w x h:'),
+      h('input', { type: 'number', min: 1, step: 'any', id: `pw-${d.name}`, style: 'width:80px', placeholder: 'width', value: d.aspect ? Math.round(d.aspect * 100) : '' }),
+      h('span', {}, 'x'),
+      h('input', { type: 'number', min: 1, step: 'any', id: `ph-${d.name}`, style: 'width:80px', placeholder: 'height', value: d.aspect ? 100 : '' }),
+      h('button', { class: 'small', onclick: () => saveAspect(d.name) }, 'Save size')));
+}
+
+async function saveAspect(name) {
+  const w = Number(document.getElementById(`pw-${name}`).value), hh = Number(document.getElementById(`ph-${name}`).value);
+  const aspect = w > 0 && hh > 0 ? w / hh : null;
+  try {
+    await send(`api/devices/${encodeURIComponent(name)}/settings`, { aspect }, 'PUT');
+    toast(aspect ? `Proportions saved (${aspect.toFixed(2)} : 1). Effects are redrawn; press Sync now to upload them.` : 'Proportions reset.');
+    loadGallery(); loadStatus();
+  } catch (e) { toast('Not saved: ' + e.message, true, 8000); }
 }
 
 async function syncDevice(name) {

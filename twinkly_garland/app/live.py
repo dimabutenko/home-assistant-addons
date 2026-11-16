@@ -13,8 +13,90 @@ MAX_SLEW = 330.0  # max change of a colour channel per second (0..255): no strob
 LOOP_S = 10.0     # `t` runs 0..1 over this many seconds in live mode
 
 
+class InputTracker:
+    """Everything a formula can know about one input: the smoothed 0..1 value (with an auto range if wanted),
+    its running phase, and event signals (kick, age, count, direction, speed of change)."""
+    EVENT_TAU = 1.2   # a kick fades in about this many seconds
+    BASE_TAU = 5.0    # the slow baseline a jump is measured against
+    WARM = 4.0        # no events while the auto range settles after the start
+    WINDOW_S = 1800.0
+
+    def __init__(self, inp: dict, now: float):
+        self.inp, self.t_start = inp, now
+        self.auto = bool(inp.get("auto"))
+        self.thr = float(inp.get("kick", 0.12))
+        self.win = []          # (time, raw) once a second
+        self.last_sample = -1e9
+        self.lo = self.hi = None
+        self.raw = None
+        self.value = float(inp["default"])
+        self.base = None
+        self.kick, self.age, self.count, self.dir, self.delta, self.phase = 0.0, 120.0, 0, 0, 0.0, 0.0
+        self.prev_v = None
+        self.last_evt = -1e9
+
+    def seed(self, values: list, now: float):
+        """History from Home Assistant: the auto range is useful from the first frame."""
+        if not values:
+            return
+        step = self.WINDOW_S / len(values)
+        self.win = [(now - self.WINDOW_S + (i + 1) * step, v) for i, v in enumerate(values)]
+        self._range()
+
+    def _range(self):
+        vals = [v for _, v in self.win]
+        self.lo, self.hi = (min(vals), max(vals)) if vals else (None, None)
+
+    def _norm(self, raw: float) -> float:
+        inp = self.inp
+        if self.auto and self.lo is not None:
+            span = max(float(inp.get("span") or 0.0), abs(inp["max"] - inp["min"]) * 0.05, 1e-9)
+            lo, hi = self.lo, self.hi
+            if hi - lo < span:
+                mid = (hi + lo) / 2
+                lo, hi = mid - span / 2, mid + span / 2
+            return min(1.0, max(0.0, (raw - lo) / (hi - lo)))
+        return min(1.0, max(0.0, (raw - inp["min"]) / (inp["max"] - inp["min"])))
+
+    def update(self, raw, dt: float, now: float):
+        inp = self.inp
+        target = None
+        if raw is not None:
+            self.raw = raw
+            if self.auto and now - self.last_sample >= 1.0:
+                self.last_sample = now
+                self.win.append((now, raw))
+                while self.win and now - self.win[0][0] > self.WINDOW_S:
+                    self.win.pop(0)
+                self._range()
+            target = self._norm(raw)
+            a = 1.0 if inp["smooth"] <= 0.01 else 1 - math.exp(-dt / inp["smooth"])
+            self.value += (target - self.value) * a
+        v = self.value
+        if self.base is None:
+            self.base = target if target is not None else v
+        # events are measured on the raw target, not on the smoothed value (which is still catching up after a jump)
+        jump = (target - self.base) if target is not None else 0.0
+        if now - self.t_start > self.WARM and abs(jump) > self.thr and now - self.last_evt > 0.8:
+            self.kick = min(1.0, 0.45 + abs(jump) * 1.2)
+            self.dir = 1 if jump > 0 else -1
+            self.count += 1
+            self.age = 0.0
+            self.last_evt = now
+            self.base = target
+        else:
+            if target is not None:
+                self.base += (target - self.base) * (1 - math.exp(-dt / self.BASE_TAU))
+            self.kick *= math.exp(-dt / self.EVENT_TAU)
+            self.age = min(120.0, self.age + dt)
+        if self.prev_v is not None:
+            self.delta += ((v - self.prev_v) / dt - self.delta) * (1 - math.exp(-dt / 0.5))
+        self.prev_v = v
+        self.phase += v * dt
+
+
 class LiveScene:
-    def __init__(self, spec: dict, layout: list, params: dict | None = None, source=None):
+    def __init__(self, spec: dict, layout: list, params: dict | None = None, source=None, history=None):
         self.spec = formula.validate_item({"name": "live", **spec})
         self.params = dict(params or {})
         defs, self.inputs = self.spec["params"], self.spec["inputs"]
@@ -24,36 +106,41 @@ class LiveScene:
         self.k = float(self.params.get("intensity", 0.9))
         self.seed = float(self.params.get("seed", 1))
         self.prevfn, self.fb = formula.make_prev(self.prep, self.k)  # prev(x, y) reads the previous frame
-        self.phase = {i["name"]: 0.0 for i in self.inputs}
         self.loop = float(self.params.get("loop", LOOP_S))
         self.source = source or hadata.read_input  # (input) -> (raw, normalized) | (None, None)
-        self.smoothed = {i["name"]: float(i["default"]) for i in self.inputs}
-        self.raw = {i["name"]: None for i in self.inputs}
         self.t0 = time.time()
         self.last = None
         self.prev = None
+        self.trk = {i["name"]: InputTracker(i, self.t0) for i in self.inputs}
+        history = history if history is not None else self._ha_history
+        for i in self.inputs:  # an auto range starts from the last half hour instead of from nothing
+            if i.get("auto") and not i.get("attribute"):
+                try:
+                    self.trk[i["name"]].seed(history(i), self.t0)
+                except Exception as exc:
+                    log.info("no history for %s: %s", i["entity"], exc)
 
-    def _update_inputs(self, dt: float):
+    @staticmethod
+    def _ha_history(inp: dict) -> list:
+        return hadata.history(inp["entity"], InputTracker.WINDOW_S / 60) if hadata.available() else []
+
+    def _update_inputs(self, dt: float, now: float):
         for inp in self.inputs:
-            raw, norm = self.source(inp)
-            self.raw[inp["name"]] = raw
-            if norm is None:
-                continue  # unavailable: keep the last value
-            a = 1.0 if inp["smooth"] <= 0.01 else 1 - math.exp(-dt / inp["smooth"])
-            self.smoothed[inp["name"]] += (norm - self.smoothed[inp["name"]]) * a
-        for inp in self.inputs:  # running total of the value: a speed that follows data without jumps
-            self.phase[inp["name"]] += self.smoothed[inp["name"]] * dt
+            raw, _norm = self.source(inp)
+            self.trk[inp["name"]].update(raw, dt, now)
 
     def values(self) -> dict:
-        return {i["name"]: {"raw": self.raw[i["name"]], "value": round(self.smoothed[i["name"]], 3)} for i in self.inputs}
+        return {n: {"raw": t.raw, "value": round(t.value, 3), "kick": round(t.kick, 2), "count": t.count} for n, t in self.trk.items()}
 
     def frame(self, now: float | None = None) -> bytes:
         now = time.time() if now is None else now
         dt = 0.1 if self.last is None else max(0.001, min(2.0, now - self.last))
         self.last = now
-        self._update_inputs(dt)
+        self._update_inputs(dt, now)
         el = now - self.t0
-        vals = self.pvals + [self.smoothed[i["name"]] for i in self.inputs] + [self.phase[i["name"]] for i in self.inputs]
+        T = [self.trk[i["name"]] for i in self.inputs]
+        vals = (self.pvals + [t.value for t in T] + [t.phase for t in T] + [t.kick for t in T] + [t.age for t in T]
+                + [float(t.count) for t in T] + [float(t.dir) for t in T] + [max(-3.0, min(3.0, t.delta)) for t in T])
         out = formula.eval_frame(self.fn, self.prep, (el / self.loop) % 1.0, el, self.seed, vals, self.k, self.prevfn)
         if self.prev is not None:
             lim = max(1, int(MAX_SLEW * dt))

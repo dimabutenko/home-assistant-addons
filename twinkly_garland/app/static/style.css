@@ -79,6 +79,6 @@ button.small, select.small { padding: 2px 8px; font-size: .85rem; }
 .fm-funcs { columns: 1; font-family: ui-monospace, Consolas, monospace; font-size: .8rem; }
 @media (min-width: 900px) { .fm-funcs { columns: 2; } }
 
-.fm-input { display: grid; grid-template-columns: 70px minmax(120px, 1.4fr) minmax(80px, 1fr) 62px 62px 56px 56px minmax(60px, .8fr) auto; gap: 6px; align-items: center; margin-bottom: 6px; font-size: .85rem; }
+.fm-input { display: grid; grid-template-columns: 70px minmax(120px, 1.4fr) minmax(80px, 1fr) 62px 62px 52px 52px 34px 54px minmax(60px, .8fr) auto; gap: 6px; align-items: center; margin-bottom: 6px; font-size: .85rem; }
 .fm-input input { min-width: 0; width: 100%; padding: 3px 6px; }
 @media (max-width: 899px) { .fm-input { grid-template-columns: 1fr 1fr; } }

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.11.0
+Livelier live scenes. The sensors were not static (house power 324-2252 W changed every ~14 s, a PC's GPU 0-75 %, the network 0-58 Mbit/s): the old examples mapped them to too narrow ranges, smoothed them for seconds and used them for slow things.
+- **Auto range** per input: the last 30 minutes of the sensor (fetched from the Home Assistant history at the start) are mapped to 0..1, so every sensor uses its whole range. Smoothing can be 0.3-0.5 s for fast signals; polling is now once a second.
+- **Events**: every input also gives `<input>_kick` (1 at the moment of a jump, fading in ~1.5 s), `_age` (seconds since the last jump), `_count` (number of jumps, a seed for random places), `_dir` (+1 / -1) and `_delta` (speed of change). The jump size is set per input. One jump fires exactly one event.
+- **New scenes**: "Spectrum live" (eight bars = CPU / power / GPU of the two PCs, network down and up, house power, falling caps), "Pulse rings live" (a ring is born at a random place at every jump of five signals), "Network comets live" (comets fall with the download and rise with the upload), "Heartbeat live" (the pulse follows the CPU load of both PCs). The old examples were retuned to fast signals and faster motion.
+- The inputs table has an "auto" checkbox and an "event" threshold; the value chips show a lightning mark and the event count.
+- Hardening: a formula function is now compiled from ordinary source text produced from the checked tree (instead of a hand-assembled AST); error messages keep the line the user wrote.
+
 ## 0.10.0
 - **Live scenes on the garland.** A saved formula can be streamed to a garland in real-time mode (UDP, about 10-12 frames per second; a frame costs about 1 ms on a PC): button "Play live on the garland" in the Formulas tab, `POST api/live/play {scene, devices}`, or through the existing `rest_command` with `effect: "live:<formula name>"`. The scene follows Home Assistant values (smoothed, with the running phase) and never loops, so there is no seam.
 - **Stopping and restoring.** "Stop", any explicit `play` of a stored effect or a Sync stops the stream and puts the garland back the way it was (the same stored movie, or off). The automation's `effect: "random"` does NOT cut a live scene short (answers `kept`). If somebody else changes the device mode (Home Assistant turns the light off, the phone app), the stream ends at once without fighting back; if the device stops answering or the formula fails, it ends and restores.

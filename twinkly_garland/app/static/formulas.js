@@ -43,7 +43,8 @@ function fmDefs() {  // parameters as the server wants them (half-filled rows ar
 function fmInputs() {
   return FM.cur.inputs.filter(i => i.name && i.entity && Number.isFinite(Number(i.min)) && Number.isFinite(Number(i.max)) && Number(i.min) !== Number(i.max))
     .map(i => ({ name: i.name.trim(), entity: i.entity.trim(), attribute: (i.attribute || '').trim(), min: Number(i.min), max: Number(i.max),
-      smooth: Number(i.smooth === '' || i.smooth === undefined ? 2 : i.smooth), default: Number(i.default === '' || i.default === undefined ? 0.5 : i.default) }));
+      smooth: Number(i.smooth === '' || i.smooth === undefined ? 2 : i.smooth), default: Number(i.default === '' || i.default === undefined ? 0.5 : i.default),
+      auto: !!i.auto, kick: Number(i.kick === '' || i.kick === undefined ? 0.12 : i.kick) }));
 }
 
 function fmSpec() { return { code: FM.cur.code, params: fmDefs(), inputs: fmInputs() }; }
@@ -143,7 +144,7 @@ async function fmToggleGarland() {
 function fmShowValues() {
   const el = document.getElementById('fm-values'); if (!el || !FM.live) return;
   el.replaceChildren(...Object.entries(FM.live.values).map(([k, v]) => h('span', { class: 'badge', style: 'margin-right:6px' },
-    `${k} ${v.value}` + (v.raw !== null && v.raw !== undefined ? ` (${v.raw})` : ' (n/a)'))));
+    `${v.kick > 0.25 ? '⚡ ' : ''}${k} ${v.value}` + (v.raw !== null && v.raw !== undefined ? ` (${v.raw})` : ' (n/a)') + (v.count ? ` #${v.count}` : ''))));
 }
 
 function fmShowStatus() {
@@ -223,6 +224,8 @@ function fmInputRow(p, i) {
     h('input', { type: 'number', step: 'any', value: p.max, title: 'value mapped to 1', onchange: e => { p.max = e.target.value; fmSchedule(); } }),
     h('input', { type: 'number', step: 'any', value: p.smooth === undefined ? 2 : p.smooth, title: 'smoothing, seconds', onchange: e => { p.smooth = e.target.value; fmSchedule(); } }),
     h('input', { type: 'number', step: 'any', min: 0, max: 1, value: p.default === undefined ? 0.5 : p.default, title: 'value 0..1 used when the effect is stored on the garland', onchange: e => { p.default = e.target.value; fmSchedule(); } }),
+    h('input', { type: 'checkbox', checked: !!p.auto, title: 'auto range: the last 30 minutes of this sensor are mapped to 0..1 (the "to 0" / "to 1" values are only the starting guess)', onchange: e => { p.auto = e.target.checked; fmSchedule(); } }),
+    h('input', { type: 'number', step: 'any', min: 0.02, max: 0.5, value: p.kick === undefined ? 0.12 : p.kick, title: 'event threshold: a jump of this share of the 0..1 range fires <name>_kick / _count', onchange: e => { p.kick = e.target.value; fmSchedule(); } }),
     h('span', { class: 'muted', id: `fm-now-${i}` }, ''),
     h('button', { class: 'small danger', onclick: () => { FM.cur.inputs.splice(i, 1); renderFormulas(); fmSchedule(); } }, 'Remove'));
 }
@@ -288,11 +291,11 @@ function renderFormulas() {
         h('button', { class: 'small', disabled: c.params.length >= 8, onclick: () => { c.params.push({ name: 'p' + (c.params.length + 1), label: '', min: 0, max: 1, default: 0.5 }); renderFormulas(); } }, '+ parameter')),
       h('div', { class: 'card', style: 'margin-bottom:10px' },
         h('h3', {}, 'Inputs from Home Assistant'),
-        h('div', { class: 'muted', style: 'margin-bottom:6px' }, 'Each input is a variable 0..1 in the formula. "min" is the value that maps to 0, "max" to 1 (attribute: e.g. elevation of sun.sun). Smoothing in seconds makes the value glide. "default" is used when the effect is stored on the garland.'),
-        h('div', { class: 'fm-input muted' }, h('span', {}, 'name'), h('span', {}, 'entity'), h('span', {}, 'attribute'), h('span', {}, '→ 0'), h('span', {}, '→ 1'), h('span', {}, 'smooth s'), h('span', {}, 'default'), h('span', {}, 'now'), h('span', {})),
+        h('div', { class: 'muted', style: 'margin-bottom:6px' }, 'Each input is a variable 0..1 in the formula. "min" is the value that maps to 0, "max" to 1 (attribute: e.g. elevation of sun.sun). Smoothing in seconds makes the value glide (use 0.3 to 0.5 for fast signals). "auto" maps the last 30 minutes of the sensor to 0..1, so every sensor uses its whole range. "event" is the size of a jump (share of the range) that fires name_kick, name_age and name_count. "default" is used when the effect is stored on the garland.'),
+        h('div', { class: 'fm-input muted' }, h('span', {}, 'name'), h('span', {}, 'entity'), h('span', {}, 'attribute'), h('span', {}, '→ 0'), h('span', {}, '→ 1'), h('span', {}, 'smooth s'), h('span', {}, 'default'), h('span', {}, 'auto'), h('span', {}, 'event'), h('span', {}, 'now'), h('span', {})),
         c.inputs.map(fmInputRow),
         h('datalist', { id: 'fm-ents' }),
-        h('button', { class: 'small', disabled: c.inputs.length >= 8, onclick: () => { c.inputs.push({ name: 'in' + (c.inputs.length + 1), entity: '', attribute: '', min: 0, max: 100, smooth: 2, default: 0.5 }); renderFormulas(); } }, '+ input')),
+        h('button', { class: 'small', disabled: c.inputs.length >= 8, onclick: () => { c.inputs.push({ name: 'in' + (c.inputs.length + 1), entity: '', attribute: '', min: 0, max: 100, smooth: 0.4, default: 0.5, auto: true, kick: 0.12 }); renderFormulas(); } }, '+ input')),
       h('div', { class: 'row', style: 'margin-bottom:10px' },
         h('button', { class: 'primary', onclick: fmSave }, 'Save'),
         h('button', { onclick: fmMakeEffect, title: 'Save and create an effect in the library that uses this formula' }, 'Save & make an effect'),

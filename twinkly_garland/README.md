@@ -75,6 +75,22 @@ stored effect (movie on the garland) uses the default values, so it stays determ
 Access to Home Assistant uses the Supervisor (`homeassistant_api: true`). For development without the Supervisor set
 `TWINKLY_HA_BASE` and `TWINKLY_HA_TOKEN` to a Home Assistant URL and a long-lived token.
 
+### Auto range and events
+
+Real sensors rarely use the range you guessed. Tick **auto** on an input and the last 30 minutes of that sensor (read from the Home
+Assistant history when the scene starts) are mapped to 0..1, so it always moves over its whole range; "to 0" / "to 1" are only the
+starting guess. Besides the value every input gives event signals, so a static sensor can still drive something lively:
+`name_kick` (1 when the value jumps, fades in about 1.5 s), `name_age` (seconds since the last jump), `name_count` (number of jumps:
+use it as a seed, `hash(name_count, 1)` is a new random place for every event), `name_dir` (+1 rise / -1 fall) and `name_delta`
+(speed of change). "event" is the size of a jump as a share of the 0..1 range. Example, a ring that is born at a random place whenever
+the house power jumps:
+
+    ring = smoothstep(0.1, 0, abs(dist(x, y, (hash(house_count, 1) - 0.5) * w, hash(house_count, 2)) - house_age * 0.45))
+    ring * max(1 - house_age / 3.5, 0)
+
+Examples: "Spectrum live", "Pulse rings live", "Network comets live", "Heartbeat live" and the retuned "House / Rings / Kaleidoscope /
+Spiral / Tunnel / Mandala live".
+
 ### Live scenes on the garland
 
 A saved formula (typically with inputs from Home Assistant) can be played **live**: the add-on computes frames from the current

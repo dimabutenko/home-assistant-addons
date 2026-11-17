@@ -1,0 +1,24 @@
+name: Part-DB
+url: "https://github.com/Part-DB/Part-DB-server"
+version: 2.20.7
+slug: part_db
+description: "Inventory of electronic components (Part-DB) with a built-in MCP server for AI assistants"
+arch: ["aarch64"]
+startup: application
+boot: auto
+init: false
+ingress: true
+ingress_port: 80
+panel_icon: mdi:chip
+panel_title: Part-DB
+ports:
+  "80/tcp": 8087
+ports_description:
+  "80/tcp": "Direct access (MCP / REST API with a token). Not needed for the ingress panel."
+apparmor: false
+privileged:
+  - SYS_ADMIN
+options:
+  mcp_editing: false
+schema:
+  mcp_editing: bool

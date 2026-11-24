@@ -370,20 +370,35 @@ const ScanLib = (() => {
   }
 
   // How many LEDs the decoder can read at this brightness, counted from the all-red and the all-blue photo: the number of connected areas of
-  // LED size (4 to 400 pixels) in which both photos are more than T above the dark photo, nothing is clipped (under 245) and the response to red and to
-  // blue differ by an angle of at least minSin. The halo of an LED qualifies, its clipped core does not have to; the glow of the wall round the tree
-  // forms a few huge areas that are not counted; LEDs that run into each other form one big area and are lost; LEDs that are too dim give no area. On
-  // the real scans (exposure, LEDs found by the scan, count): 2.7 -> 168, 101; 48 -> 248, 233; automatic -> 302, 292.
-  function readableBlobs(darkP, calR, calB, w, h, { T = 15, minSin = 0.3, clip = 245, minArea = 4, maxArea = 400 } = {}) {
-    const N = w * h, mask = new Uint8Array(N);
+  // LED size (4 to 400 pixels) in which both photos are more than T above the dark photo, nothing is clipped (under 245), the response to red and to
+  // blue differ by an angle of at least minSin, and the light is a PEAK: at least `ratio` times the mean of the 45 x 45 pixels round it (the glow of
+  // the wall and of the branches is smooth and does not pass; without this the count kept growing with the exposure, to 529 for a tree of which about
+  // 375 LEDs are in view, because the glow broke up into pieces of LED size). The halo of an LED qualifies, its clipped core does not have to; LEDs that
+  // run into each other form one big area and are lost; LEDs that are too dim give no area. On the real scans (LEDs found by the scan, count): 168 ->
+  // 101, 248 -> 233, 302 -> 300, 307 -> 303 (exposures 2.7, 48, automatic, 663).
+  function readableBlobs(darkP, calR, calB, w, h, { T = 15, minSin = 0.3, clip = 245, minArea = 4, maxArea = 400, win = 45, ratio = 4 } = {}) {
+    const N = w * h, mask = new Uint8Array(N), q = new Float32Array(N);
     for (let i = 0; i < N; i++) {
       let sr = 0, sb = 0, rr = 0, bb = 0, rb = 0, mx = 0;
       for (let c = 0; c < 3; c++) {
         const r = Math.max(0, calR[c][i] - darkP[c][i]), b = Math.max(0, calB[c][i] - darkP[c][i]);
         sr += r; sb += b; rr += r * r; bb += b * b; rb += r * b; mx = Math.max(mx, calR[c][i], calB[c][i]);
       }
-      if (Math.min(sr, sb) / 3 <= T || mx >= clip) continue;
+      q[i] = Math.min(sr, sb) / 3;
+      if (q[i] <= T || mx >= clip) continue;
       if (Math.sqrt(Math.max(0, 1 - rb * rb / (rr * bb + 1e-9))) >= minSin) mask[i] = 1;
+    }
+    // mean of q over the window round every pixel (integral image; at the border the part of the window that exists)
+    const I = new Float64Array((w + 1) * (h + 1)), hw = win >> 1;
+    for (let y = 0; y < h; y++) { let row = 0; for (let x = 0; x < w; x++) { row += q[y * w + x]; I[(y + 1) * (w + 1) + x + 1] = I[y * (w + 1) + x + 1] + row; } }
+    for (let y = 0; y < h; y++) {
+      const y0 = Math.max(0, y - hw), y1 = Math.min(h, y + hw + 1);
+      for (let x = 0; x < w; x++) {
+        const i = y * w + x; if (!mask[i]) continue;
+        const x0 = Math.max(0, x - hw), x1 = Math.min(w, x + hw + 1);
+        const sum = I[y1 * (w + 1) + x1] - I[y0 * (w + 1) + x1] - I[y1 * (w + 1) + x0] + I[y0 * (w + 1) + x0];
+        if (q[i] <= ratio * sum / ((x1 - x0) * (y1 - y0))) mask[i] = 0;
+      }
     }
     const { labels, count } = components(mask, w, h), area = new Int32Array(count + 1);
     for (let i = 0; i < N; i++) if (labels[i]) area[labels[i]]++;

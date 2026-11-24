@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.14.1
+- **Fix: two garlands could not stream at the same time** (a position scan of one garland while a live scene played on the other failed with `Address in use`). The xled library binds its UDP socket to local port 7777, so only one client per process could send real-time frames. The add-on now uses a send-only socket without a fixed local port. This also removes a rare failure after the clients were recreated following a connection error.
+
 ## 0.14.0
 - Three new live examples built on the signal quality of the radios in the house (Wi-Fi and Bluetooth in dBm, Zigbee link quality): **Signal towers live** (eight towers, height and colour follow the quality, weak ones flicker, strong ones send radio rings), **Zigbee mesh live** (five radiators as wave sources, waves interfere and mix colours) and **Signal stars live** (a night sky, strong signal is a big steady blue-white star, weak is a small flickering red one). The ranges are fixed (not auto), so the picture means something.
 

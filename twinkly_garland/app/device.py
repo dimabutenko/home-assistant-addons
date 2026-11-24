@@ -11,6 +11,7 @@ import uuid
 from pathlib import Path
 
 from xled import ControlInterface
+from xled.udp_client import UDPClient
 
 log = logging.getLogger("twinkly.device")
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/data"))
@@ -36,18 +37,31 @@ def retry(fn, *args, tries=4):
         except Exception as exc:
             last = exc
             time.sleep(0.5 * (i + 1))
-    _clients.clear()  # start from a fresh login next time
+    _clients.clear()  # start from a fresh login next time (a stream that still holds the old client keeps its own socket)
     raise last
 
 
 _clients: dict = {}
 
 
+class SendOnlyUDP(UDPClient):
+    """xled binds its UDP socket to the local port 7777 (the port it sends to), so a second garland in the same process,
+    or a client that has not been garbage collected yet, fails with "Address in use". Sending needs no fixed local port."""
+
+    @property
+    def handle(self):
+        if self._handle is None:
+            self._handle = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+        return self._handle
+
+
 def connect(host: str) -> ControlInterface:
     """Shared client per device (keeps its login token). Call it while holding lock_for(host)."""
     socket.create_connection((host, 80), timeout=3).close()  # xled has no timeout
     if host not in _clients:
-        _clients[host] = ControlInterface(host)
+        ci = ControlInterface(host)
+        ci._udpclient = SendOnlyUDP(7777, host)  # xled's REALTIME_UDP_PORT_NUMBER
+        _clients[host] = ci
     return _clients[host]
 
 

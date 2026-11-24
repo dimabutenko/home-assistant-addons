@@ -127,13 +127,6 @@ fewest photos) and *white on / off*. A style that is not read makes the scan rep
 locks exposure, white balance and focus where the browser allows (Chrome on Android most; iPhone and Firefox hardly) and
 says in the result what it could lock.
 
-### Room light and the camera check
-
-Option `scan_lights`: a list of light entities (for example `light.living_room_sofa_lights`). With it the Scan tab gets the checkbox
-"Camera check sweeps the room light 0-100%": one press of "Camera check" runs the light through 0, 10, ... 100% and shows how many LEDs the
-camera can read at each step (the exposure is set again at every step), so that you can see whether light in the room helps. The lights are put
-back as they were afterwards (also if the page is closed or the add-on restarts). Only the listed lights are ever touched.
-
 ## HTTP API (also usable from HA `rest_command`)
 
 - `POST api/play` with `{"effect": "<key>", "devices": ["<name>", ...]}` (empty list = all devices). `effect` may be `"random"`: one effect that is on every target device and in the rotation is picked (weighted). Returns 502 if no device could play it.

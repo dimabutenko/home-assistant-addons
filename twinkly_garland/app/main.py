@@ -20,7 +20,7 @@ from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import compose, device, effects, formula, hadata, lights, live, mqtt_bridge, palettes, scan
+from . import compose, device, effects, formula, hadata, live, mqtt_bridge, palettes, scan
 
 OPTIONS_PATH = Path(os.environ.get("OPTIONS_PATH", "/data/options.json"))
 STATIC = Path(__file__).parent / "static"
@@ -162,7 +162,6 @@ async def lifespan(_app):
     global bridge
     task = asyncio.create_task(_auto_loop())
     asyncio.get_running_loop().run_in_executor(None, _recover_rt)
-    asyncio.get_running_loop().run_in_executor(None, _recover_lights)
     opts = options()
     if opts.get("mqtt_host"):
         try:
@@ -177,14 +176,6 @@ async def lifespan(_app):
     task.cancel()
     if bridge is not None:
         bridge.stop()
-
-
-def _recover_lights():
-    """Room lights that a camera check or a scan changed and that were not put back (the add-on died during it)."""
-    try:
-        lights.restore()
-    except Exception:
-        log.exception("could not put the room lights back")
 
 
 app = FastAPI(title="Twinkly Garland", lifespan=lifespan)
@@ -974,38 +965,6 @@ def api_scan_restore(req: ScanRestore):
         raise HTTPException(400, str(exc))
     except Exception as exc:
         raise HTTPException(502, f"cannot write the layout: {exc}")
-
-
-@app.get("/api/scan/lights")
-def api_scan_lights():
-    """The room lights the camera check may sweep (option scan_lights), with what each of them can do."""
-    ents = lights.configured(options())
-    return {"lights": lights.info(ents) if ents else []}
-
-
-class LightSet(BaseModel):
-    entity: str
-    on: bool = True
-    brightness_pct: int | None = None
-    kelvin: int | None = None
-
-
-@app.post("/api/scan/lights/set")
-def api_scan_lights_set(req: LightSet):
-    try:
-        return lights.set_light(options(), req.entity, req.on, req.brightness_pct, req.kelvin)
-    except ValueError as exc:
-        raise HTTPException(400, str(exc))
-    except Exception as exc:
-        raise HTTPException(502, f"cannot set the light: {exc}")
-
-
-@app.post("/api/scan/lights/restore")
-def api_scan_lights_restore():
-    try:
-        return {"restored": lights.restore()}
-    except Exception as exc:
-        raise HTTPException(502, f"cannot put the lights back: {exc}")
 
 
 class ScanNote(BaseModel):

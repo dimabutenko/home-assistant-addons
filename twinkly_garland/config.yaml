@@ -1,6 +1,6 @@
 name: Twinkly Garland
 url: "https://github.com/dimabutenko/home-assistant-addons"
-version: 0.17.9
+version: 0.17.10
 slug: twinkly_garland
 description: "Local control of Twinkly Gen2 garlands: effects stored on the devices, ensure/reconcile, layout preview"
 arch: ["aarch64"]
@@ -22,7 +22,7 @@ options:
   mqtt_port: 1883
   mqtt_user: ""
   mqtt_password: ""
-  scan_lights: []  # light entities the camera check may sweep from 0 to 100% (for example light.living_room_sofa_lights)
+  scan_lights: []  # unused since 0.17.4 (the room-lights tuning was removed); kept so that existing configurations stay valid
 schema:
   devices:
     - name: str

@@ -88,3 +88,5 @@ button.small, select.small { padding: 2px 8px; font-size: .85rem; }
 .fm-try .bar { margin: 0; }
 .fm-try label { display: flex; gap: 4px; align-items: center; white-space: nowrap; }
 @media (max-width: 899px) { .fm-try { grid-template-columns: 1fr 1fr; } }
+
+.devpick { display: flex; gap: 6px; align-items: center; font-size: .9rem; color: var(--muted); }

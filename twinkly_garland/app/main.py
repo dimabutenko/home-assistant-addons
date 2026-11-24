@@ -12,7 +12,7 @@ import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -828,6 +828,54 @@ def api_play(req: PlayReq):
 
 
 # ---- API: position scan -----------------------------------------------------------------
+
+DUMP_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
+DUMP_NAME_RE = re.compile(r"^[a-z0-9_]{1,40}\.(png|json)$")
+DUMP_KEEP = 4  # scans whose photos are kept
+
+
+def _dump_dir(sid: str) -> Path:
+    if not DUMP_ID_RE.match(sid):
+        raise HTTPException(400, "bad scan id")
+    return device.DATA_DIR / "scans" / sid
+
+
+@app.put("/api/scan/dump/{sid}/{fname}")
+async def api_scan_dump_put(sid: str, fname: str, request: Request):
+    """Photos (and a small meta file) of a scan, kept so that a scan that went wrong can be examined."""
+    if not DUMP_NAME_RE.match(fname):
+        raise HTTPException(400, "bad file name")
+    body = await request.body()
+    if len(body) > 12_000_000:
+        raise HTTPException(413, "file too large")
+    d = _dump_dir(sid)
+    d.mkdir(parents=True, exist_ok=True)
+    (d / fname).write_bytes(body)
+    root = d.parent
+    for old in sorted((p for p in root.iterdir() if p.is_dir()), key=lambda p: p.stat().st_mtime, reverse=True)[DUMP_KEEP:]:
+        for f in old.iterdir():
+            f.unlink()
+        old.rmdir()
+    return {"saved": fname, "bytes": len(body)}
+
+
+@app.get("/api/scan/dump")
+def api_scan_dump_list():
+    root = device.DATA_DIR / "scans"
+    if not root.exists():
+        return []
+    return [{"id": p.name, "files": sorted(f.name for f in p.iterdir())} for p in sorted(root.iterdir()) if p.is_dir()]
+
+
+@app.get("/api/scan/dump/{sid}/{fname}")
+def api_scan_dump_get(sid: str, fname: str):
+    if not DUMP_NAME_RE.match(fname):
+        raise HTTPException(400, "bad file name")
+    f = _dump_dir(sid) / fname
+    if not f.is_file():
+        raise HTTPException(404, "no such file")
+    return FileResponse(f)
+
 
 @app.get("/api/devices/{name}/layout")
 def api_layout(name: str):

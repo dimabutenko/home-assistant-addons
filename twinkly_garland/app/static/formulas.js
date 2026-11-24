@@ -55,7 +55,7 @@ function fmSchedule(delay = 700) {
   FM.previewTimer = setTimeout(() => { if (FM.live) fmLiveStart(!!FM.live.replay); else fmPreview(); }, delay);
 }
 
-function fmDevice() { return (S.status[0] && S.status[0].name) || S.previewDevice; }
+function fmDevice() { return S.previewDevice || (S.status[0] && S.status[0].name); }
 
 async function fmPreview() {
   if (!FM.cur) return;

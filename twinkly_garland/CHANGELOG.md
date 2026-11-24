@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.15.1
+- **One garland for every preview.** A "Preview on" selector in the page header (remembered in the browser) sets the garland whose LED layout all pictures are drawn on: the library thumbnails, the effect editor, the formula previews (also live and replay; "Play live on the garland" plays on it) and the Scan tab. The separate selector of the effect editor is gone.
+- **Scan photos can be sent for analysis.** After a scan (also a failed one) the Scan tab has a button that uploads its photos (lossless grey PNGs) and a small result file to the add-on (`api/scan/dump`, the last 4 scans are kept), so a scan that went wrong can be examined offline.
+
 ## 0.15.0
 - **Scan types** (Scan tab, remembered per garland): *Flat wall or window* (as before: every LED is found, by code and then one by one), *Tree, one side (profile)* and a placeholder for *Tree, several sides* (planned, not selectable yet).
 - **Tree, one side**: only the LEDs facing the camera can be seen, so 5% recognised by code is enough to go on (the flat scan needs 50%). The runs of LEDs that code did not recognise are probed along the string with a stride of 3: a run that shows nothing is the far side and is skipped, a run that shows LEDs is searched fully (this finds the LEDs that were merged in the photo). The LEDs that stay hidden are estimated along the string, a long hidden run between two far-apart visible ends is drawn as an arc round the back of the tree. The search area for single LEDs is stretched upwards, the search takes up to 400 photos (about 5 minutes) and can be cancelled. With a synthetic tree (600 LEDs on a helix, far side hidden) the mean position error of all LEDs was 1.6 px of a 430 px high tree.

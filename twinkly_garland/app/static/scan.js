@@ -301,6 +301,28 @@ function scanLoadMode(dev) {  // the scan type is remembered per garland
 
 function scanSaveMode() { try { localStorage.setItem('scan-mode:' + SC.device, SC.scanMode); } catch { /* no storage */ } }
 
+// Sends the photos of the last scan to the add-on (lossless grey PNGs + a small JSON) so that a scan that went wrong can be examined.
+async function scanSendPhotos() {
+  const d = SC.dump; if (!d) return;
+  const cv = document.createElement('canvas'); cv.width = d.w; cv.height = d.h; const g = cv.getContext('2d');
+  try {
+    const put = async (name, body, type) => {
+      const r = await fetch(`api/scan/dump/${d.id}/${name}`, { method: 'PUT', headers: { 'Content-Type': type }, body });
+      if (!r.ok) throw new Error(`${name}: HTTP ${r.status}`);
+    };
+    for (let k = 0; k < d.photos.length; k++) {
+      const [name, data] = d.photos[k]; scanStatus(`Sending photo ${k + 1} of ${d.photos.length}...`, k / d.photos.length);
+      const img = g.createImageData(d.w, d.h);
+      for (let i = 0; i < d.w * d.h; i++) { const v = Math.max(0, Math.min(255, Math.round(data[i]))); img.data[4 * i] = img.data[4 * i + 1] = img.data[4 * i + 2] = v; img.data[4 * i + 3] = 255; }
+      g.putImageData(img, 0, 0);
+      await put(name + '.png', await new Promise(res => cv.toBlob(res, 'image/png')), 'image/png');
+    }
+    const meta = { device: d.device, mode: d.mode, n: d.n, w: d.w, h: d.h, level: d.level, pts: d.pts || null, stats: SC.result ? SC.result.stats : null, agent: navigator.userAgent };
+    await put('meta.json', JSON.stringify(meta), 'application/json');
+    scanStatus(`Photos sent (${d.id}).`, 1); toast(`Photos sent: ${d.id}`);
+  } catch (e) { scanStatus('Sending failed: ' + e.message, undefined); toast('Sending failed: ' + e.message, true, 8000); }
+}
+
 function scanStatus(msg, frac) {
   SC.status = msg; const el = document.getElementById('scan-status'), bar = document.getElementById('scan-bar');
   if (el) el.textContent = msg; if (bar && frac !== undefined) bar.firstChild.style.width = `${Math.round(frac * 100)}%`;
@@ -343,6 +365,8 @@ async function runScan() {
     scanStatus('Photo: everything on, again...', 0.6); await pat({ kind: 'all', level }); await sleep(600); const all2 = await shot();
     scanStatus('Recognising the LEDs...', 0.62); await sleep(30);
     const w = all1.w, h = all1.h;
+    SC.dump = { id: new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14), w, h, n, mode: scanMode, level, device: dev,
+      photos: [['dark', dark.data], ['all', all1.data], ...bits.map((b, k) => ['bit' + k, b]), ['dark2', dark2.data], ['all2', all2.data]] };
     const mv = ScanLib.motion(w, h, dark.data, all1.data, dark2.data, all2.data);
     if (mv && mv.shift > 2) throw new Error(`The phone moved by about ${mv.shift.toFixed(1)} px during the scan. Put it on a tripod or a stable surface and try again.`);
     const dmax = ScanLib.maxArr(dark.data, dark2.data), all = { data: ScanLib.minArr(all1.data, all2.data) };
@@ -375,6 +399,7 @@ async function runScan() {
     const hidden = pts.filter(p => !p).length;
     pts = ScanLib.interpolate(pts, { arc: M.arc });
     if (pts.some(p => !p)) throw new Error('No LED was found. Make sure the garland is in view and the room is dark.');
+    SC.dump.pts = pts.map(p => ({ u: +p.u.toFixed(2), v: +p.v.toFixed(2), src: p.src }));
     SC.result = { pts, w, h, n, stats: { mode: scanMode, n, decoded, refined, hidden, shift: mv ? +mv.shift.toFixed(1) : null, blobs: det.blobs, merged: det.merged, invalid: det.invalid, conflicts: det.conflicts, uncertain: det.uncertain, level } };
     SC.snap = { w, h, data: all1.data };
     SC.oldLayout = await api(`api/devices/${encodeURIComponent(dev)}/layout`);
@@ -450,7 +475,7 @@ async function applyScan() {
 function renderScan() {
   const root = document.getElementById('view-scan'); root.replaceChildren();
   const devs = (S.status || []).map(d => d.name);
-  if (!SC.device && devs.length) scanLoadMode(devs[0]);
+  if (devs.length && !SC.running && SC.device !== (S.previewDevice || devs[0])) scanLoadMode(S.previewDevice || devs[0]);
   const video = h('video', { playsinline: '', muted: '', autoplay: '', style: 'width:100%;max-width:480px;border-radius:8px;background:#000' }); video.muted = true;
   SC.video = video; if (SC.stream) { video.srcObject = SC.stream; video.play().catch(() => {}); }
   const st = SC.result && SC.result.stats;
@@ -465,7 +490,7 @@ function renderScan() {
       h('div', { class: 'muted', style: 'margin-bottom:8px' }, (SCAN_MODES[SC.scanMode] || SCAN_MODES.flat).hint),
       !window.isSecureContext ? h('div', { class: 'bad' }, `This page is not on https (${location.protocol}//${location.host}), so the browser will not give it the camera.`) : null,
       h('div', { class: 'row' },
-        h('label', {}, 'Garland ', h('select', { id: 'scan-dev', disabled: SC.running, onchange: e => { scanLoadMode(e.target.value); renderScan(); } }, devs.map(d => h('option', { value: d, selected: d === SC.device }, d)))),
+        h('label', {}, 'Garland ', h('select', { id: 'scan-dev', disabled: SC.running, onchange: e => { setPreviewDevice(e.target.value); scanLoadMode(e.target.value); renderScan(); } }, devs.map(d => h('option', { value: d, selected: d === SC.device }, d)))),
         h('label', {}, 'Scan type ', h('select', { id: 'scan-mode', disabled: SC.running, onchange: e => { SC.scanMode = e.target.value; scanSaveMode(); renderScan(); } },
           Object.entries(SCAN_MODES).map(([k, m]) => h('option', { value: k, disabled: !!m.disabled, selected: k === SC.scanMode }, m.label)))),
         h('button', { disabled: SC.running, onclick: async () => { try { await scanOpenCamera(); toast('Camera ready.'); renderScan(); } catch (e) { toast(e.message, true, 9000); } } }, 'Open camera'),
@@ -474,7 +499,8 @@ function renderScan() {
         h('button', { disabled: !SC.running, onclick: () => { SC.cancel = true; } }, 'Cancel')),
       h('div', { class: 'bar', id: 'scan-bar', style: 'margin-top:8px' }, h('div', { style: 'width:0%' })),
       h('div', { id: 'scan-status', class: 'muted' }, SC.status || 'Idle.')),
-    h('div', { class: 'card', style: 'margin-bottom:12px' }, h('h3', {}, 'Camera'), video),
+    h('div', { class: 'card', style: 'margin-bottom:12px' }, h('h3', {}, 'Camera'), video,
+      SC.dump ? h('div', { class: 'row', style: 'margin-top:8px' }, h('button', { disabled: SC.running, onclick: scanSendPhotos, title: 'Uploads the photos of the last scan to the add-on, to find out why a scan went wrong' }, `Send the photos of the last scan for analysis (${SC.dump.photos.length})`)) : ''),
     SC.result ? h('div', { class: 'card' },
       h('h2', {}, 'Result'),
       h('div', {}, `${st.n} LEDs: ${st.decoded} recognised by code, ${st.refined} found one by one, `, h('b', { class: st.hidden && st.mode !== 'tree' ? 'warn' : 'ok' }, `${st.hidden} not visible (estimated from their neighbours${st.mode === 'tree' ? ', as expected for the far side of a tree' : ''})`),

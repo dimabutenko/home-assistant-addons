@@ -109,13 +109,40 @@ for (const b of document.querySelectorAll('.tab')) b.onclick = () => showTab(b.d
 // ---- data loading -----------------------------------------------------------------
 async function loadStatus(fresh = true) {
   try { S.status = await api('api/status' + (fresh ? '?fresh=true' : '')); } catch (e) { toast('Status failed: ' + e.message, true); return; }
-  if (!S.previewDevice && S.status.length) S.previewDevice = S.status[0].name;
+  initDevicePick();
   const typing = document.activeElement && document.activeElement.tagName === 'INPUT' && document.activeElement.closest('#view-library');
   if (S.tab === 'library' && !typing) renderLibrary();
 }
+// One garland for all previews (library thumbnails, effect editor, formulas): its LED layout is what every picture is drawn on.
+function initDevicePick() {
+  const names = S.status.map(x => x.name), sel = document.getElementById('dev-select');
+  if (!names.length) { if (sel) sel.replaceChildren(); return; }
+  if (!S.previewDevice || !names.includes(S.previewDevice)) {
+    let saved = null; try { saved = localStorage.getItem('preview-device'); } catch { /* no storage */ }
+    S.previewDevice = names.includes(saved) ? saved : names[0];
+    if (S.gallery && S.galleryDevice !== S.previewDevice) loadGallery();
+  }
+  if (!sel) return;
+  sel.replaceChildren(...names.map(n => h('option', { value: n, selected: n === S.previewDevice }, n)));
+  sel.onchange = () => setPreviewDevice(sel.value);
+}
+
+function setPreviewDevice(name) {
+  if (name === S.previewDevice) return;
+  S.previewDevice = name;
+  try { localStorage.setItem('preview-device', name); } catch { /* no storage */ }
+  const sel = document.getElementById('dev-select'); if (sel) sel.value = name;
+  loadGallery();                                   // thumbnails of the library
+  if (S.tab === 'editor') schedulePreview(0);
+  if (S.tab === 'formulas' && typeof fmSchedule === 'function') { FM.previewData = null; fmSchedule(0); renderFormulas(); }
+  if (S.tab === 'scan' && typeof scanLoadMode === 'function' && !SC.running) { scanLoadMode(name); renderScan(); }
+}
+
 async function loadGallery() {
   try {
-    const g = await api('api/gallery');
+    const dev = S.previewDevice || '';
+    const g = await api('api/gallery' + (dev ? '?device_name=' + encodeURIComponent(dev) : ''));
+    S.galleryDevice = dev;
     S.gallery = { layout: g.layout, items: Object.fromEntries(g.items.map(i => [i.key, { fps: i.fps, frames: decode(i.frames), total: i.frames_total }])) };
   } catch (e) { toast('Gallery failed: ' + e.message, true); }
   if (S.tab === 'library') renderLibrary();
@@ -319,8 +346,7 @@ function renderEditor() {
         h('div', { class: 'card' },
           h('h2', {}, 'Preview'), canvas, info,
           h('div', { class: 'row', style: 'margin-top:8px' },
-            h('label', {}, 'On layout of ', h('select', { onchange: e => { S.previewDevice = e.target.value; schedulePreview(0); } },
-              S.status.map(x => h('option', { value: x.name, selected: x.name === S.previewDevice }, x.name)))),
+            h('span', { class: 'muted' }, `On the layout of ${S.previewDevice || '?'} (change it at the top of the page)`),
             h('button', { onclick: () => schedulePreview(0) }, 'Re-render')),
           h('div', { class: 'muted' }, 'The preview only runs in the browser. Nothing is sent to the garland until you press Save & play.'))),
       h('div', {},

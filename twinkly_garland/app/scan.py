@@ -29,8 +29,11 @@ class Session:
         self.dev = dev
         with device.lock_for(dev["host"]):
             self.ci = device.connect(dev["host"])
+            self.profile, self.bytes_per_led = None, None
             try:
-                self.n = int(device.retry(self.ci.get_device_info)["number_of_led"])
+                info = device.retry(self.ci.get_device_info)
+                self.n = int(info["number_of_led"])
+                self.profile, self.bytes_per_led = info.get("led_profile"), info.get("bytes_per_led")
             except Exception:
                 self.n = len(device.get_layout(dev))
             self.prev_mode = device.retry(self.ci.get_mode).get("mode")
@@ -122,7 +125,7 @@ def start(dev: dict) -> dict:
         _sess = s
     s.thread.start()
     time.sleep(0.4)  # let the first (dark) frame go out
-    return {"leds": s.n, "bits": max(1, (s.n - 1).bit_length())}
+    return {"leds": s.n, "bits": max(1, (s.n - 1).bit_length()), "profile": s.profile, "bytes_per_led": s.bytes_per_led}
 
 
 def _show(s: "Session", frame: bytes):

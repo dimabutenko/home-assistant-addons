@@ -322,6 +322,53 @@ const ScanLib = (() => {
     return { sepR: m, sepB: m, sep: m, lit, satShare: lit ? clipped / lit : 0 };
   }
 
+  // ---- a shaking phone -------------------------------------------------------------------------------------------------------------
+  const lumaOf = planes => {
+    if (planes.length === 1) return planes[0];
+    const o = new Float32Array(planes[0].length); for (let i = 0; i < o.length; i++) o[i] = 0.299 * planes[0][i] + 0.587 * planes[1][i] + 0.114 * planes[2][i];
+    return o;
+  };
+  function down2(a, w, h) {
+    const W = w >> 1, H = h >> 1, o = new Float32Array(W * H);
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) { const i = 2 * y * w + 2 * x; o[y * W + x] = (a[i] + a[i + 1] + a[i + w] + a[i + w + 1]) / 4; }
+    return { a: o, w: W, h: H };
+  }
+  // normalised correlation of A(x) with B(x + d) over the part where both exist
+  function corr(A, B, w, h, dx, dy) {
+    const x0 = Math.max(0, -dx), x1 = Math.min(w, w - dx), y0 = Math.max(0, -dy), y1 = Math.min(h, h - dy);
+    let s = 0, na = 0, nb = 0;
+    for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) { const a = A[y * w + x], b = B[(y + dy) * w + x + dx]; s += a * b; na += a * a; nb += b * b; }
+    return s / Math.sqrt(na * nb + 1e-9);
+  }
+  // How far a photo is moved against a reference: img(x + d) matches ref(x). Both are the light of the LEDs (the dark photo taken off). Found
+  // coarsely on a quarter-size picture (+-24 px at full size), refined on a half-size one and then with a parabola through the correlation
+  // of the neighbours (about 0.1 px). null when the photo does not look like the reference (a score under 0.2).
+  function estimateShift(ref, img, w, h, range = 6) {
+    const r2 = down2(ref, w, h), i2 = down2(img, w, h), r4 = down2(r2.a, r2.w, r2.h), i4 = down2(i2.a, i2.w, i2.h);
+    let best = -1, bx = 0, by = 0;
+    for (let dy = -range; dy <= range; dy++) for (let dx = -range; dx <= range; dx++) { const c = corr(r4.a, i4.a, r4.w, r4.h, dx, dy); if (c > best) { best = c; bx = dx; by = dy; } }
+    let cb = -1, cx = 0, cy = 0;
+    for (let dy = 2 * by - 1; dy <= 2 * by + 1; dy++) for (let dx = 2 * bx - 1; dx <= 2 * bx + 1; dx++) { const c = corr(r2.a, i2.a, r2.w, r2.h, dx, dy); if (c > cb) { cb = c; cx = dx; cy = dy; } }
+    if (cb < 0.2) return null;
+    const par = (m, c, p) => { const d = m - 2 * c + p; return d < 0 ? Math.max(-1, Math.min(1, 0.5 * (m - p) / d)) : 0; };
+    const sx = par(corr(r2.a, i2.a, r2.w, r2.h, cx - 1, cy), cb, corr(r2.a, i2.a, r2.w, r2.h, cx + 1, cy));
+    const sy = par(corr(r2.a, i2.a, r2.w, r2.h, cx, cy - 1), cb, corr(r2.a, i2.a, r2.w, r2.h, cx, cy + 1));
+    return { dx: 2 * (cx + sx), dy: 2 * (cy + sy), score: cb };
+  }
+  // the plane moved back: out(x) = plane(x + d), bilinear; what comes from outside the picture is 0
+  function shiftPlane(p, w, h, dx, dy) {
+    const out = new p.constructor(w * h), ix = Math.floor(dx), iy = Math.floor(dy), fx = dx - ix, fy = dy - iy, add = p.constructor === Uint8Array ? 0.5 : 0;
+    for (let y = 0; y < h; y++) {
+      const sy = y + iy; if (sy < 0 || sy + 1 >= h) continue;
+      for (let x = 0; x < w; x++) {
+        const sx = x + ix; if (sx < 0 || sx + 1 >= w) continue;
+        const i = sy * w + sx;
+        out[y * w + x] = ((p[i] * (1 - fx) + p[i + 1] * fx) * (1 - fy) + (p[i + w] * (1 - fx) + p[i + w + 1] * fx) * fy) + add;
+      }
+    }
+    return out;
+  }
+
   const maxArr = (a, b) => { const o = new Float32Array(a.length); for (let i = 0; i < a.length; i++) o[i] = Math.max(a[i], b[i]); return o; };
   const minArr = (a, b) => { const o = new Float32Array(a.length); for (let i = 0; i < a.length; i++) o[i] = Math.min(a[i], b[i]); return o; };
 
@@ -458,6 +505,23 @@ const ScanLib = (() => {
     return cr1(t0, a, b, t3, p0, pa, pb, p3, i);
   }
 
+  // Continuing the string beyond its first / last known LED: the step per index of the nearest known LEDs, capped at twice the typical step and
+  // damped (each further LED goes a little less far: 0.97 per LED), so that the LEDs spread out along the string instead of piling up on one point.
+  // get(i): the value of a known LED i; wrap: an angle. Returns (before, dist) -> the offset from the nearest known LED.
+  function endExtension(known, get, wrap = false) {
+    const dif = (x, y) => { let d = x - y; if (wrap) d -= 2 * Math.PI * Math.round(d / (2 * Math.PI)); return d; };
+    const typ = []; for (let k = 0; k + 1 < known.length; k++) if (known[k + 1] - known[k] <= 3) typ.push(Math.abs(dif(get(known[k + 1]), get(known[k]))) / (known[k + 1] - known[k]));
+    typ.sort((a, b) => a - b); const cap = 2 * (typ[typ.length >> 1] || 0);
+    const slope = before => {
+      const k = before ? known.slice(0, 6) : known.slice(-6).reverse();  // nearest first
+      if (k.length < 2) return 0;
+      const a = k[0], b = k[k.length - 1], s = dif(get(a), get(b)) / (a - b);
+      return Math.max(-cap, Math.min(cap, s));
+    };
+    const sb = slope(true), sa = slope(false);
+    return (before, dist) => (before ? -sb : sa) * (1 - Math.pow(0.97, dist)) / 0.03;
+  }
+
   // Fill gaps along the string (neighbouring LEDs are physically adjacent) with a Catmull-Rom curve through the known LEDs on both sides
   // (a long gap between close neighbours must not swing wildly: the curve may leave the straight line by at most 0.4 of the gap's length).
   // With `arc` (a tree seen from one side) a long hidden run whose ends are far apart sideways is the string going round the back of the
@@ -465,7 +529,8 @@ const ScanLib = (() => {
   function interpolate(pts, { arc = false } = {}) {
     const out = pts.map(p => p && { ...p }), known = []; out.forEach((p, i) => p && known.push(i));
     if (!known.length) return out;
-    const us = known.map(i => pts[i].u), width = Math.max(...us) - Math.min(...us);
+    const us = known.map(i => pts[i].u), vs = known.map(i => pts[i].v), minU = Math.min(...us), maxU = Math.max(...us), minV = Math.min(...vs), maxV = Math.max(...vs), width = maxU - minU, height = maxV - minV;
+    const extU = endExtension(known, k => pts[k].u), extV = endExtension(known, k => pts[k].v);
     let pos = 0;
     for (let i = 0; i < out.length; i++) {
       if (out[i]) continue;
@@ -478,7 +543,12 @@ const ScanLib = (() => {
         const du = u - lu, dv = v - lv, m = Math.hypot(du, dv);
         if (m > lim) { const f = lim / m; u = lu + du * f; v = lv + dv * f; }
         out[i] = { u, v, src: 'interp' };
-      } else { const k = known[pos] < i ? known[pos] : known[0]; out[i] = { u: out[k].u, v: out[k].v, src: 'interp' }; }
+      } else {  // before the first / after the last known LED: continue the string (damped), do not pile the LEDs up on one point
+        const before = i < known[0], k = before ? known[0] : known[known.length - 1], dist = Math.abs(i - k);
+        let u = pts[k].u + extU(before, dist), v = pts[k].v + extV(before, dist);
+        u = Math.min(maxU + 0.05 * width, Math.max(minU - 0.05 * width, u)); v = Math.min(maxV + 0.05 * height, Math.max(minV - 0.05 * height, v));
+        out[i] = { u, v, src: 'interp' };
+      }
     }
     return out;
   }
@@ -575,6 +645,7 @@ const ScanLib = (() => {
       const p = P[i], r = R(p.y), xr = Math.max(-1, Math.min(1, (p.x - cx) / r));
       Y[i] = p.y; TH[i] = Math.atan2(p.side * Math.sqrt(1 - xr * xr), xr);
     }
+    const extY = endExtension(known, k => Y[k]), extT = endExtension(known, k => TH[k], true);
     const out = new Array(n); let pos = 0;
     for (let i = 0; i < n; i++) {
       let y, th; const src = P[i] ? P[i].src : 'interp';
@@ -587,7 +658,10 @@ const ScanLib = (() => {
           const lim = 0.4 * Math.abs(Y[b] - Y[a]); if (Math.abs(y - ly) > lim) y = ly + Math.sign(y - ly) * lim;
           let d = TH[b] - TH[a]; d -= 2 * Math.PI * Math.round(d / (2 * Math.PI));
           th = TH[a] + d * t;
-        } else { const k = known[pos] < i ? known[pos] : known[0]; y = Y[k]; th = TH[k]; }
+        } else {  // before the first / after the last LED seen: continue the string (damped height and turn)
+          const before = i < known[0], k = before ? known[0] : known[known.length - 1], dist = Math.abs(i - k);
+          y = Math.min(y1 + 0.05 * H, Math.max(y0 - 0.05 * H, Y[k] + extY(before, dist))); th = TH[k] + extT(before, dist);
+        }
       }
       const r = R(y); out[i] = { x: r * Math.cos(th), y, z: r * Math.sin(th), src };
     }
@@ -596,7 +670,7 @@ const ScanLib = (() => {
     return { pts: out.map(p => ({ x: p.x * s, y: (p.y - y0) * sy, z: p.z * s, src: p.src })), common: common.length, used, align, rms: +rms.toFixed(2), scale: +T.s.toFixed(3) };
   }
 
-  return { separation, despike, detect, detectHue, eccLayout, checkLeds, bitLeds, framePlan, suspicious, orient, merge3d, cr1, singleBlob, interpolate, searchRuns, filterOutliers, toLayout, percentile, blur3, maxArr, minArr, unstableMask, motion, roiOf };
+  return { lumaOf, estimateShift, shiftPlane, separation, despike, detect, detectHue, eccLayout, checkLeds, bitLeds, framePlan, suspicious, orient, merge3d, cr1, singleBlob, interpolate, searchRuns, filterOutliers, toLayout, percentile, blur3, maxArr, minArr, unstableMask, motion, roiOf };
 })();
 
 // ---- scan types ------------------------------------------------------------------------------------------------
@@ -619,7 +693,7 @@ const SCAN_MODES = {
 };
 
 // ---- UI ------------------------------------------------------------------------------------
-const SC = { stream: null, video: null, running: false, cancel: false, waiting: false, resume: null, result: null, snap: null, opts: { rot: 0, flip: false, mode: 'fit' }, scanMode: 'flat', style: 'hue', lockInfo: null, device: null, oldLayout: null, status: '' };
+const SC = { stream: null, video: null, running: false, cancel: false, waiting: false, resume: null, result: null, snap: null, opts: { rot: 0, flip: false, mode: 'fit' }, scanMode: 'flat', style: 'hue', stabilise: true, lockInfo: null, device: null, oldLayout: null, status: '' };
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 function scanStopCamera() {
@@ -714,6 +788,7 @@ async function cameraCheck() {
   try {
     scanStatus('Switching the garland to scan mode...', 0.02);
     const info = await send('api/scan/start', { device: dev }); started = true;
+    if (info.profile && info.profile !== 'RGB') throw new Error(`this garland has the LED profile ${info.profile}: it is scanned with white patterns, the red / blue check does not apply`);
     const every = Array.from({ length: info.leds }, (_, i) => i);
     cam = await cameraControls(); SC.lockInfo = { done: cam.done, missing: cam.missing };
     const { level, peak } = await tuneCamera({ cam, status: scanStatus, check });
@@ -829,14 +904,38 @@ function peakOf(a, dk, colour) {
   return pk;
 }
 
+// A shaking phone (a hand, a tripod that sags): every photo of the scan is moved back onto the first all-on photo. The shift of a photo is found by
+// correlating the light of its LEDs with the reference (translation only), the planes are resampled. The closing all-on photo is moved too, and
+// its shift (the latest one) is what the single-LED photos afterwards are corrected with.
+function stabilise({ ref, dark, cap, all2, w, h }) {
+  const light = planes => { const l = ScanLib.lumaOf(planes), o = new Float32Array(l.length); for (let i = 0; i < o.length; i++) o[i] = Math.max(0, l[i] - dark.data[i]); return o; };
+  const refLight = light([ref.data]), shifts = []; let moved = 0;
+  const fix = planes => {
+    const d = ScanLib.estimateShift(refLight, light(planes), w, h);
+    if (!d) return planes;
+    shifts.push(d);
+    if (Math.abs(d.dx) + Math.abs(d.dy) < 0.15) return planes;
+    moved++; return planes.map(p => ScanLib.shiftPlane(p, w, h, d.dx, d.dy));
+  };
+  cap.cal = cap.cal.map(fix);
+  cap.frames = cap.frames.map(f => Array.isArray(f) ? fix(f) : { ...f, planes: fix(f.planes) });
+  const d2 = all2 ? ScanLib.estimateShift(refLight, light([all2.data]), w, h) : null;
+  const all2L = d2 ? ScanLib.shiftPlane(all2.data, w, h, d2.dx, d2.dy) : all2 ? all2.data : null;
+  const mag = shifts.concat(d2 ? [d2] : []).map(d => Math.hypot(d.dx, d.dy));
+  return { all2L, last: d2 || { dx: 0, dy: 0 }, max: mag.length ? Math.max(...mag) : 0, moved, n: shifts.length };
+}
+
 // One view of the garland: photos -> positions of the LEDs found (null where nothing was found; nothing interpolated yet).
 // style: 'hue' (every LED lit in every frame, red = 0, blue = 1, decoded pixel by pixel), 'rgb' (R, G, B on / off = three bits per frame)
 // or 'mono' (white on / off, one bit per frame). When the chosen style is not read the scan repeats itself with 'mono'.
-async function scanView({ dev, M, scanMode, style, check, status, v, dump }) {
+async function scanView({ dev, M, scanMode, style: wanted, check, status, v, dump }) {
   const tag = v ? `v${v}_` : '';
   status('Switching the garland to scan mode...', 0.02);
   const info = await send('api/scan/start', { device: dev }); const n = info.leds, nb = info.bits;
   dump.n = n;
+  // colour patterns need red and blue LEDs: a garland with another LED profile (white / amber, red-blue-white) is scanned with white patterns
+  const style = info.profile && info.profile !== 'RGB' ? 'mono' : wanted;
+  if (style !== wanted) status(`This garland has the LED profile ${info.profile}: colour patterns need RGB, so white patterns are used.`, 0.03);
   let locked = false, colourShots = style !== 'mono';
   try {
     const take = async (name, body) => {  // light a pattern, wait until the camera shows it, photograph, keep for the dump
@@ -893,9 +992,18 @@ async function scanView({ dev, M, scanMode, style, check, status, v, dump }) {
     status('Photo: everything on, again...', 0.6); const all2 = await take('all2', { kind: 'all', level });
     status('Recognising the LEDs...', 0.62); await sleep(30);
     const w = all1.w, h = all1.h;
-    const mv = ScanLib.motion(w, h, dark.data, all1.data, dark2.data, all2.data);
-    if (mv && mv.shift > 2) throw new Error(`The phone moved by about ${mv.shift.toFixed(1)} px during the scan. Put it on a tripod or a stable surface and try again.`);
-    const darkL = ScanLib.maxArr(dark.data, dark2.data), allL = ScanLib.minArr(all1.data, all2.data);
+    let mv, allL, lastShift = { dx: 0, dy: 0 };
+    if (SC.stabilise) {
+      status('Aligning the photos...', 0.61);
+      const sh = stabilise({ ref: all1, dark, cap, all2, w, h });
+      mv = { shift: sh.max }; allL = ScanLib.minArr(all1.data, sh.all2L); lastShift = sh.last;
+      if (sh.max > 15) throw new Error(`The phone moved by up to ${sh.max.toFixed(0)} px during the scan, too much to put the photos back together. Put it on a tripod or a stable surface and try again.`);
+    } else {
+      mv = ScanLib.motion(w, h, dark.data, all1.data, dark2.data, all2.data);
+      if (mv && mv.shift > 2) throw new Error(`The phone moved by about ${mv.shift.toFixed(1)} px during the scan. Put it on a tripod or a stable surface and try again.`);
+      allL = ScanLib.minArr(all1.data, all2.data);
+    }
+    const darkL = ScanLib.maxArr(dark.data, dark2.data);
     const darkRGB = [0, 1, 2].map(c => ScanLib.maxArr(dark.rgb[c], dark2.rgb[c]));
     const unstable = ScanLib.unstableMask(dark.data, dark2.data, w, h);
     const decode = (s, k) => s === 'hue'
@@ -906,7 +1014,7 @@ async function scanView({ dev, M, scanMode, style, check, status, v, dump }) {
     const enough = () => decoded >= Math.max(M.minCount, n * M.minShare);
     if (st !== 'mono' && !enough()) {  // the colours were not read (a camera that mixes them, a very bright room): the same with white patterns
       status('The colour patterns were not recognised, repeating with white ones...', 0.62);
-      st = 'mono'; colourShots = false; cap = await capture('mono'); det = decode('mono', cap); pts = det.pts; decoded = pts.filter(Boolean).length; fellBack = true;
+      st = 'mono'; colourShots = false; cap = await capture('mono'); if (SC.stabilise) stabilise({ ref: all1, dark, cap, all2: null, w, h }); det = decode('mono', cap); pts = det.pts; decoded = pts.filter(Boolean).length; fellBack = true;
     }
     if (!enough()) throw new Error(scanMode.startsWith('tree')
       ? `Only ${decoded} of ${n} LEDs could be recognised (${Math.round(100 * decoded / n)}%), too few even for a view from one side. Move the phone closer so that the tree fills the picture, darken the room, and check that the whole tree is in view.`
@@ -921,13 +1029,14 @@ async function scanView({ dev, M, scanMode, style, check, status, v, dump }) {
       check(); const i = todo[q]; status(`Checking LED ${i} separately (${q + 1} of ${limit}), brightness ${lv}...`, 0.62 + 0.36 * q / Math.max(1, limit));
       await pat({ kind: 'leds', leds: [i], level: lv }); await settle(120);
       const s = await shot(), b = ScanLib.singleBlob({ w, h, dark: darkL, frame: s.data, minPeak: Math.max(10, det.peak * 0.3), roi, exclude: unstable });
-      pts[i] = b ? { ...b, src: 'single' } : null; if (b) refined++;  // a LED that does not show up alone was a false detection
+      pts[i] = b ? { ...b, u: b.u - lastShift.dx, v: b.v - lastShift.dy, src: 'single' } : null; if (b) refined++;  // a LED that does not show up alone was a false detection
     }
     if (M.searchRuns) {  // a tree: look for the LEDs that are visible but were too close together to be told apart by code
       const minPeak = Math.max(10, det.peak * M.singleFactor), roi2 = ScanLib.roiOf(pts, w, h, { x: 0.15, top: 0.6, bottom: 0.1 });
       const stat = await ScanLib.searchRuns(pts, async i => {
         await pat({ kind: 'leds', leds: [i], level: lv }); await settle(120); const s1 = await shot();
-        return ScanLib.singleBlob({ w, h, dark: darkL, frame: s1.data, minPeak, roi: roi2, exclude: unstable });
+        const b1 = ScanLib.singleBlob({ w, h, dark: darkL, frame: s1.data, minPeak, roi: roi2, exclude: unstable });
+        return b1 && { ...b1, u: b1.u - lastShift.dx, v: b1.v - lastShift.dy };
       }, { limit: M.searchLimit, check, progress: (u, l, i) => status(`Looking for LED ${i} on its own (${u} of at most ${l}), brightness ${lv}...`, 0.62 + 0.36 * u / l) });
       refined += stat.found;
     }
@@ -1162,7 +1271,7 @@ function renderScan() {
       st.sep !== null && st.sep !== undefined ? h('div', { class: st.sep < 0.3 || st.clipped > 10 ? 'warn' : 'muted' }, `Red against blue: distinctness ${st.sep} (1 = perfect, the decoder gives up below 0.22), ${st.clipped}% of the lit pixels clipped (they turn white; under 5% is good). ${SC.lockInfo && SC.lockInfo.exposure ? 'Camera set to ' + SC.lockInfo.exposure + '.' : ''}`) : null,
       r.spikes && r.spikes.length ? h('div', { class: 'warn' }, `${r.spikes.length} LED${r.spikes.length > 1 ? 's' : ''} (${r.spikes.slice(0, 8).join(', ')}${r.spikes.length > 8 ? ', ...' : ''}) stood far away from both neighbours on the string and were put between them: a stray detection, most likely.`) : null,
       SC.lockInfo ? h('div', { class: SC.lockInfo.missing.length ? 'warn' : 'muted' }, `Camera: ${SC.lockInfo.done.length ? 'locked ' + SC.lockInfo.done.join(', ') : 'nothing could be locked'}${SC.lockInfo.missing.length ? '; not lockable here: ' + SC.lockInfo.missing.join(', ') + ' (the phone may change them during the scan; Chrome on Android locks the most)' : ''}.`) : null,
-      st.shift > 1.2 ? h('div', { class: 'warn' }, `The phone moved about ${st.shift} px during the scan. Use a tripod for a more accurate result.`) : null,
+      st.shift > 1.2 ? h('div', { class: st.shift > 6 ? 'warn' : 'muted' }, `The phone moved by up to ${st.shift} px during the scan; every photo was moved back into place, but a tripod is still more exact.`) : null,
       h('div', { class: 'muted' }, 'Green = recognised, blue = found separately, orange = estimated. The grey line is the string in LED order and should run smoothly.'),
       h('div', { class: 'row', style: 'margin:8px 0' },
         h('label', {}, 'Rotate ', h('select', { onchange: e => { SC.opts.rot = Number(e.target.value); drawResults(); } }, [0, 1, 2, 3].map(q => h('option', { value: q, selected: q === SC.opts.rot }, `${q * 90}°`)))),

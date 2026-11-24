@@ -147,7 +147,7 @@ def state() -> dict:
     return {"running": s is not None, "device": s.dev["name"] if s else None, "leds": s.n if s else None}
 
 
-def apply_layout(dev: dict, coords: list) -> dict:
+def apply_layout(dev: dict, coords: list, scan_type: str = "flat") -> dict:
     """Back up the current layout, write the new one to the device and refresh the cache."""
     if dev["host"] in device.scanning_hosts:
         raise RuntimeError("stop the scan first")
@@ -166,4 +166,5 @@ def apply_layout(dev: dict, coords: list) -> dict:
     with device.lock_for(dev["host"]):
         device.retry(device.connect(dev["host"]).set_led_layout, "2d", clean)
     new = device.get_layout(dev, refresh=True)
+    log.info("layout of %s written (%s scan, %d LEDs)", dev["name"], scan_type, len(new))
     return {"leds": len(new), "backup": backup.name}

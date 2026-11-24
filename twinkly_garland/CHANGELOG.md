@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.15.0
+- **Scan types** (Scan tab, remembered per garland): *Flat wall or window* (as before: every LED is found, by code and then one by one), *Tree, one side (profile)* and a placeholder for *Tree, several sides* (planned, not selectable yet).
+- **Tree, one side**: only the LEDs facing the camera can be seen, so 5% recognised by code is enough to go on (the flat scan needs 50%). The runs of LEDs that code did not recognise are probed along the string with a stride of 3: a run that shows nothing is the far side and is skipped, a run that shows LEDs is searched fully (this finds the LEDs that were merged in the photo). The LEDs that stay hidden are estimated along the string, a long hidden run between two far-apart visible ends is drawn as an arc round the back of the tree. The search area for single LEDs is stretched upwards, the search takes up to 400 photos (about 5 minutes) and can be cancelled. With a synthetic tree (600 LEDs on a helix, far side hidden) the mean position error of all LEDs was 1.6 px of a 430 px high tree.
+- **A scan owns the garland**: while it runs, `api/play`, `api/live/play`, the periodic ensure and light commands from Home Assistant leave that device alone (`api/play` answers 409) instead of switching it under the camera.
+- Fixed a stray `null` printed at the bottom of the Scan tab.
+
 ## 0.14.1
 - **Fix: two garlands could not stream at the same time** (a position scan of one garland while a live scene played on the other failed with `Address in use`). The xled library binds its UDP socket to local port 7777, so only one client per process could send real-time frames. The add-on now uses a send-only socket without a fixed local port. This also removes a rare failure after the clients were recreated following a connection error.
 

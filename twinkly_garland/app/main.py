@@ -94,6 +94,9 @@ def desired_for(dev: dict) -> list:
 def ensure_all() -> list:
     res = []
     for dev in devices():
+        if dev["host"] in device.scanning_hosts:
+            res.append({"device": dev["name"], "action": "skipped", "error": "a position scan is running"})
+            continue
         try:
             res.append(device.ensure(dev, desired_for(dev)))
         except Exception as exc:
@@ -368,6 +371,9 @@ def start_live(scene_name: str, names: list, fps: float = 12.0, restart: bool = 
     out = []
     for n in names:
         dev = find_device(n)
+        if dev["host"] in device.scanning_hosts:
+            out.append({"device": n, "error": "a position scan is running"})
+            continue
         try:
             if running[n] is not None and running[n].name == scene_name and not restart:
                 out.append({"device": n, "live": scene_name, "fps": fps, "kept": True})
@@ -758,6 +764,10 @@ def api_play(req: PlayReq):
     `random` picks one effect, common to all target devices, among those marked for rotation (weighted)."""
     _drop_status_cache()
     names = req.devices or [d["name"] for d in devices()]
+    busy = [n for n in names if find_device(n)["host"] in device.scanning_hosts]  # a position scan owns the device
+    names = [n for n in names if n not in busy]
+    if not names:
+        raise HTTPException(409, f"a position scan is running on {', '.join(busy)}")
     if req.effect.startswith("live:"):
         out = start_live(req.effect[5:], names)
         if not any("live" in o for o in out):
@@ -775,7 +785,7 @@ def api_play(req: PlayReq):
         for n in names:
             live.stop_for(find_device(n))
     desired_by_dev = {}
-    errors = {}
+    errors = {n: "a position scan is running" for n in busy}
     for n in names:
         dev = find_device(n)
         try:
@@ -866,12 +876,13 @@ def api_scan_state():
 class ScanApply(BaseModel):
     device: str
     coordinates: list[dict]
+    scan_type: str = "flat"  # flat | tree (one side); only logged
 
 
 @app.post("/api/scan/apply")
 def api_scan_apply(req: ScanApply):
     try:
-        return scan.apply_layout(find_device(req.device), req.coordinates)
+        return scan.apply_layout(find_device(req.device), req.coordinates, req.scan_type)
     except (RuntimeError, ValueError) as exc:
         raise HTTPException(400, str(exc))
     except Exception as exc:

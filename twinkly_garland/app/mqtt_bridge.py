@@ -266,6 +266,9 @@ class Bridge:
     def apply(self, dev: dict, cmd: dict):
         """Turn a light command from Home Assistant into device calls."""
         host = dev["host"]
+        if host in device.scanning_hosts:
+            log.info("%s: ignoring a command from Home Assistant, a position scan is running", dev["name"])
+            return
         state = str(cmd.get("state", "")).upper()
         if state == "OFF":
             live.stop_for(dev, restore=False)

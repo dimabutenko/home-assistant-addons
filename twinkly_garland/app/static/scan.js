@@ -100,7 +100,7 @@ const ScanLib = (() => {
 
   // LEDs worth checking one by one: far from their neighbours on the string (a wrongly decoded
   // blob) or standing alone in a run of missing LEDs (nothing to compare with).
-  function suspicious(pts) {
+  function suspicious(pts, aloneToo = true) {
     const known = []; pts.forEach((p, i) => p && known.push(i));
     const d = [];
     for (let i = 0; i + 1 < pts.length; i++) if (pts[i] && pts[i + 1]) d.push(Math.hypot(pts[i].u - pts[i + 1].u, pts[i].v - pts[i + 1].v));
@@ -111,7 +111,7 @@ const ScanLib = (() => {
       const db = b === undefined ? null : Math.hypot(pts[i].u - pts[b].u, pts[i].v - pts[b].v) / (b - i);
       const far = (da === null || da > 3 * med) && (db === null || db > 3 * med) && (da !== null || db !== null);
       const alone = (a === undefined || i - a > 1) && (b === undefined || b - i > 1);
-      if (far || alone) out.push(i);
+      if (far || (aloneToo && alone)) out.push(i);
     });
     return out;
   }
@@ -157,11 +157,14 @@ const ScanLib = (() => {
   }
 
   // Bounding box (with a margin) of the LEDs found so far: single-LED shots look only there.
-  function roiOf(pts, w, h) {
+  function roiOf(pts, w, h, grow = null) {
     const got = pts.filter(Boolean); if (got.length < 40) return null;
     const us = got.map(p => p.u).sort((a, b) => a - b), vs = got.map(p => p.v).sort((a, b) => a - b), q = Math.floor(got.length * 0.01);
     const mx = Math.max(30, 0.08 * w), my = Math.max(30, 0.08 * h);
-    return { x0: Math.max(0, us[q] - mx), x1: Math.min(w - 1, us[us.length - 1 - q] + mx), y0: Math.max(0, vs[q] - my), y1: Math.min(h - 1, vs[vs.length - 1 - q] + my) };
+    const bw = us[us.length - 1 - q] - us[q], bh = vs[vs.length - 1 - q] - vs[q];
+    // a tree: what was recognised by code may stop well short of the top (dense, merged blobs), so the search area is stretched upwards
+    const gx = grow ? Math.max(mx, grow.x * bw) : mx, gt = grow ? Math.max(my, grow.top * bh) : my, gb = grow ? Math.max(my, grow.bottom * bh) : my;
+    return { x0: Math.max(0, us[q] - gx), x1: Math.min(w - 1, us[us.length - 1 - q] + gx), y0: Math.max(0, vs[q] - gt), y1: Math.min(h - 1, vs[vs.length - 1 - q] + gb) };
   }
 
   // Brightest blob of (frame - dark) inside `roi` (if given) and outside `exclude` (if given); null if nothing stands out.
@@ -183,15 +186,47 @@ const ScanLib = (() => {
     return { u: sx[best] / sw[best], v: sy[best] / sw[best] };
   }
 
-  // Fill gaps along the string (neighbouring LEDs are physically adjacent).
-  function interpolate(pts) {
+  // Tree seen from one side: among the LEDs nobody recognised by code some are only too close together (merged blobs) and a photo of
+  // each one alone finds them, others are really hidden and nothing will ever show. Every run of missing LEDs along the string is probed
+  // with a stride of 3; between two probes that both show nothing the LEDs are taken as hidden (the far side comes in long blocks),
+  // next to a hit the LEDs in between are searched too.
+  async function searchRuns(pts, probe, { limit = 400, stride = 3, check = () => {}, progress = () => {} } = {}) {
+    const runs = []; let a = -1;
+    for (let i = 0; i <= pts.length; i++) {
+      const miss = i < pts.length && !pts[i];
+      if (miss && a < 0) a = i;
+      if (!miss && a >= 0) { runs.push([a, i - 1]); a = -1; }
+    }
+    let used = 0, found = 0, skipped = 0;
+    const tryOne = async i => { check(); used++; progress(used, limit, i); const b = await probe(i); if (b) { pts[i] = { ...b, src: 'single' }; found++; } return !!b; };
+    for (const [s0, e0] of runs) {
+      const idx = []; for (let i = s0; i <= e0; i += stride) idx.push(i); if (idx[idx.length - 1] !== e0) idx.push(e0);
+      if (used + idx.length > limit) return { used, found, skipped, truncated: true };
+      const hit = []; for (const i of idx) hit.push(await tryOne(i));
+      for (let k = 0; k + 1 < idx.length; k++) {
+        const gap = idx[k + 1] - idx[k] - 1; if (gap <= 0) continue;
+        if (!hit[k] && !hit[k + 1]) { skipped += gap; continue; }
+        for (let i = idx[k] + 1; i < idx[k + 1]; i++) { if (used >= limit) return { used, found, skipped, truncated: true }; await tryOne(i); }
+      }
+    }
+    return { used, found, skipped };
+  }
+
+  // Fill gaps along the string (neighbouring LEDs are physically adjacent). With `arc` (a tree seen from one side) a long hidden run
+  // whose ends are far apart sideways is the string going round the back of the tree: its x follows a half cosine (LEDs bunch up near
+  // the edges, as they do when they are spread evenly round a cone) while y moves straight.
+  function interpolate(pts, { arc = false } = {}) {
     const out = pts.map(p => p && { ...p }), known = []; out.forEach((p, i) => p && known.push(i));
     if (!known.length) return out;
+    const us = known.map(i => pts[i].u), width = Math.max(...us) - Math.min(...us);
     for (let i = 0; i < out.length; i++) {
       if (out[i]) continue;
       let a = -1, b = -1; for (const k of known) { if (k < i) a = k; else { b = k; break; } }
-      if (a >= 0 && b >= 0) { const t = (i - a) / (b - a); out[i] = { u: out[a].u + (out[b].u - out[a].u) * t, v: out[a].v + (out[b].v - out[a].v) * t, src: 'interp' }; }
-      else { const k = a >= 0 ? a : b; out[i] = { u: out[k].u, v: out[k].v, src: 'interp' }; }
+      if (a >= 0 && b >= 0) {
+        const t = (i - a) / (b - a), round = arc && b - a >= 8 && Math.abs(out[b].u - out[a].u) > 0.4 * width;
+        const tu = round ? (1 - Math.cos(Math.PI * t)) / 2 : t;
+        out[i] = { u: out[a].u + (out[b].u - out[a].u) * tu, v: out[a].v + (out[b].v - out[a].v) * t, src: 'interp' };
+      } else { const k = a >= 0 ? a : b; out[i] = { u: out[k].u, v: out[k].v, src: 'interp' }; }
     }
     return out;
   }
@@ -209,11 +244,24 @@ const ScanLib = (() => {
     return c.map(([x, y]) => ({ x: (x - xc) * s, y: (y - y0) * s }));
   }
 
-  return { detect, suspicious, singleBlob, interpolate, toLayout, percentile, blur3, maxArr, minArr, unstableMask, motion, roiOf };
+  return { detect, suspicious, singleBlob, interpolate, searchRuns, toLayout, percentile, blur3, maxArr, minArr, unstableMask, motion, roiOf };
 })();
 
+// ---- scan types ------------------------------------------------------------------------------------------------
+// flat: a window or a wall, the camera sees every LED: all of them are found (by code, then one by one).
+// tree: a tree seen from ONE side (a profile): only the LEDs facing the camera show up, the rest (the far side, behind branches) is
+//       estimated along the string, so a low share of recognised LEDs is normal and the LEDs that stay hidden are not searched one by one.
+// tree-round (planned): several sides of a tree one after another, merged into a 3D layout. Not implemented yet.
+const SCAN_MODES = {
+  flat: { label: 'Flat wall or window: every LED is visible', minShare: 0.5, minCount: 20, refineHidden: true, aloneToo: true, refineLimit: 150, arc: false,
+    hint: 'Put the phone on a tripod in front of the garland so that all of it is in view.' },
+  tree: { label: 'Tree, one side (profile): the LEDs on the far side are estimated', minShare: 0.05, minCount: 30, refineHidden: false, aloneToo: false, refineLimit: 40, arc: true, searchRuns: true, searchLimit: 400, singleFactor: 0.3,
+    hint: 'Put the phone on a tripod straight in front of the tree, the whole tree in view (top and bottom too), as dark as you can. The LEDs on the far side and behind the branches cannot be seen: they are estimated along the string.' },
+  'tree-round': { label: 'Tree, several sides (planned, not available yet)', disabled: true },
+};
+
 // ---- UI ------------------------------------------------------------------------------------
-const SC = { stream: null, video: null, running: false, cancel: false, result: null, snap: null, opts: { rot: 0, flip: false, mode: 'fit' }, device: null, oldLayout: null, status: '' };
+const SC = { stream: null, video: null, running: false, cancel: false, result: null, snap: null, opts: { rot: 0, flip: false, mode: 'fit' }, scanMode: 'flat', device: null, oldLayout: null, status: '' };
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 function scanStopCamera() {
@@ -246,6 +294,13 @@ async function shot() {  // average of two frames, as luma (a function declarati
 
 function pat(body) { return send('api/scan/pattern', body); }
 
+function scanLoadMode(dev) {  // the scan type is remembered per garland
+  SC.device = dev;
+  try { const m = localStorage.getItem('scan-mode:' + dev); if (m && SCAN_MODES[m] && !SCAN_MODES[m].disabled) SC.scanMode = m; } catch { /* no storage */ }
+}
+
+function scanSaveMode() { try { localStorage.setItem('scan-mode:' + SC.device, SC.scanMode); } catch { /* no storage */ } }
+
 function scanStatus(msg, frac) {
   SC.status = msg; const el = document.getElementById('scan-status'), bar = document.getElementById('scan-bar');
   if (el) el.textContent = msg; if (bar && frac !== undefined) bar.firstChild.style.width = `${Math.round(frac * 100)}%`;
@@ -253,7 +308,9 @@ function scanStatus(msg, frac) {
 
 async function runScan() {
   const dev = document.getElementById('scan-dev').value;
+  SC.device = dev;
   SC.running = true; SC.cancel = false; SC.result = null; SC.device = dev; renderScan();
+  const M = SCAN_MODES[SC.scanMode] || SCAN_MODES.flat, scanMode = SC.scanMode;
   const check = () => { if (SC.cancel) throw new Error('cancelled'); };
   try {
     scanStatus('Switching the garland to scan mode...', 0.02);
@@ -294,10 +351,12 @@ async function runScan() {
     const det = ScanLib.detect({ w, h, dark: dark.data, all: all.data, bits, n });
     let pts = det.pts;
     const decoded = pts.filter(Boolean).length;
-    if (decoded < n * 0.5) throw new Error(`Only ${decoded} of ${n} LEDs could be recognised. The phone probably moved (use a tripod), the garland is not fully in view, or the room is too bright.`);
+    if (decoded < Math.max(M.minCount, n * M.minShare)) throw new Error(scanMode === 'tree'
+      ? `Only ${decoded} of ${n} LEDs could be recognised (${Math.round(100 * decoded / n)}%), too few even for a view from one side. Move the phone closer so that the tree fills the picture, darken the room, and check that the whole tree is in view.`
+      : `Only ${decoded} of ${n} LEDs could be recognised. The phone probably moved (use a tripod), the garland is not fully in view, or the room is too bright. For a tree seen from one side choose the scan type "Tree, one side".`);
     // refine: missing and suspicious LEDs one at a time
-    const todo = [...new Set([...pts.map((p, i) => p ? -1 : i).filter(i => i >= 0), ...ScanLib.suspicious(pts)])];
-    const limit = Math.min(todo.length, 150); let refined = 0;
+    const todo = [...new Set([...(M.refineHidden ? pts.map((p, i) => p ? -1 : i).filter(i => i >= 0) : []), ...ScanLib.suspicious(pts, M.aloneToo)])];
+    const limit = Math.min(todo.length, M.refineLimit); let refined = 0;
     const roi = ScanLib.roiOf(pts, w, h);
     for (let q = 0; q < limit; q++) {
       check(); const i = todo[q]; scanStatus(`Checking LED ${i} separately (${q + 1} of ${limit}), brightness ${Math.max(level, 200)}...`, 0.62 + 0.36 * q / Math.max(1, limit));
@@ -305,10 +364,18 @@ async function runScan() {
       const s = await shot(), b = ScanLib.singleBlob({ w, h, dark: dark.data, frame: s.data, minPeak: Math.max(10, det.peak * 0.3), roi, exclude: unstable });
       pts[i] = b ? { ...b, src: 'single' } : null; if (b) refined++;  // a LED that does not show up alone was a false detection
     }
+    if (M.searchRuns) {  // a tree: look for the LEDs that are visible but were too close together to be told apart by code
+      const minPeak = Math.max(10, det.peak * M.singleFactor), roi2 = ScanLib.roiOf(pts, w, h, { x: 0.15, top: 0.6, bottom: 0.1 }), lv = Math.max(level, 200);
+      const stat = await ScanLib.searchRuns(pts, async i => {
+        await pat({ kind: 'leds', leds: [i], level: lv }); await sleep(450); const s1 = await shot();
+        return ScanLib.singleBlob({ w, h, dark: dark.data, frame: s1.data, minPeak, roi: roi2, exclude: unstable });
+      }, { limit: M.searchLimit, check, progress: (u, l, i) => scanStatus(`Looking for LED ${i} on its own (${u} of at most ${l}), brightness ${lv}...`, 0.62 + 0.36 * u / l) });
+      refined += stat.found;
+    }
     const hidden = pts.filter(p => !p).length;
-    pts = ScanLib.interpolate(pts);
+    pts = ScanLib.interpolate(pts, { arc: M.arc });
     if (pts.some(p => !p)) throw new Error('No LED was found. Make sure the garland is in view and the room is dark.');
-    SC.result = { pts, w, h, n, stats: { n, decoded, refined, hidden, shift: mv ? +mv.shift.toFixed(1) : null, blobs: det.blobs, merged: det.merged, invalid: det.invalid, conflicts: det.conflicts, uncertain: det.uncertain, level } };
+    SC.result = { pts, w, h, n, stats: { mode: scanMode, n, decoded, refined, hidden, shift: mv ? +mv.shift.toFixed(1) : null, blobs: det.blobs, merged: det.merged, invalid: det.invalid, conflicts: det.conflicts, uncertain: det.uncertain, level } };
     SC.snap = { w, h, data: all1.data };
     SC.oldLayout = await api(`api/devices/${encodeURIComponent(dev)}/layout`);
     scanStatus('Done. Check the result below, then apply it.', 1);
@@ -374,7 +441,7 @@ async function applyScan() {
   const r = SC.result; if (!r) return;
   if (!confirm(`Write the scanned layout to ${SC.device}? The current layout is saved as a backup first.`)) return;
   try {
-    const res = await send('api/scan/apply', { device: SC.device, coordinates: r.layout.map(p => ({ x: p.x, y: p.y })) });
+    const res = await send('api/scan/apply', { device: SC.device, scan_type: r.stats.mode, coordinates: r.layout.map(p => ({ x: p.x, y: p.y })) });
     toast(`Layout written (${res.leds} LEDs). Backup: ${res.backup}`, false, 8000);
     SC.oldLayout = await api(`api/devices/${encodeURIComponent(SC.device)}/layout`); drawResults(); loadGallery();
   } catch (e) { toast('Not applied: ' + e.message, true, 8000); }
@@ -383,6 +450,7 @@ async function applyScan() {
 function renderScan() {
   const root = document.getElementById('view-scan'); root.replaceChildren();
   const devs = (S.status || []).map(d => d.name);
+  if (!SC.device && devs.length) scanLoadMode(devs[0]);
   const video = h('video', { playsinline: '', muted: '', autoplay: '', style: 'width:100%;max-width:480px;border-radius:8px;background:#000' }); video.muted = true;
   SC.video = video; if (SC.stream) { video.srcObject = SC.stream; video.play().catch(() => {}); }
   const st = SC.result && SC.result.stats;
@@ -394,9 +462,12 @@ function renderScan() {
         h('li', {}, 'Darken the room. Put the phone on something steady so the whole garland is in view.'),
         h('li', {}, 'Press "Open camera", then "Start scan". The garland flashes patterns for about a minute; do not move the phone.'),
         h('li', {}, 'Check the result and press "Apply to the garland". The old layout is saved as a backup.')),
+      h('div', { class: 'muted', style: 'margin-bottom:8px' }, (SCAN_MODES[SC.scanMode] || SCAN_MODES.flat).hint),
       !window.isSecureContext ? h('div', { class: 'bad' }, `This page is not on https (${location.protocol}//${location.host}), so the browser will not give it the camera.`) : null,
       h('div', { class: 'row' },
-        h('label', {}, 'Garland ', h('select', { id: 'scan-dev', disabled: SC.running }, devs.map(d => h('option', { value: d, selected: d === SC.device }, d)))),
+        h('label', {}, 'Garland ', h('select', { id: 'scan-dev', disabled: SC.running, onchange: e => { scanLoadMode(e.target.value); renderScan(); } }, devs.map(d => h('option', { value: d, selected: d === SC.device }, d)))),
+        h('label', {}, 'Scan type ', h('select', { id: 'scan-mode', disabled: SC.running, onchange: e => { SC.scanMode = e.target.value; scanSaveMode(); renderScan(); } },
+          Object.entries(SCAN_MODES).map(([k, m]) => h('option', { value: k, disabled: !!m.disabled, selected: k === SC.scanMode }, m.label)))),
         h('button', { disabled: SC.running, onclick: async () => { try { await scanOpenCamera(); toast('Camera ready.'); renderScan(); } catch (e) { toast(e.message, true, 9000); } } }, 'Open camera'),
         h('button', { class: 'primary', disabled: SC.running || !SC.stream, onclick: runScan }, 'Start scan'),
         h('button', { disabled: SC.running, title: 'Lights the garland step by step so you can check it by eye. No camera needed.', onclick: lightTest }, 'Light test'),
@@ -406,7 +477,7 @@ function renderScan() {
     h('div', { class: 'card', style: 'margin-bottom:12px' }, h('h3', {}, 'Camera'), video),
     SC.result ? h('div', { class: 'card' },
       h('h2', {}, 'Result'),
-      h('div', {}, `${st.n} LEDs: ${st.decoded} recognised by code, ${st.refined} found one by one, `, h('b', { class: st.hidden ? 'warn' : 'ok' }, `${st.hidden} not visible (estimated from their neighbours)`),
+      h('div', {}, `${st.n} LEDs: ${st.decoded} recognised by code, ${st.refined} found one by one, `, h('b', { class: st.hidden && st.mode !== 'tree' ? 'warn' : 'ok' }, `${st.hidden} not visible (estimated from their neighbours${st.mode === 'tree' ? ', as expected for the far side of a tree' : ''})`),
         h('span', { class: 'muted' }, `  ·  blobs ${st.blobs}, merged ${st.merged}, invalid ${st.invalid}, ambiguous ${st.conflicts}, doubtful ${st.uncertain}, brightness ${st.level}`)),
       st.shift > 1.2 ? h('div', { class: 'warn' }, `The phone moved about ${st.shift} px during the scan. Use a tripod for a more accurate result.`) : null,
       h('div', { class: 'muted' }, 'Green = recognised, blue = found separately, orange = estimated. The grey line is the string in LED order and should run smoothly.'),
@@ -418,7 +489,7 @@ function renderScan() {
         h('div', {}, h('div', { class: 'muted' }, 'Camera view'), h('canvas', { id: 'scan-cam', style: 'max-width:100%;background:#000;border-radius:6px' })),
         h('div', {}, h('div', { class: 'muted' }, 'Scanned layout (x: -1..1, y: 0..1)'), h('canvas', { id: 'scan-new', width: 360, height: 300, style: 'max-width:100%;background:#0b0b0d;border-radius:6px' })),
         h('div', {}, h('div', { class: 'muted' }, 'Layout now on the device'), h('canvas', { id: 'scan-old', width: 360, height: 300, style: 'max-width:100%;background:#0b0b0d;border-radius:6px' }))),
-      h('div', { class: 'row', style: 'margin-top:8px' }, h('button', { class: 'primary', onclick: applyScan }, 'Apply to the garland'))) : null);
+      h('div', { class: 'row', style: 'margin-top:8px' }, h('button', { class: 'primary', onclick: applyScan }, 'Apply to the garland'))) : '');
   if (!SC.running) { const el = document.getElementById('scan-status'); if (el) el.textContent = SC.status || 'Idle.'; }
   drawResults();
 }

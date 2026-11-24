@@ -967,6 +967,17 @@ def api_scan_restore(req: ScanRestore):
         raise HTTPException(502, f"cannot write the layout: {exc}")
 
 
+class ScanNote(BaseModel):
+    text: str
+
+
+@app.post("/api/scan/note")
+def api_scan_note(req: ScanNote):
+    """A line from the page into the add-on log (what the camera measured), so that it can be read without the phone."""
+    scan.log.info("page: %s", " ".join(req.text[:900].split()))
+    return {"ok": True}
+
+
 class ScanApply(BaseModel):
     device: str
     coordinates: list[dict]

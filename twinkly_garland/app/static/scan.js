@@ -743,6 +743,7 @@ async function tuneCamera({ cam, status, check, every, style = 'hue', frac = 0.0
     const sep = ScanLib.separation(dark.rgb, red.rgb, blue.rgb);
     const m = { sep: sep.lit ? sep.sep : 0, lit: sep.lit, peak: Math.max(peakOf(red, dark, true), peakOf(blue, dark, true)), use: usableOf(red, dark) + usableOf(blue, dark) };
     status(`Setting the exposure: LED level ${level}, ${cam.info()}: colour distinctness ${m.sep.toFixed(2)} (aim: ${GOOD} or more, as bright as that allows), brightest channel ${m.peak} of 255...`, frac);
+    note(`tune: level ${level}, ${cam.info()}, distinctness ${m.sep.toFixed(2)}, lit ${m.lit}, clipped ${Math.round(100 * sep.satShare)}%, peak ${m.peak}, usable ${m.use}; brightest 0.5% of the red photo RGB ${topMean(red, dark)}, of the blue photo ${topMean(blue, dark)}; last wait ${SC.lastSettle ? SC.lastSettle.ms + ' ms' + (SC.lastSettle.gaveUp ? ' (gave up, picture still changing: ' + SC.lastSettle.changed + ' px)' : '') : '-'}`);
     return m;
   };
   // one step brighter / darker: the camera if it can, else the LEDs; returns how to undo it, or null when there is no room left
@@ -807,6 +808,8 @@ async function cameraCheck() {
     await pat({ kind: 'rgb', channels: [every, [], []], level }); await settle(); const red = await shot();
     await pat({ kind: 'rgb', channels: [[], [], every], level }); await settle(); const blue = await shot();
     const v = colourVerdict(ScanLib.separation(dark.rgb, red.rgb, blue.rgb), peak, usable);
+    note(`check: ${v.text} (${cam.info()}, LED level ${level}); brightest 0.5% of the red photo RGB ${topMean(red, dark)}, of the blue photo ${topMean(blue, dark)}`);
+    SC.dump = { id: new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14) + 'c', w: red.w, h: red.h, n: info.leds, mode: 'check', style: 'check', level, device: dev, photos: [['dark', dark.rgb], ['calr', red.rgb], ['calb', blue.rgb]] };
     scanStatus(`${v.ok ? 'Camera OK. ' : 'Check: '}${v.text} (${cam.info()}, LED level ${level}.)`, 1);
   } catch (e) { scanStatus(e.message === 'cancelled' ? 'Cancelled.' : 'Camera check failed: ' + e.message, undefined); }
   finally { if (cam) await unlockExposure(); if (started) { try { await send('api/scan/stop', {}); } catch { /* ignore */ } } SC.running = false; renderScan(); }
@@ -824,13 +827,28 @@ function liveFrame() {
   return o;
 }
 async function settle(minMs = 150, maxMs = 1500) {
-  await sleep(minMs); const t0 = performance.now(); let prev = liveFrame(), calm = 0;
+  await sleep(minMs); const t0 = performance.now(); let prev = liveFrame(), calm = 0, worst = 0;
   while (performance.now() - t0 < maxMs) {
     await sleep(40); const cur = liveFrame(); let ch = 0;
     for (let i = 0; i < cur.length; i++) if (Math.abs(cur[i] - prev[i]) > 12) ch++;
-    prev = cur;
-    if (ch < 4) { if (++calm >= 2) return; } else calm = 0;
+    prev = cur; worst = Math.max(worst, ch);
+    if (ch < 4) { if (++calm >= 2) { SC.lastSettle = { ms: Math.round(minMs + performance.now() - t0), gaveUp: false, changed: ch }; return; } } else calm = 0;
   }
+  SC.lastSettle = { ms: Math.round(minMs + performance.now() - t0), gaveUp: true, changed: worst };  // the picture never calmed down
+}
+
+// A line into the add-on log (what the camera measured), so that it can be read without the phone.
+function note(text) { try { send('api/scan/note', { text }).catch(() => {}); } catch { /* a convenience */ } }
+
+// Mean colour (R, G, B, the dark photo taken off) of the brightest 0.5% of the pixels of a photo: what the LEDs look like to the camera.
+function topMean(a, dk) {
+  const N = a.data.length, k = Math.max(50, Math.round(N * 0.005)), v = new Float32Array(N);
+  for (let i = 0; i < N; i++) v[i] = Math.max(0, a.rgb[0][i] - dk.rgb[0][i]) + Math.max(0, a.rgb[1][i] - dk.rgb[1][i]) + Math.max(0, a.rgb[2][i] - dk.rgb[2][i]);
+  const hist = new Uint32Array(766); for (let i = 0; i < N; i++) hist[Math.min(765, Math.round(v[i]))]++;
+  let acc = 0, thr = 765; for (; thr > 0; thr--) { acc += hist[thr]; if (acc >= k) break; }
+  let n = 0, r = 0, g = 0, b = 0;
+  for (let i = 0; i < N; i++) if (v[i] >= thr) { n++; r += Math.max(0, a.rgb[0][i] - dk.rgb[0][i]); g += Math.max(0, a.rgb[1][i] - dk.rgb[1][i]); b += Math.max(0, a.rgb[2][i] - dk.rgb[2][i]); }
+  return n ? [Math.round(r / n), Math.round(g / n), Math.round(b / n)] : [0, 0, 0];
 }
 
 const cvs = document.createElement('canvas');

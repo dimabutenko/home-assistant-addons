@@ -147,6 +147,13 @@ def pattern(kind: str, bit: int = 0, leds: list = (), level: int = 200, channels
     elif kind == "leds":
         chosen = {int(i) for i in leds if 0 <= int(i) < n}
         px = [1 if i in chosen else 0 for i in range(n)]
+    elif kind == "rgb":  # colour code frame: channels = [LEDs lit in red, in green, in blue]
+        if len(channels) != 3:
+            raise ValueError("rgb pattern needs three lists of LEDs")
+        sets = [{int(i) for i in ch if 0 <= int(i) < n} for ch in channels]
+        frame = b"".join(bytes(level if i in sets[c] else 0 for c in range(3)) for i in range(n))
+        _show(s, frame)
+        return {"ok": True, "lit": len(sets[0] | sets[1] | sets[2])}
     else:
         raise ValueError(f"unknown pattern {kind!r}")
     frame = b"".join(bytes(on) if p else b"\x00\x00\x00" for p in px)

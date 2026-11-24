@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.17.1
+- **Fix: every scan failed at the first colour pattern** (`POST api/scan/pattern` answered 409, the page said "unknown pattern 'rgb'"). The `rgb` pattern (colour frames: the hue style, the colour-bit style and the red / green / blue light test) was added in 0.16.0 on the page and in the API model, but its branch in `scan.py` was never saved. The white style and the single-LED checks were not affected. Tested now against the real `scan.py` with a fake device: the bytes sent for dark, all, bit, leds and rgb patterns, refusal of a bad rgb request, and the time one pattern call takes (0.07 s).
+
 ## 0.17.0
 Read in detail how the Twinkly app does the same job (parity table, colour classes, per-pixel decoding, step timing) and took the ideas that were better than ours:
 - **Hue-coded patterns, LEDs always lit (the new default).** In every code photo every LED is lit, red for a 0 and blue for a 1. Nothing is switched off, so no brightness threshold is needed and a LED is visible in every photo; the colour decides. Two reference photos (all red, all blue) give every pixel its response to the two colours and a code photo is un-mixed with it. The previous styles stay selectable ("Patterns" in the Scan tab): *Colour bits* (red, green, blue on / off, three bits per photo, fewest photos) and *White on / off*. If the chosen style is not read the scan repeats itself with white by itself.

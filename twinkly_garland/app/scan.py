@@ -12,7 +12,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from . import device
+from . import device, live
 
 log = logging.getLogger("twinkly.scan")
 IDLE_TIMEOUT = 180  # s without a request: stop the scan and restore playback
@@ -25,7 +25,7 @@ def gray(i: int) -> int:
 
 
 class Session:
-    def __init__(self, dev: dict):
+    def __init__(self, dev: dict, inherit: tuple | None = None):
         self.dev = dev
         with device.lock_for(dev["host"]):
             self.ci = device.connect(dev["host"])
@@ -36,11 +36,14 @@ class Session:
                 self.profile, self.bytes_per_led = info.get("led_profile"), info.get("bytes_per_led")
             except Exception:
                 self.n = len(device.get_layout(dev))
-            self.prev_mode = device.retry(self.ci.get_mode).get("mode")
-            try:
-                self.prev_uid = (device.retry(self.ci.get_movies_current).get("unique_id") or "").upper()
-            except Exception:
-                self.prev_uid = ""
+            if inherit is not None:  # a live scene was streaming: what was on the garland before IT is what has to come back
+                self.prev_mode, self.prev_uid = inherit
+            else:
+                self.prev_mode = device.retry(self.ci.get_mode).get("mode")
+                try:
+                    self.prev_uid = (device.retry(self.ci.get_movies_current).get("unique_id") or "").upper()
+                except Exception:
+                    self.prev_uid = ""
         self.frame = bytes(3 * self.n)
         self.lock = threading.Lock()
         self.wake = threading.Event()  # a new frame was set: send it now, do not wait for the next tick
@@ -116,8 +119,17 @@ def start(dev: dict) -> dict:
         if dev["host"] in device.scanning_hosts:
             raise RuntimeError("a scan is already running")
         device.scanning_hosts.add(dev["host"])
+    # A live scene of the add-on that is still streaming to this garland would send its frames at the same time as the scan and the garland would
+    # show a mix of both (the picture never calms down, red and blue run into each other): stop it, without restoring anything (the scan
+    # restores what was on the garland before the live scene when it ends).
+    inherit = None
+    st = device.live_hosts.get(dev["host"])
+    if st is not None:
+        inherit = (st.prev_mode, st.prev_uid)
+        log.info("stopping the live scene %s on %s for the scan", st.name, dev["name"])
+        live.stop_for(dev, restore=False)
     try:
-        s = Session(dev)
+        s = Session(dev, inherit)
     except Exception:
         device.scanning_hosts.discard(dev["host"])
         raise

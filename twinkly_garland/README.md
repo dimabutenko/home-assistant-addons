@@ -119,6 +119,11 @@ Press "Light test" first to see by eye that the garland follows the patterns (no
 Check the result (green = recognised, blue = found separately, orange = estimated from neighbours), rotate/mirror if
 needed and press "Apply to the garland". The previous layout is saved in `/data/layouts/<name>.backup-<time>.json`.
 
+Scan types: *flat wall or window* (every LED visible), *tree, one side* (the far side is estimated along the string) and
+*tree, front and back (3D)*: two views, the scan asks you to move the phone to the opposite side after the first one; the
+result is a 3D layout (a cone) written to the garland as `3d`. The patterns are coloured by default (three bits per photo,
+needs a calibration of the camera's colours, falls back to white patterns by itself); the checkbox turns it off.
+
 ## HTTP API (also usable from HA `rest_command`)
 
 - `POST api/play` with `{"effect": "<key>", "devices": ["<name>", ...]}` (empty list = all devices). `effect` may be `"random"`: one effect that is on every target device and in the rotation is picked (weighted). Returns 502 if no device could play it.
@@ -135,8 +140,9 @@ needed and press "Apply to the garland". The previous layout is saved in `/data/
   static light inside the garland area (4 wrong LEDs in the synthetic test). Ideas: mask saturated static sources found in the
   "off" photos, pick the blob nearest to the position predicted from the neighbours instead of the brightest one, confirm
   single-LED results with a second shot.
-- **Scan is flat (2D, one viewpoint).** The tree needs several angles (3D); the data model keeps results per view but the UI
-  does not do it yet. Syncing two garlands is also open (the tree is not online; group/sync API of the firmware is unexplored).
+- **Scan: a tree from the front and the back only.** Four sides ("Tree, all sides") are not done; the two-view merge assumes the
+  tree is upright and roughly a cone, and the add-on's own effects still use x, y of the layout, not z. A 3d layout written to the
+  device is not verified on a real garland. Syncing two garlands is also open (the tree is not online; group/sync API of the firmware is unexplored).
 - **The device keeps one login token.** Any other client that logs in (the Home Assistant Twinkly integration polls every
   30 s) invalidates ours; xled re-logins, which shows up as `401` / `verify failed` warnings and rare 502 on play. Fix
   options: move on/off of the garland into the add-on and disable the integration, or accept the noise.

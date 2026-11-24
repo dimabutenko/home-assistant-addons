@@ -109,7 +109,7 @@ def start(dev: dict) -> dict:
     return {"leds": s.n, "bits": max(1, (s.n - 1).bit_length())}
 
 
-def pattern(kind: str, bit: int = 0, leds: list = (), level: int = 200) -> dict:
+def pattern(kind: str, bit: int = 0, leds: list = (), level: int = 200, channels: list = ()) -> dict:
     s = _sess
     if s is None:
         raise RuntimeError("no scan is running")
@@ -148,23 +148,26 @@ def state() -> dict:
 
 
 def apply_layout(dev: dict, coords: list, scan_type: str = "flat") -> dict:
-    """Back up the current layout, write the new one to the device and refresh the cache."""
+    """Back up the current layout, write the new one to the device and refresh the cache.
+    Coordinates with z (a tree scanned from two sides) are written as a 3d layout, the others as 2d."""
     if dev["host"] in device.scanning_hosts:
         raise RuntimeError("stop the scan first")
     old = device.get_layout(dev, refresh=True)
     if len(coords) != len(old):
         raise ValueError(f"expected {len(old)} coordinates, got {len(coords)}")
     clean = []
-    z = old[0].get("z", 0) if old else 0
+    three = bool(coords) and all("z" in c for c in coords)
+    z0 = old[0].get("z", 0) if old else 0
     for c in coords:
         x, y = float(c["x"]), float(c["y"])
-        if not (-10 < x < 10 and -10 < y < 10):
+        z = float(c["z"]) if three else z0
+        if not (-10 < x < 10 and -10 < y < 10 and -10 < z < 10):
             raise ValueError("coordinate out of range")
-        clean.append({"x": round(x, 6), "y": round(y, 6), "z": z})
+        clean.append({"x": round(x, 6), "y": round(y, 6), "z": round(z, 6) if three else z})
     backup = device.DATA_DIR / "layouts" / f"{dev['name']}.backup-{datetime.now():%Y%m%d-%H%M%S}.json"
     backup.write_text(json.dumps(old))
     with device.lock_for(dev["host"]):
-        device.retry(device.connect(dev["host"]).set_led_layout, "2d", clean)
+        device.retry(device.connect(dev["host"]).set_led_layout, "3d" if three else "2d", clean)
     new = device.get_layout(dev, refresh=True)
-    log.info("layout of %s written (%s scan, %d LEDs)", dev["name"], scan_type, len(new))
+    log.info("layout of %s written (%s scan, %s, %d LEDs)", dev["name"], scan_type, "3d" if three else "2d", len(new))
     return {"leds": len(new), "backup": backup.name}

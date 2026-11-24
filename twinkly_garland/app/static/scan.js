@@ -88,42 +88,94 @@ const ScanLib = (() => {
     return null;
   }
 
-  // dark, all: gray frames (Uint8/Float arrays). bits[k]: frame where LED i is on if bit k of gray(i) is set.
-  function detect({ w, h, dark, all, bits, checks = [], n }) {
-    const N = w * h, ref = new Float32Array(N);
+  // Which LEDs are lit for code bit k: k < nb is bit k of the Gray code, the rest are the check bits.
+  function bitLeds(n, nb, k) {
+    if (k >= nb) return checkLeds(n, nb, k - nb);
+    const out = []; for (let i = 0; i < n; i++) if ((grayOf(i) >> k) & 1) out.push(i);
+    return out;
+  }
+  // Frames of the code: nb data bits + the check bits. In colour mode one frame carries three bits (red, green and blue of each LED
+  // are three independent lamps), so a scan needs a third of the photos; bits[c] = the code bit carried by colour c (-1: none).
+  function framePlan(nb, colour) {
+    const total = nb + eccLayout(nb).r, per = colour ? 3 : 1, out = [];
+    for (let f = 0; f < total; f += per) out.push({ bits: Array.from({ length: per }, (_, c) => f + c < total ? f + c : -1) });
+    return out;
+  }
+
+  // Unmixing: the camera does not see "red LED -> red channel" exactly (crosstalk of the Bayer filter, white balance, a different order of
+  // the LED colours). So every blob gets its own 3x3 response matrix B from three photos with all LEDs red / green / blue
+  // (B[c][j] = camera channel c with LED colour j on). A code photo gives the blob's camera vector v, and B s = v gives how much of each
+  // LED colour is on (about 0 or 1). Mono mode is the same with 1x1 matrices.
+  function inv3(B) {
+    const [[a, b, c], [d, e, f], [g, h, i]] = B;
+    const A = e * i - f * h, Bq = -(d * i - f * g), C = d * h - e * g, det = a * A + b * Bq + c * C;
+    if (!isFinite(det) || det === 0) return null;
+    const r = [[A, -(b * i - c * h), b * f - c * e], [Bq, a * i - c * g, -(a * f - c * d)], [C, -(a * h - b * g), a * e - b * d]];
+    return { m: r.map(row => row.map(x => x / det)), det };
+  }
+
+  // darkP: planes of the dark photo (1 plane = mono, 3 = R,G,B), dark / all: luma of the dark / all-on photo (all is used to find the blobs),
+  // cal[j] = planes of the photo with LED colour j on everywhere (mono: [all planes]), frames[f] = { planes, bits } (see framePlan),
+  // nb = number of data bits (the frames carry nb + check bits).
+  function detect({ w, h, dark, all, darkP, cal, frames, nb, n }) {
+    const N = w * h, ref = new Float32Array(N), d = darkP.length;
     for (let i = 0; i < N; i++) ref[i] = Math.max(0, all[i] - dark[i]);
     const blurred = blur3(ref, w, h);
     const peak = percentile(blurred, 99.9), T = Math.max(8, 0.25 * peak);
     const mask = new Uint8Array(N); for (let i = 0; i < N; i++) mask[i] = blurred[i] > T ? 1 : 0;
     const { labels, count } = components(mask, w, h);
     const area = new Float64Array(count + 1), sx = new Float64Array(count + 1), sy = new Float64Array(count + 1), sw = new Float64Array(count + 1);
-    const sp = bits.map(() => new Float64Array(count + 1));
+    const calS = cal.map(ph => ph.map(() => new Float64Array(count + 1)));
+    const frS = frames.map(f => f.planes.map(() => new Float64Array(count + 1)));
     for (let i = 0; i < N; i++) {
       const l = labels[i]; if (!l) continue;
       const x = i % w, y = (i - x) / w, r = ref[i];
       area[l]++; sx[l] += x * r; sy[l] += y * r; sw[l] += r;
-      for (let k = 0; k < bits.length; k++) sp[k][l] += Math.max(0, bits[k][i] - dark[i]);
+      for (let j = 0; j < cal.length; j++) for (let c = 0; c < d; c++) calS[j][c][l] += Math.max(0, cal[j][c][i] - darkP[c][i]);
+      for (let f = 0; f < frames.length; f++) for (let c = 0; c < d; c++) frS[f][c][l] += Math.max(0, frames[f].planes[c][i] - darkP[c][i]);
     }
     const comps = [];
     for (let l = 1; l <= count; l++) if (area[l] >= 2 && sw[l] > 0) comps.push(l);
     const areas = comps.map(l => area[l]).sort((a, b) => a - b), med = areas[areas.length >> 1] || 1;
-    const spc = checks.map(() => new Float64Array(count + 1));
-    for (let i = 0; i < N; i++) { const l = labels[i]; if (l) for (let k = 0; k < checks.length; k++) spc[k][l] += Math.max(0, checks[k][i] - dark[i]); }
-    const ratios = bits.map((_, k) => comps.map(l => Math.min(1.5, sp[k][l] / sw[l])));
-    const cratios = checks.map((_, k) => comps.map(l => Math.min(1.5, spc[k][l] / sw[l])));
-    const thr = ratios.map(r => otsu(r)), cthr = cratios.map(r => otsu(r));
+    const total = frames.reduce((m, f) => Math.max(m, ...f.bits), -1) + 1;
+    const ratios = Array.from({ length: total }, () => new Array(comps.length).fill(NaN));
+    let ill = 0; const illSet = new Set();
+    comps.forEach((l, ci) => {
+      let inv = null;
+      if (d === 1) { const b = calS[0][0][l]; if (b > 0) inv = { m: [[1 / b]] }; }
+      else {
+        const B = [0, 1, 2].map(c => [0, 1, 2].map(j => calS[j][c][l])), cols = [0, 1, 2].map(j => Math.hypot(B[0][j], B[1][j], B[2][j]));
+        const iv = inv3(B);
+        // Hadamard ratio: 1 for three independent colours, near 0 when two colours look the same to the camera (a saturated blob)
+        if (iv && cols.every(x => x > 0) && Math.abs(iv.det) / (cols[0] * cols[1] * cols[2]) > 0.2) inv = iv;
+      }
+      if (!inv) { illSet.add(ci); return; }
+      frames.forEach((f, fi) => {
+        const v = frS[fi].map(a => a[l]);
+        for (let j = 0; j < d; j++) {
+          const k = f.bits[j]; if (k < 0) continue;
+          let s = 0; for (let c = 0; c < d; c++) s += inv.m[j][c] * v[c];
+          ratios[k][ci] = Math.max(-0.5, Math.min(1.5, s));
+        }
+      });
+    });
+    ill = illSet.size;
+    const thr = ratios.map(r => otsu(r.filter(x => !isNaN(x))));
     const byIdx = new Map(); let invalid = 0, merged = 0, uncertain = 0, corrected = 0, rejected = 0;
+    const nChecks = total - nb;
     comps.forEach((l, ci) => {
       if (area[l] > 5 * med) { merged++; return; }
-      let rd = [], margins = [];
-      for (let k = 0; k < bits.length; k++) { rd.push(ratios[k][ci] > thr[k] ? 1 : 0); margins.push(Math.abs(ratios[k][ci] - thr[k])); }
-      let cd = [];
-      for (let k = 0; k < checks.length; k++) { cd.push(cratios[k][ci] > cthr[k] ? 1 : 0); margins.push(Math.abs(cratios[k][ci] - cthr[k])); }
+      if (illSet.has(ci)) { uncertain++; return; }
+      let rd = [], cd = [], margins = [];
+      for (let k = 0; k < total; k++) {
+        const bit = ratios[k][ci] > thr[k] ? 1 : 0; margins.push(Math.abs(ratios[k][ci] - thr[k]));
+        (k < nb ? rd : cd).push(bit);
+      }
       const doubtful = margins.filter(m => m < 0.15).length;
       // without check frames one doubtful bit is too many; with them one wrong bit is corrected, two are not
-      if (checks.length ? doubtful > 1 : doubtful > 0) { uncertain++; return; }
-      if (checks.length) {
-        const dec = eccDecode(rd, cd, bits.length);
+      if (nChecks ? doubtful > 1 : doubtful > 0) { uncertain++; return; }
+      if (nChecks) {
+        const dec = eccDecode(rd, cd, nb);
         if (!dec) { rejected++; return; }
         if (dec.fixed) corrected++;
         rd = dec.bits;
@@ -136,7 +188,7 @@ const ScanLib = (() => {
     });
     const pts = new Array(n).fill(null); let conflicts = 0;
     for (const [idx, list] of byIdx) { if (list.length === 1) pts[idx] = { ...list[0], src: 'code' }; else conflicts++; }
-    return { pts, peak, threshold: T, blobs: comps.length, merged, invalid, conflicts, uncertain, corrected, rejected };
+    return { pts, peak, threshold: T, blobs: comps.length, merged, invalid, conflicts, uncertain, corrected, rejected, ill };
   }
 
   // LEDs worth checking one by one: far from their neighbours on the string (a wrongly decoded
@@ -277,30 +329,61 @@ const ScanLib = (() => {
     return { used, found, skipped };
   }
 
-  // Fill gaps along the string (neighbouring LEDs are physically adjacent). With `arc` (a tree seen from one side) a long hidden run
-  // whose ends are far apart sideways is the string going round the back of the tree: its x follows a half cosine (LEDs bunch up near
-  // the edges, as they do when they are spread evenly round a cone) while y moves straight.
+  // Catmull-Rom through four known LEDs (Barry-Goldman form, knots = LED numbers, so unevenly spaced neighbours are handled): the curve
+  // runs through p1 and p2 and its direction there follows the neighbours p0 and p3, which a straight line ignores.
+  function cr1(t0, t1, t2, t3, p0, p1, p2, p3, t) {
+    const L = (ta, tb, pa, pb) => tb === ta ? pa : pa + (pb - pa) * (t - ta) / (tb - ta);
+    const a1 = L(t0, t1, p0, p1), a2 = L(t1, t2, p1, p2), a3 = L(t2, t3, p2, p3);
+    return L(t1, t2, L(t0, t2, a1, a2), L(t1, t3, a2, a3));
+  }
+  // value at LED i between known[pos] and known[pos+1]; get(idx) = the value of a known LED. At the ends the missing neighbour is a mirror image.
+  function crAt(known, pos, get, i) {
+    const a = known[pos], b = known[pos + 1], pa = get(a), pb = get(b);
+    let t0, p0, t3, p3;
+    if (pos > 0) { t0 = known[pos - 1]; p0 = get(t0); } else { t0 = a - (b - a); p0 = 2 * pa - pb; }
+    if (pos + 2 < known.length) { t3 = known[pos + 2]; p3 = get(t3); } else { t3 = b + (b - a); p3 = 2 * pb - pa; }
+    return cr1(t0, a, b, t3, p0, pa, pb, p3, i);
+  }
+
+  // Fill gaps along the string (neighbouring LEDs are physically adjacent) with a Catmull-Rom curve through the known LEDs on both sides
+  // (a long gap between close neighbours must not swing wildly: the curve may leave the straight line by at most 0.4 of the gap's length).
+  // With `arc` (a tree seen from one side) a long hidden run whose ends are far apart sideways is the string going round the back of the
+  // tree: its x follows a half cosine (LEDs bunch up near the edges, as they do when they are spread evenly round a cone) while y is the curve.
   function interpolate(pts, { arc = false } = {}) {
     const out = pts.map(p => p && { ...p }), known = []; out.forEach((p, i) => p && known.push(i));
     if (!known.length) return out;
     const us = known.map(i => pts[i].u), width = Math.max(...us) - Math.min(...us);
+    let pos = 0;
     for (let i = 0; i < out.length; i++) {
       if (out[i]) continue;
-      let a = -1, b = -1; for (const k of known) { if (k < i) a = k; else { b = k; break; } }
-      if (a >= 0 && b >= 0) {
-        const t = (i - a) / (b - a), round = arc && b - a >= 8 && Math.abs(out[b].u - out[a].u) > 0.4 * width;
-        const tu = round ? (1 - Math.cos(Math.PI * t)) / 2 : t;
-        out[i] = { u: out[a].u + (out[b].u - out[a].u) * tu, v: out[a].v + (out[b].v - out[a].v) * t, src: 'interp' };
-      } else { const k = a >= 0 ? a : b; out[i] = { u: out[k].u, v: out[k].v, src: 'interp' }; }
+      while (pos + 1 < known.length && known[pos + 1] < i) pos++;
+      if (known[pos] < i && pos + 1 < known.length) {
+        const a = known[pos], b = known[pos + 1], t = (i - a) / (b - a), A = pts[a], B = pts[b];
+        const round = arc && b - a >= 8 && Math.abs(B.u - A.u) > 0.4 * width;
+        const lu = A.u + (B.u - A.u) * t, lv = A.v + (B.v - A.v) * t, lim = 0.4 * Math.hypot(B.u - A.u, B.v - A.v);
+        let u = round ? A.u + (B.u - A.u) * (1 - Math.cos(Math.PI * t)) / 2 : crAt(known, pos, k => pts[k].u, i), v = crAt(known, pos, k => pts[k].v, i);
+        const du = u - lu, dv = v - lv, m = Math.hypot(du, dv);
+        if (m > lim) { const f = lim / m; u = lu + du * f; v = lv + dv * f; }
+        out[i] = { u, v, src: 'interp' };
+      } else { const k = known[pos] < i ? known[pos] : known[0]; out[i] = { u: out[k].u, v: out[k].v, src: 'interp' }; }
     }
     return out;
   }
 
+  // Camera pixels -> a frame with x to the right and y up: rot = quarter turns, flip = mirror x. Nothing scaled yet. Missing LEDs stay null.
+  function orient(pts, { rot = 0, flip = false } = {}) {
+    return pts.map(p => {
+      if (!p) return null;
+      let c = [p.u, -p.v];
+      for (let r = 0; r < rot; r++) c = [-c[1], c[0]];
+      if (flip) c = [-c[0], c[1]];
+      return { x: c[0], y: c[1], src: p.src };
+    });
+  }
+
   // Camera pixels -> layout [-1,1] x [0,1] (y up). rot: quarter turns, flip: mirror x, mode: fit | stretch.
   function toLayout(pts, { rot = 0, flip = false, mode = 'fit' } = {}) {
-    let c = pts.map(p => [p.u, -p.v]);
-    for (let r = 0; r < rot; r++) c = c.map(([x, y]) => [-y, x]);
-    if (flip) c = c.map(([x, y]) => [-x, y]);
+    const c = orient(pts, { rot, flip }).map(p => [p.x, p.y]);
     const xs = c.map(p => p[0]), ys = c.map(p => p[1]);
     const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
     const W = (x1 - x0) || 1, H = (y1 - y0) || 1;
@@ -309,24 +392,121 @@ const ScanLib = (() => {
     return c.map(([x, y]) => ({ x: (x - xc) * s, y: (y - y0) * s }));
   }
 
-  return { detect, eccLayout, checkLeds, suspicious, singleBlob, interpolate, searchRuns, filterOutliers, toLayout, percentile, blur3, maxArr, minArr, unstableMask, motion, roiOf };
+  const quant = (arr, q) => { const a = [...arr].sort((x, y) => x - y); return a[Math.min(a.length - 1, Math.max(0, Math.round(q * (a.length - 1))))]; };
+
+  // A tree seen from the front and from the back (the phone on the opposite side, or the tree turned by 180 degrees) -> a 3D layout.
+  // A, B: oriented points (see orient) of the two views, null where a LED was not seen. The back view is the front view mirrored, so it is
+  // flipped in x and then moved and scaled onto the front view with the LEDs that BOTH views saw (a least-squares fit that throws out
+  // the worst matches and repeats). With fewer than 6 of them the two outlines are laid over each other instead (the same height, the same
+  // centre). Then the tree is taken as a cone: for every height the half width R(y) of what was seen (from the 95th percentile of the
+  // distance from the axis in a band of heights, gaps filled, smoothed); a LED seen from the front sits on the circle of that radius at
+  // z = +sqrt(R^2 - x^2), one seen from the back at z = -sqrt(...). A LED nobody saw is put between its known neighbours: the height by a
+  // Catmull-Rom curve, the angle round the axis along the shorter arc, the radius from the profile (a spiral, as the Twinkly app does).
+  function merge3d(A, B, { mode = 'fit' } = {}) {
+    const n = A.length, Bm = B.map(p => p && { x: -p.x, y: p.y, src: p.src });
+    const common = []; for (let i = 0; i < n; i++) if (A[i] && Bm[i]) common.push(i);
+    const fit = idx => {
+      const m = f => idx.reduce((s, i) => s + f(i), 0) / idx.length;
+      const ax = m(i => A[i].x), ay = m(i => A[i].y), bx = m(i => Bm[i].x), by = m(i => Bm[i].y);
+      let num = 0, den = 0; for (const i of idx) { num += (A[i].x - ax) * (Bm[i].x - bx) + (A[i].y - ay) * (Bm[i].y - by); den += (Bm[i].x - bx) ** 2 + (Bm[i].y - by) ** 2; }
+      const s = den > 0 ? num / den : NaN;
+      return { s, tx: ax - s * bx, ty: ay - s * by };
+    };
+    const res = (f, i) => Math.hypot(A[i].x - (f.s * Bm[i].x + f.tx), A[i].y - (f.s * Bm[i].y + f.ty));
+    let T = null, align = 'common', rms = 0, used = 0;
+    if (common.length >= 6) {
+      let use = common, f = fit(use);
+      for (let pass = 0; pass < 3 && isFinite(f.s); pass++) {
+        const r = use.map(i => res(f, i)), m = quant(r, 0.5), keep = use.filter((_, k) => r[k] <= Math.max(2.5 * m, 1e-9));
+        if (keep.length < 6 || keep.length === use.length) break;
+        use = keep; f = fit(use);
+      }
+      if (isFinite(f.s) && f.s > 0.25 && f.s < 4) { T = f; used = use.length; rms = Math.sqrt(use.reduce((s, i) => s + res(f, i) ** 2, 0) / use.length); }
+    }
+    if (!T) {
+      align = 'outline';
+      const ext = P => { const a = P.filter(Boolean); return { y0: quant(a.map(p => p.y), 0.01), y1: quant(a.map(p => p.y), 0.99), x0: quant(a.map(p => p.x), 0.01), x1: quant(a.map(p => p.x), 0.99) }; };
+      const ea = ext(A), eb = ext(Bm), s = ((ea.y1 - ea.y0) / (eb.y1 - eb.y0)) || 1;
+      T = { s, tx: (ea.x0 + ea.x1) / 2 - s * (eb.x0 + eb.x1) / 2, ty: ea.y0 - s * eb.y0 };
+    }
+    const P = new Array(n).fill(null);
+    for (let i = 0; i < n; i++) {
+      const a = A[i], b = Bm[i] && { x: T.s * Bm[i].x + T.tx, y: T.s * Bm[i].y + T.ty };
+      if (a && b) P[i] = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, side: 1, src: a.src };
+      else if (a) P[i] = { x: a.x, y: a.y, side: 1, src: a.src };
+      else if (b) P[i] = { x: b.x, y: b.y, side: -1, src: Bm[i].src };
+    }
+    const known = []; P.forEach((p, i) => p && known.push(i));
+    if (known.length < 5) throw new Error('Too few LEDs were seen in the two views to build the tree.');
+    const xs = known.map(i => P[i].x), cx = (quant(xs, 0.01) + quant(xs, 0.99)) / 2, ys = known.map(i => P[i].y);
+    const y0 = Math.min(...ys), y1 = Math.max(...ys), H = (y1 - y0) || 1;
+    // half width of the tree at every height
+    const nb = Math.max(6, Math.min(30, Math.round(known.length / 10))), bands = Array.from({ length: nb }, () => []);
+    for (const i of known) bands[Math.min(nb - 1, Math.floor((P[i].y - y0) / H * nb))].push(Math.abs(P[i].x - cx));
+    let Rb = bands.map(b => b.length >= 3 ? quant(b, 0.95) : NaN);
+    const have = Rb.map((v, k) => isNaN(v) ? -1 : k).filter(k => k >= 0);
+    if (!have.length) throw new Error('Could not measure the width of the tree.');
+    const Rraw = Rb;
+    Rb = Rraw.map((v, k) => {
+      if (!isNaN(v)) return v;
+      const lo = have.filter(q => q < k).pop(), hi = have.find(q => q > k);
+      if (lo === undefined) return Rraw[hi]; if (hi === undefined) return Rraw[lo];
+      return Rraw[lo] + (Rraw[hi] - Rraw[lo]) * (k - lo) / (hi - lo);
+    });
+    const Rf = Rb; Rb = Rf.map((v, k) => (Rf[Math.max(0, k - 1)] + v + Rf[Math.min(nb - 1, k + 1)]) / 3);
+    const Rmax = Math.max(...Rb), Rmin = 0.03 * Rmax;
+    const R = y => { const q = (y - y0) / H * nb - 0.5, k = Math.max(0, Math.min(nb - 1, Math.floor(q))), k2 = Math.min(nb - 1, k + 1), f = Math.max(0, Math.min(1, q - k)); return Math.max(Rmin, Rb[k] + (Rb[k2] - Rb[k]) * f); };
+    // known LEDs: on the circle of their height (height, angle)
+    const Y = new Array(n), TH = new Array(n);
+    for (const i of known) {
+      const p = P[i], r = R(p.y), xr = Math.max(-1, Math.min(1, (p.x - cx) / r));
+      Y[i] = p.y; TH[i] = Math.atan2(p.side * Math.sqrt(1 - xr * xr), xr);
+    }
+    const out = new Array(n); let pos = 0;
+    for (let i = 0; i < n; i++) {
+      let y, th; const src = P[i] ? P[i].src : 'interp';
+      if (P[i]) { y = Y[i]; th = TH[i]; }
+      else {
+        while (pos + 1 < known.length && known[pos + 1] < i) pos++;
+        if (known[pos] < i && pos + 1 < known.length) {
+          const a = known[pos], b = known[pos + 1], t = (i - a) / (b - a);
+          const ly = Y[a] + (Y[b] - Y[a]) * t; y = crAt(known, pos, k => Y[k], i);
+          const lim = 0.4 * Math.abs(Y[b] - Y[a]); if (Math.abs(y - ly) > lim) y = ly + Math.sign(y - ly) * lim;
+          let d = TH[b] - TH[a]; d -= 2 * Math.PI * Math.round(d / (2 * Math.PI));
+          th = TH[a] + d * t;
+        } else { const k = known[pos] < i ? known[pos] : known[0]; y = Y[k]; th = TH[k]; }
+      }
+      const r = R(y); out[i] = { x: r * Math.cos(th), y, z: r * Math.sin(th), src };
+    }
+    const maxX = Math.max(...out.map(p => Math.abs(p.x))) || 1;
+    const s = mode === 'stretch' ? 1 / maxX : Math.min(1 / maxX, 1 / H), sy = mode === 'stretch' ? 1 / H : s;
+    return { pts: out.map(p => ({ x: p.x * s, y: (p.y - y0) * sy, z: p.z * s, src: p.src })), common: common.length, used, align, rms: +rms.toFixed(2), scale: +T.s.toFixed(3) };
+  }
+
+  return { detect, eccLayout, checkLeds, bitLeds, framePlan, suspicious, orient, merge3d, cr1, singleBlob, interpolate, searchRuns, filterOutliers, toLayout, percentile, blur3, maxArr, minArr, unstableMask, motion, roiOf };
 })();
 
 // ---- scan types ------------------------------------------------------------------------------------------------
 // flat: a window or a wall, the camera sees every LED: all of them are found (by code, then one by one).
 // tree: a tree seen from ONE side (a profile): only the LEDs facing the camera show up, the rest (the far side, behind branches) is
 //       estimated along the string, so a low share of recognised LEDs is normal and the LEDs that stay hidden are not searched one by one.
-// tree-round (planned): several sides of a tree one after another, merged into a 3D layout. Not implemented yet.
+// tree-fb: the same from the front and then from the back (the phone moves round the tree, or the tree is turned by 180 degrees); the
+//       two views are joined by the LEDs both of them see and the result is a 3D layout (the tree is taken as a cone).
+// tree-round (planned): four sides of a tree one after another. Not implemented yet.
+const TREE = { minShare: 0.05, minCount: 30, refineHidden: false, aloneToo: false, refineLimit: 40, arc: true, searchRuns: true, searchLimit: 400, singleFactor: 0.3 };
 const SCAN_MODES = {
   flat: { label: 'Flat wall or window: every LED is visible', minShare: 0.5, minCount: 20, refineHidden: true, aloneToo: true, refineLimit: 150, arc: false,
     hint: 'Put the phone on a tripod in front of the garland so that all of it is in view.' },
-  tree: { label: 'Tree, one side (profile): the LEDs on the far side are estimated', minShare: 0.05, minCount: 30, refineHidden: false, aloneToo: false, refineLimit: 40, arc: true, searchRuns: true, searchLimit: 400, singleFactor: 0.3,
+  tree: { label: 'Tree, one side (profile): the LEDs on the far side are estimated', ...TREE,
     hint: 'Put the phone on a tripod straight in front of the tree, the whole tree in view (top and bottom too), as dark as you can. The LEDs on the far side and behind the branches cannot be seen: they are estimated along the string.' },
-  'tree-round': { label: 'Tree, several sides (planned, not available yet)', disabled: true },
+  'tree-fb': { label: 'Tree, front and back (3D): two views are joined', ...TREE, searchLimit: 250, views: 2,
+    nextHint: 'Front view done. Now move the phone to the OPPOSITE side of the tree (or turn the tree by 180 degrees): same distance, same height, the whole tree in view, the top up. Press "Next view" when it stands still.',
+    hint: 'Two views of the whole tree, front and back, each as for "Tree, one side". The scan asks you to move the phone to the opposite side after the first view. The views are joined by the LEDs that both can see (at the edges of the tree), so both must show the whole tree from the bottom to the top.' },
+  'tree-round': { label: 'Tree, all sides (planned, not available yet)', disabled: true },
 };
 
 // ---- UI ------------------------------------------------------------------------------------
-const SC = { stream: null, video: null, running: false, cancel: false, result: null, snap: null, opts: { rot: 0, flip: false, mode: 'fit' }, scanMode: 'flat', device: null, oldLayout: null, status: '' };
+const SC = { stream: null, video: null, running: false, cancel: false, waiting: false, resume: null, result: null, snap: null, opts: { rot: 0, flip: false, mode: 'fit' }, scanMode: 'flat', colour: true, device: null, oldLayout: null, status: '' };
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 function scanStopCamera() {
@@ -340,33 +520,43 @@ async function scanOpenCamera() {
   SC.video.srcObject = SC.stream; await SC.video.play();
 }
 
-async function lockExposure() {  // keep the brightness constant while patterns change (best effort)
-  try { await SC.stream.getVideoTracks()[0].applyConstraints({ advanced: [{ exposureMode: 'manual' }] }); } catch { /* not supported */ }
+async function lockExposure() {  // keep brightness and colours constant while patterns change (best effort, each setting on its own)
+  const t = SC.stream.getVideoTracks()[0];
+  for (const c of [{ exposureMode: 'manual' }, { whiteBalanceMode: 'manual' }]) {
+    try { await t.applyConstraints({ advanced: [c] }); } catch { /* not supported */ }
+  }
 }
 
 const cvs = document.createElement('canvas');
-async function shot() {  // average of two frames, as luma (a function declaration so tests can replace it)
-  const v = SC.video, w = v.videoWidth, h = v.videoHeight; cvs.width = w; cvs.height = h;
-  const ctx = cvs.getContext('2d', { willReadFrequently: true }), acc = new Float32Array(w * h);
+// Average of two frames: { w, h, rgb: [R, G, B] (Uint8), data: luma (Uint8) }. A function declaration so tests can replace it.
+async function shot() {
+  const v = SC.video;
+  for (let t = 0; t < 40 && !v.videoWidth; t++) await sleep(50);  // a freshly drawn page: the picture may need a moment
+  const w = v.videoWidth, h = v.videoHeight; cvs.width = w; cvs.height = h;
+  const ctx = cvs.getContext('2d', { willReadFrequently: true }), acc = [0, 1, 2].map(() => new Uint16Array(w * h));
   for (let n = 0; n < 2; n++) {
     ctx.drawImage(v, 0, 0, w, h); const d = ctx.getImageData(0, 0, w, h).data;
-    for (let i = 0; i < w * h; i++) acc[i] += 0.299 * d[4 * i] + 0.587 * d[4 * i + 1] + 0.114 * d[4 * i + 2];
+    for (let i = 0; i < w * h; i++) { acc[0][i] += d[4 * i]; acc[1][i] += d[4 * i + 1]; acc[2][i] += d[4 * i + 2]; }
     if (n === 0) await sleep(120);
   }
-  for (let i = 0; i < acc.length; i++) acc[i] /= 2;
-  return { w, h, data: acc };
+  const rgb = acc.map(a => { const o = new Uint8Array(w * h); for (let i = 0; i < o.length; i++) o[i] = (a[i] + 1) >> 1; return o; });
+  const data = new Uint8Array(w * h); for (let i = 0; i < data.length; i++) data[i] = Math.round(0.299 * rgb[0][i] + 0.587 * rgb[1][i] + 0.114 * rgb[2][i]);
+  return { w, h, rgb, data };
 }
 
 function pat(body) { return send('api/scan/pattern', body); }
 
 function scanLoadMode(dev) {  // the scan type is remembered per garland
   SC.device = dev;
-  try { const m = localStorage.getItem('scan-mode:' + dev); if (m && SCAN_MODES[m] && !SCAN_MODES[m].disabled) SC.scanMode = m; } catch { /* no storage */ }
+  try {
+    const m = localStorage.getItem('scan-mode:' + dev); if (m && SCAN_MODES[m] && !SCAN_MODES[m].disabled) SC.scanMode = m;
+    SC.colour = localStorage.getItem('scan-colour') !== '0';
+  } catch { /* no storage */ }
 }
 
-function scanSaveMode() { try { localStorage.setItem('scan-mode:' + SC.device, SC.scanMode); } catch { /* no storage */ } }
+function scanSaveMode() { try { localStorage.setItem('scan-mode:' + SC.device, SC.scanMode); localStorage.setItem('scan-colour', SC.colour ? '1' : '0'); } catch { /* no storage */ } }
 
-// Sends the photos of the last scan to the add-on (lossless grey PNGs + a small JSON) so that a scan that went wrong can be examined.
+// Sends the photos of the last scan to the add-on (lossless PNGs, colour ones in colour + a small JSON) so that a scan that went wrong can be examined.
 async function scanSendPhotos() {
   const d = SC.dump; if (!d) return;
   const cv = document.createElement('canvas'); cv.width = d.w; cv.height = d.h; const g = cv.getContext('2d');
@@ -376,13 +566,16 @@ async function scanSendPhotos() {
       if (!r.ok) throw new Error(`${name}: HTTP ${r.status}`);
     };
     for (let k = 0; k < d.photos.length; k++) {
-      const [name, data] = d.photos[k]; scanStatus(`Sending photo ${k + 1} of ${d.photos.length}...`, k / d.photos.length);
-      const img = g.createImageData(d.w, d.h);
-      for (let i = 0; i < d.w * d.h; i++) { const v = Math.max(0, Math.min(255, Math.round(data[i]))); img.data[4 * i] = img.data[4 * i + 1] = img.data[4 * i + 2] = v; img.data[4 * i + 3] = 255; }
+      const [name, planes] = d.photos[k]; scanStatus(`Sending photo ${k + 1} of ${d.photos.length}...`, k / d.photos.length);
+      const img = g.createImageData(d.w, d.h), c3 = planes.length === 3;
+      for (let i = 0; i < d.w * d.h; i++) {
+        for (let c = 0; c < 3; c++) img.data[4 * i + c] = Math.max(0, Math.min(255, Math.round(planes[c3 ? c : 0][i])));
+        img.data[4 * i + 3] = 255;
+      }
       g.putImageData(img, 0, 0);
       await put(name + '.png', await new Promise(res => cv.toBlob(res, 'image/png')), 'image/png');
     }
-    const meta = { device: d.device, mode: d.mode, n: d.n, w: d.w, h: d.h, level: d.level, pts: d.pts || null, stats: SC.result ? SC.result.stats : null, agent: navigator.userAgent };
+    const meta = { device: d.device, mode: d.mode, colour: d.colour, n: d.n, w: d.w, h: d.h, level: d.level, pts: d.pts || null, stats: SC.result ? SC.result.stats : null, agent: navigator.userAgent };
     await put('meta.json', JSON.stringify(meta), 'application/json');
     scanStatus(`Photos sent (${d.id}).`, 1); toast(`Photos sent: ${d.id}`);
   } catch (e) { scanStatus('Sending failed: ' + e.message, undefined); toast('Sending failed: ' + e.message, true, 8000); }
@@ -393,58 +586,84 @@ function scanStatus(msg, frac) {
   if (el) el.textContent = msg; if (bar && frac !== undefined) bar.firstChild.style.width = `${Math.round(frac * 100)}%`;
 }
 
-async function runScan() {
-  const dev = document.getElementById('scan-dev').value;
-  SC.device = dev;
-  SC.running = true; SC.cancel = false; SC.result = null; SC.device = dev; renderScan();
-  const M = SCAN_MODES[SC.scanMode] || SCAN_MODES.flat, scanMode = SC.scanMode;
-  const check = () => { if (SC.cancel) throw new Error('cancelled'); };
+// Strongest channel (or luma) of a photo minus the dark one, 99.9th percentile: tells whether the camera is dazzled.
+function peakOf(a, dk, colour) {
+  let pk = 0;
+  for (const c of colour ? [0, 1, 2] : [-1]) {
+    const x = c < 0 ? a.data : a.rgb[c], y = c < 0 ? dk.data : dk.rgb[c], d = new Float32Array(x.length);
+    for (let i = 0; i < d.length; i++) d[i] = Math.max(0, x[i] - y[i]);
+    pk = Math.max(pk, ScanLib.percentile(d, 99.9));
+  }
+  return pk;
+}
+
+// One view of the garland: photos -> positions of the LEDs found (null where nothing was found; nothing interpolated yet).
+async function scanView({ dev, M, scanMode, colour, check, status, v, dump }) {
+  const tag = v ? `v${v}_` : '';
+  status('Switching the garland to scan mode...', 0.02);
+  const info = await send('api/scan/start', { device: dev }); const n = info.leds, nb = info.bits;
+  dump.n = n;
   try {
-    scanStatus('Switching the garland to scan mode...', 0.02);
-    const info = await send('api/scan/start', { device: dev }); const n = info.leds, nb = info.bits;
+    const take = async (name, body, settle = 600) => {  // light a pattern, wait, photograph, keep for the dump
+      check(); await pat(body); await sleep(settle); const s = await shot();
+      dump.w = s.w; dump.h = s.h; dump.photos.push([tag + name, colour ? s.rgb : [s.data]]);
+      return s;
+    };
     // LED brightness (1-255). A saturated blob centre is fine for locating an LED, so do not dim the LEDs
     // below MIN_LEVEL just because the camera is dazzled: a dim LED cannot be seen by eye either.
     const MIN_LEVEL = 100;
     let level = 200;
     await pat({ kind: 'dark' }); await sleep(600); let dark = await shot();
-    scanStatus('Setting the LED brightness...', 0.06);
+    status('Setting the LED brightness...', 0.06);
     for (let t = 0; t < 3; t++) {
       check(); await pat({ kind: 'all', level }); await sleep(600); const a = await shot();
-      const d = new Float32Array(a.data.length); for (let i = 0; i < d.length; i++) d[i] = Math.max(0, a.data[i] - dark.data[i]);
-      const peak = ScanLib.percentile(d, 99.9);
-      scanStatus(`Setting the LED brightness: ${level} (camera peak ${peak})...`, 0.06);
+      const peak = peakOf(a, dark, colour);
+      status(`Setting the LED brightness: ${level} (camera peak ${peak})...`, 0.06);
       if (peak >= 250 && level > MIN_LEVEL) level = Math.max(MIN_LEVEL, Math.round(level * 0.7));
       else if (peak < 60 && level < 255) level = Math.min(255, Math.round(level * 1.6));
       else break;
     }
+    dump.level = level;
     await lockExposure();
-    scanStatus('Photo: everything off...', 0.1); await pat({ kind: 'dark' }); await sleep(600); dark = await shot();
-    scanStatus('Photo: everything on...', 0.14); await pat({ kind: 'all', level }); await sleep(600); const all1 = await shot();
-    const bits = [], checks = [], nChecks = ScanLib.eccLayout(nb).r, nFrames = nb + nChecks;
-    for (let k = 0; k < nb; k++) {
-      check(); scanStatus(`Photo: pattern ${k + 1} of ${nFrames}...`, 0.18 + 0.4 * k / nFrames);
-      await pat({ kind: 'bit', bit: k, level }); await sleep(600); bits.push((await shot()).data);
-    }
-    for (let j = 0; j < nChecks; j++) {  // check frames: they let a wrongly read LED be told from a right one
-      check(); scanStatus(`Photo: check pattern ${j + 1} of ${nChecks} (pattern ${nb + j + 1} of ${nFrames})...`, 0.18 + 0.4 * (nb + j) / nFrames);
-      await pat({ kind: 'leds', leds: ScanLib.checkLeds(n, nb, j), level }); await sleep(600); checks.push((await shot()).data);
-    }
+    status('Photo: everything off...', 0.1); dark = await take('dark', { kind: 'dark' });
+    status('Photo: everything on...', 0.14); const all1 = await take('all', { kind: 'all', level });
+    const everyLed = Array.from({ length: n }, (_, i) => i);
+    // The code frames. Colour: one frame carries three bits (red, green and blue of every LED), after three photos with all LEDs red / green /
+    // blue that tell the camera's response to each colour. White: one bit per frame.
+    const capture = async col => {
+      const plan = ScanLib.framePlan(nb, col), cal = [], frames = [], steps = plan.length + (col ? 3 : 0); let done = 0;
+      if (col) for (let j = 0; j < 3; j++) {
+        status(`Photo: all LEDs ${['red', 'green', 'blue'][j]} (${++done} of ${steps})...`, 0.18 + 0.4 * done / steps);
+        cal.push((await take('cal' + 'rgb'[j], { kind: 'rgb', channels: [0, 1, 2].map(c => c === j ? everyLed : []), level })).rgb);
+      }
+      for (let f = 0; f < plan.length; f++) {
+        status(`Photo: ${col ? 'colour ' : ''}code pattern ${f + 1} of ${plan.length} (${++done} of ${steps})...`, 0.18 + 0.4 * done / steps);
+        const bits = plan[f].bits;
+        const s = await take('f' + f, col ? { kind: 'rgb', channels: bits.map(k => k < 0 ? [] : ScanLib.bitLeds(n, nb, k)), level } : { kind: 'leds', leds: ScanLib.bitLeds(n, nb, bits[0]), level });
+        frames.push({ planes: col ? s.rgb : [s.data], bits });
+      }
+      return { cal, frames };
+    };
+    let cap = await capture(colour), col = colour;
     // second pair of photos at the end: only what is the same in both counts (drops flickering lights, passing cars)
-    scanStatus('Photo: everything off, again...', 0.58); await pat({ kind: 'dark' }); await sleep(600); const dark2 = await shot();
-    scanStatus('Photo: everything on, again...', 0.6); await pat({ kind: 'all', level }); await sleep(600); const all2 = await shot();
-    scanStatus('Recognising the LEDs...', 0.62); await sleep(30);
+    status('Photo: everything off, again...', 0.58); const dark2 = await take('dark2', { kind: 'dark' });
+    status('Photo: everything on, again...', 0.6); const all2 = await take('all2', { kind: 'all', level });
+    status('Recognising the LEDs...', 0.62); await sleep(30);
     const w = all1.w, h = all1.h;
-    SC.dump = { id: new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14), w, h, n, mode: scanMode, level, device: dev,
-      photos: [['dark', dark.data], ['all', all1.data], ...bits.map((b, k) => ['bit' + k, b]), ...checks.map((b, k) => ['check' + k, b]), ['dark2', dark2.data], ['all2', all2.data]] };
     const mv = ScanLib.motion(w, h, dark.data, all1.data, dark2.data, all2.data);
     if (mv && mv.shift > 2) throw new Error(`The phone moved by about ${mv.shift.toFixed(1)} px during the scan. Put it on a tripod or a stable surface and try again.`);
-    const dmax = ScanLib.maxArr(dark.data, dark2.data), all = { data: ScanLib.minArr(all1.data, all2.data) };
+    const darkL = ScanLib.maxArr(dark.data, dark2.data), allL = ScanLib.minArr(all1.data, all2.data);
+    const darkRGB = [0, 1, 2].map(c => ScanLib.maxArr(dark.rgb[c], dark2.rgb[c]));
     const unstable = ScanLib.unstableMask(dark.data, dark2.data, w, h);
-    dark = { w, h, data: dmax };
-    const det = ScanLib.detect({ w, h, dark: dark.data, all: all.data, bits, checks, n });
-    let pts = det.pts;
-    const decoded = pts.filter(Boolean).length;
-    if (decoded < Math.max(M.minCount, n * M.minShare)) throw new Error(scanMode === 'tree'
+    const decode = (c, k) => ScanLib.detect({ w, h, dark: darkL, all: allL, darkP: c ? darkRGB : [darkL], cal: c ? k.cal : [[allL]], frames: k.frames, nb, n });
+    let det = decode(col, cap), fellBack = false;
+    let pts = det.pts, decoded = pts.filter(Boolean).length;
+    const enough = () => decoded >= Math.max(M.minCount, n * M.minShare);
+    if (col && !enough()) {  // the colours were not read (a camera that mixes them, a very bright room): the same with white patterns
+      status('The colour patterns were not recognised, repeating with white ones...', 0.62);
+      col = false; cap = await capture(false); det = decode(false, cap); pts = det.pts; decoded = pts.filter(Boolean).length; fellBack = true;
+    }
+    if (!enough()) throw new Error(scanMode.startsWith('tree')
       ? `Only ${decoded} of ${n} LEDs could be recognised (${Math.round(100 * decoded / n)}%), too few even for a view from one side. Move the phone closer so that the tree fills the picture, darken the room, and check that the whole tree is in view.`
       : `Only ${decoded} of ${n} LEDs could be recognised. The phone probably moved (use a tripod), the garland is not fully in view, or the room is too bright. For a tree seen from one side choose the scan type "Tree, one side".`);
     const f1 = ScanLib.filterOutliers(pts); pts = f1.pts; let dropped = f1.removed.length;  // wrongly decoded LEDs do not stay on the string
@@ -452,36 +671,92 @@ async function runScan() {
     const todo = [...new Set([...(M.refineHidden ? pts.map((p, i) => p ? -1 : i).filter(i => i >= 0) : []), ...ScanLib.suspicious(pts, M.aloneToo)])];
     const limit = Math.min(todo.length, M.refineLimit); let refined = 0;
     const roi = ScanLib.roiOf(pts, w, h);
+    const lv = Math.max(level, 200);
     for (let q = 0; q < limit; q++) {
-      check(); const i = todo[q]; scanStatus(`Checking LED ${i} separately (${q + 1} of ${limit}), brightness ${Math.max(level, 200)}...`, 0.62 + 0.36 * q / Math.max(1, limit));
-      await pat({ kind: 'leds', leds: [i], level: Math.max(level, 200) }); await sleep(450);
-      const s = await shot(), b = ScanLib.singleBlob({ w, h, dark: dark.data, frame: s.data, minPeak: Math.max(10, det.peak * 0.3), roi, exclude: unstable });
+      check(); const i = todo[q]; status(`Checking LED ${i} separately (${q + 1} of ${limit}), brightness ${lv}...`, 0.62 + 0.36 * q / Math.max(1, limit));
+      await pat({ kind: 'leds', leds: [i], level: lv }); await sleep(450);
+      const s = await shot(), b = ScanLib.singleBlob({ w, h, dark: darkL, frame: s.data, minPeak: Math.max(10, det.peak * 0.3), roi, exclude: unstable });
       pts[i] = b ? { ...b, src: 'single' } : null; if (b) refined++;  // a LED that does not show up alone was a false detection
     }
     if (M.searchRuns) {  // a tree: look for the LEDs that are visible but were too close together to be told apart by code
-      const minPeak = Math.max(10, det.peak * M.singleFactor), roi2 = ScanLib.roiOf(pts, w, h, { x: 0.15, top: 0.6, bottom: 0.1 }), lv = Math.max(level, 200);
+      const minPeak = Math.max(10, det.peak * M.singleFactor), roi2 = ScanLib.roiOf(pts, w, h, { x: 0.15, top: 0.6, bottom: 0.1 });
       const stat = await ScanLib.searchRuns(pts, async i => {
         await pat({ kind: 'leds', leds: [i], level: lv }); await sleep(450); const s1 = await shot();
-        return ScanLib.singleBlob({ w, h, dark: dark.data, frame: s1.data, minPeak, roi: roi2, exclude: unstable });
-      }, { limit: M.searchLimit, check, progress: (u, l, i) => scanStatus(`Looking for LED ${i} on its own (${u} of at most ${l}), brightness ${lv}...`, 0.62 + 0.36 * u / l) });
+        return ScanLib.singleBlob({ w, h, dark: darkL, frame: s1.data, minPeak, roi: roi2, exclude: unstable });
+      }, { limit: M.searchLimit, check, progress: (u, l, i) => status(`Looking for LED ${i} on its own (${u} of at most ${l}), brightness ${lv}...`, 0.62 + 0.36 * u / l) });
       refined += stat.found;
     }
     const f2 = ScanLib.filterOutliers(pts); pts = f2.pts; dropped += f2.removed.length;
-    const hidden = pts.filter(p => !p).length;
-    pts = ScanLib.interpolate(pts, { arc: M.arc });
-    if (pts.some(p => !p)) throw new Error('No LED was found. Make sure the garland is in view and the room is dark.');
-    SC.dump.pts = pts.map(p => ({ u: +p.u.toFixed(2), v: +p.v.toFixed(2), src: p.src }));
-    SC.result = { pts, w, h, n, stats: { mode: scanMode, n, decoded, refined, dropped, hidden, shift: mv ? +mv.shift.toFixed(1) : null, blobs: det.blobs, merged: det.merged, invalid: det.invalid, conflicts: det.conflicts, uncertain: det.uncertain, corrected: det.corrected, rejected: det.rejected, level } };
-    SC.snap = { w, h, data: all1.data };
+    return { pts, w, h, n, level, det, decoded, refined, dropped, mv, snap: all1.data, colour: col, fellBack };
+  } finally {
+    try { await send('api/scan/stop', {}); } catch { /* ignore */ }
+  }
+}
+
+// Between two views: the garland is back to normal while the phone is moved; "Next view" goes on.
+async function waitForNextView(M, check) {
+  SC.waiting = true; scanStatus(M.nextHint, 0.5); renderScan();
+  await new Promise(res => { SC.resume = res; });
+  SC.resume = null; SC.waiting = false; renderScan(); check();
+}
+
+const sumOf = (rs, f) => rs.reduce((s, r) => s + f(r), 0);
+
+async function runScan() {
+  const dev = document.getElementById('scan-dev').value;
+  SC.device = dev;
+  SC.running = true; SC.cancel = false; SC.waiting = false; SC.result = null; SC.device = dev; renderScan();
+  const M = SCAN_MODES[SC.scanMode] || SCAN_MODES.flat, scanMode = SC.scanMode, nViews = M.views || 1, colour = SC.colour;
+  const check = () => { if (SC.cancel) throw new Error('cancelled'); };
+  const dump = SC.dump = { id: new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14), w: 0, h: 0, n: 0, mode: scanMode, colour, level: 0, device: dev, photos: [] };
+  try {
+    const vs = [];
+    for (let v = 0; v < nViews; v++) {
+      if (v > 0) await waitForNextView(M, check);
+      const status = (m, f) => scanStatus((nViews > 1 ? `View ${v + 1} of ${nViews}: ` : '') + m, f === undefined ? undefined : (v + f) / nViews);
+      vs.push(await scanView({ dev, M, scanMode, colour, check, status, v, dump }));
+    }
+    const r0 = vs[0], n = r0.n, w = r0.w, h = r0.h;
+    const base = {
+      mode: scanMode, n, decoded: sumOf(vs, r => r.decoded), refined: sumOf(vs, r => r.refined), dropped: sumOf(vs, r => r.dropped),
+      shift: vs.some(r => r.mv) ? +Math.max(...vs.map(r => r.mv ? r.mv.shift : 0)).toFixed(1) : null,
+      blobs: sumOf(vs, r => r.det.blobs), merged: sumOf(vs, r => r.det.merged), invalid: sumOf(vs, r => r.det.invalid), conflicts: sumOf(vs, r => r.det.conflicts),
+      uncertain: sumOf(vs, r => r.det.uncertain), corrected: sumOf(vs, r => r.det.corrected), rejected: sumOf(vs, r => r.det.rejected), level: r0.level,
+      colour: vs.every(r => r.colour) ? 'colour' : vs.some(r => r.colour) ? 'mixed' : 'white', fellBack: vs.some(r => r.fellBack),
+    };
+    const views = vs.map(r => ({ w: r.w, h: r.h, pts: r.pts, snap: r.snap }));
+    if (nViews === 1) {
+      const hidden = r0.pts.filter(p => !p).length;
+      const pts = ScanLib.interpolate(r0.pts, { arc: M.arc });
+      if (pts.some(p => !p)) throw new Error('No LED was found. Make sure the garland is in view and the room is dark.');
+      dump.pts = pts.map(p => ({ u: +p.u.toFixed(2), v: +p.v.toFixed(2), src: p.src }));
+      views[0].pts = pts;
+      SC.result = { pts, w, h, n, is3d: false, views, stats: { ...base, hidden } };
+    } else {
+      dump.pts = vs.map(r => r.pts.map(p => p && { u: +p.u.toFixed(2), v: +p.v.toFixed(2), src: p.src }));
+      const res = { w, h, n, is3d: true, views, stats: base };
+      const lay = buildLayout(res);  // joins the views now, so that a failure shows as a failed scan
+      res.stats = { ...base, hidden: lay.filter(p => p.src === 'interp').length, decoded: lay.filter(p => p.src === 'code').length, refined: lay.filter(p => p.src === 'single').length, ...res.merge };
+      SC.result = res;
+    }
+    SC.snap = { w, h, data: r0.snap };
     SC.oldLayout = await api(`api/devices/${encodeURIComponent(dev)}/layout`);
     scanStatus('Done. Check the result below, then apply it.', 1);
   } catch (e) {
     scanStatus(e.message === 'cancelled' ? 'Cancelled.' : 'Scan failed: ' + e.message, undefined);
     if (e.message !== 'cancelled') toast('Scan failed: ' + e.message, true, 8000);
   } finally {
-    try { await send('api/scan/stop', {}); } catch { /* ignore */ }
-    SC.running = false; renderScan();
+    SC.running = false; SC.waiting = false; SC.resume = null; renderScan();
   }
+}
+
+// The layout of a result for the current rotate / mirror / scale options: x, y (and z for two views joined).
+function buildLayout(r) {
+  if (!r.is3d) return (r.layout = ScanLib.toLayout(r.views[0].pts, SC.opts));
+  const o = { rot: SC.opts.rot, flip: SC.opts.flip };
+  const m = ScanLib.merge3d(ScanLib.orient(r.views[0].pts, o), ScanLib.orient(r.views[1].pts, o), { mode: SC.opts.mode });
+  r.merge = { common: m.common, used: m.used, align: m.align, rms: m.rms, scale: m.scale };
+  return (r.layout = m.pts);
 }
 
 // Shows by eye that the garland really lights what the scan asks for (no camera needed).
@@ -491,8 +766,12 @@ async function lightTest() {
   const hold = async (ms) => { const end = Date.now() + ms; while (Date.now() < end) { if (SC.cancel) throw new Error('cancelled'); await sleep(100); } };
   try {
     scanStatus('Switching the garland to scan mode...', 0.02);
-    const info = await send('api/scan/start', { device: dev });
+    const info = await send('api/scan/start', { device: dev }), every = Array.from({ length: info.leds }, (_, i) => i);
     scanStatus('Look at the garland: everything on (3 s)...', 0.1); await pat({ kind: 'all', level: 200 }); await hold(3000);
+    for (let j = 0; j < 3; j++) {
+      scanStatus(`Everything ${['red', 'green', 'blue'][j]} (2 s): the colour patterns of the scan use these three colours separately...`, 0.15 + 0.05 * j);
+      await pat({ kind: 'rgb', channels: [0, 1, 2].map(c => c === j ? every : []), level: 200 }); await hold(2000);
+    }
     scanStatus('Pattern 1 of the code: every second LED (3 s)...', 0.3); await pat({ kind: 'bit', bit: 0, level: 200 }); await hold(3000);
     const picks = [0, Math.floor(info.leds / 4), Math.floor(info.leds / 2), Math.floor(info.leds * 3 / 4), info.leds - 1];
     for (let k = 0; k < picks.length; k++) {
@@ -515,21 +794,31 @@ function drawScatter(canvas, layout, colors) {
 
 const SRC_COLOR = { code: '#4caf50', single: '#29b6f6', interp: '#ff9800' };
 
+function drawCamera(cam, vw, snapData) {
+  cam.width = 480; cam.height = Math.round(480 * vw.h / vw.w); const k = cam.width / vw.w, g = cam.getContext('2d');
+  const img = g.createImageData(vw.w, vw.h), tmp = document.createElement('canvas'); tmp.width = vw.w; tmp.height = vw.h;
+  let mx = 1; for (let i = 0; i < vw.w * vw.h; i++) mx = Math.max(mx, snapData[i]);
+  for (let i = 0; i < vw.w * vw.h; i++) { const v = Math.min(255, snapData[i] * 255 / mx * 0.8); img.data[4 * i] = img.data[4 * i + 1] = img.data[4 * i + 2] = v; img.data[4 * i + 3] = 255; }
+  tmp.getContext('2d').putImageData(img, 0, 0); g.drawImage(tmp, 0, 0, cam.width, cam.height);
+  g.strokeStyle = 'rgba(255,255,255,.25)'; g.beginPath(); let pen = false;
+  vw.pts.forEach(p => { if (!p) { pen = false; return; } pen ? g.lineTo(p.u * k, p.v * k) : g.moveTo(p.u * k, p.v * k); pen = true; }); g.stroke();
+  vw.pts.forEach(p => { if (!p) return; g.fillStyle = SRC_COLOR[p.src]; g.beginPath(); g.arc(p.u * k, p.v * k, 2.2, 0, 6.2832); g.fill(); });
+}
+
 function drawResults() {
   const r = SC.result; if (!r) return;
-  const cam = document.getElementById('scan-cam'), lay = document.getElementById('scan-new'), old = document.getElementById('scan-old');
-  if (!cam) return;
-  // camera view: snapshot with the detected string
-  cam.width = 480; cam.height = Math.round(480 * r.h / r.w); const k = cam.width / r.w, g = cam.getContext('2d');
-  const img = g.createImageData(r.w, r.h), tmp = document.createElement('canvas'); tmp.width = r.w; tmp.height = r.h;
-  let mx = 1; for (let i = 0; i < r.w * r.h; i++) mx = Math.max(mx, SC.snap.data[i]);
-  for (let i = 0; i < r.w * r.h; i++) { const v = Math.min(255, SC.snap.data[i] * 255 / mx * 0.8); img.data[4 * i] = img.data[4 * i + 1] = img.data[4 * i + 2] = v; img.data[4 * i + 3] = 255; }
-  tmp.getContext('2d').putImageData(img, 0, 0); g.drawImage(tmp, 0, 0, cam.width, cam.height);
-  g.strokeStyle = 'rgba(255,255,255,.25)'; g.beginPath(); r.pts.forEach((p, i) => i ? g.lineTo(p.u * k, p.v * k) : g.moveTo(p.u * k, p.v * k)); g.stroke();
-  r.pts.forEach(p => { g.fillStyle = SRC_COLOR[p.src]; g.beginPath(); g.arc(p.u * k, p.v * k, 2.2, 0, 6.2832); g.fill(); });
+  const lay = document.getElementById('scan-new'), old = document.getElementById('scan-old'), top = document.getElementById('scan-top');
+  if (!lay) return;
+  // camera views: snapshot with the detected string
+  r.views.forEach((vw, k) => {
+    const cam = document.getElementById('scan-cam' + k); if (!cam) return;
+    drawCamera(cam, vw, vw.snap);
+  });
   // layouts
-  const nl = ScanLib.toLayout(r.pts, SC.opts); r.layout = nl;
-  drawScatter(lay, nl.map(p => [p.x, p.y]), r.pts.map(p => SRC_COLOR[p.src]));
+  let nl;
+  try { nl = buildLayout(r); } catch (e) { scanStatus('Cannot join the views: ' + e.message, undefined); return; }
+  drawScatter(lay, nl.map(p => [p.x, p.y]), nl.map((p, i) => SRC_COLOR[r.is3d ? p.src : r.views[0].pts[i].src]));
+  if (top && r.is3d) drawScatter(top, nl.map(p => [p.x, p.z]), nl.map(p => SRC_COLOR[p.src]));
   if (SC.oldLayout) drawScatter(old, SC.oldLayout);
 }
 
@@ -537,7 +826,7 @@ async function applyScan() {
   const r = SC.result; if (!r) return;
   if (!confirm(`Write the scanned layout to ${SC.device}? The current layout is saved as a backup first.`)) return;
   try {
-    const res = await send('api/scan/apply', { device: SC.device, scan_type: r.stats.mode, coordinates: r.layout.map(p => ({ x: p.x, y: p.y })) });
+    const res = await send('api/scan/apply', { device: SC.device, scan_type: r.stats.mode, coordinates: r.layout.map(p => r.is3d ? { x: p.x, y: p.y, z: p.z } : { x: p.x, y: p.y }) });
     toast(`Layout written (${res.leds} LEDs). Backup: ${res.backup}`, false, 8000);
     SC.oldLayout = await api(`api/devices/${encodeURIComponent(SC.device)}/layout`); drawResults(); loadGallery();
   } catch (e) { toast('Not applied: ' + e.message, true, 8000); }
@@ -549,7 +838,8 @@ function renderScan() {
   if (devs.length && !SC.running && SC.device !== (S.previewDevice || devs[0])) scanLoadMode(S.previewDevice || devs[0]);
   const video = h('video', { playsinline: '', muted: '', autoplay: '', style: 'width:100%;max-width:480px;border-radius:8px;background:#000' }); video.muted = true;
   SC.video = video; if (SC.stream) { video.srcObject = SC.stream; video.play().catch(() => {}); }
-  const st = SC.result && SC.result.stats;
+  const st = SC.result && SC.result.stats, r = SC.result, canvasStyle = 'max-width:100%;background:#000;border-radius:6px';
+  const how = st && (st.colour === 'colour' ? 'colour patterns' : st.colour === 'mixed' ? 'colour and white patterns' : 'white patterns' + (st.fellBack ? ' (the colour ones were not read)' : ''));
   root.append(
     h('div', { class: 'card', style: 'margin-bottom:12px' },
       h('h2', {}, 'Scan LED positions with the phone camera'),
@@ -564,18 +854,24 @@ function renderScan() {
         h('label', {}, 'Garland ', h('select', { id: 'scan-dev', disabled: SC.running, onchange: e => { setPreviewDevice(e.target.value); scanLoadMode(e.target.value); renderScan(); } }, devs.map(d => h('option', { value: d, selected: d === SC.device }, d)))),
         h('label', {}, 'Scan type ', h('select', { id: 'scan-mode', disabled: SC.running, onchange: e => { SC.scanMode = e.target.value; scanSaveMode(); renderScan(); } },
           Object.entries(SCAN_MODES).map(([k, m]) => h('option', { value: k, disabled: !!m.disabled, selected: k === SC.scanMode }, m.label)))),
+        h('label', { title: 'Red, green and blue of every LED carry three bits in one photo: the scan needs about a third of the photos. If the colours are not read the scan repeats itself with white patterns.' },
+          h('input', { type: 'checkbox', checked: SC.colour, disabled: SC.running, onchange: e => { SC.colour = e.target.checked; scanSaveMode(); } }), 'Colour patterns (faster)'),
         h('button', { disabled: SC.running, onclick: async () => { try { await scanOpenCamera(); toast('Camera ready.'); renderScan(); } catch (e) { toast(e.message, true, 9000); } } }, 'Open camera'),
         h('button', { class: 'primary', disabled: SC.running || !SC.stream, onclick: runScan }, 'Start scan'),
+        SC.waiting ? h('button', { class: 'primary', onclick: () => SC.resume && SC.resume() }, 'Next view') : null,
         h('button', { disabled: SC.running, title: 'Lights the garland step by step so you can check it by eye. No camera needed.', onclick: lightTest }, 'Light test'),
-        h('button', { disabled: !SC.running, onclick: () => { SC.cancel = true; } }, 'Cancel')),
+        h('button', { disabled: !SC.running, onclick: () => { SC.cancel = true; if (SC.resume) SC.resume(); } }, 'Cancel')),
       h('div', { class: 'bar', id: 'scan-bar', style: 'margin-top:8px' }, h('div', { style: 'width:0%' })),
       h('div', { id: 'scan-status', class: 'muted' }, SC.status || 'Idle.')),
     h('div', { class: 'card', style: 'margin-bottom:12px' }, h('h3', {}, 'Camera'), video,
-      SC.dump ? h('div', { class: 'row', style: 'margin-top:8px' }, h('button', { disabled: SC.running, onclick: scanSendPhotos, title: 'Uploads the photos of the last scan to the add-on, to find out why a scan went wrong' }, `Send the photos of the last scan for analysis (${SC.dump.photos.length})`)) : ''),
-    SC.result ? h('div', { class: 'card' },
+      SC.dump && SC.dump.photos.length ? h('div', { class: 'row', style: 'margin-top:8px' }, h('button', { disabled: SC.running, onclick: scanSendPhotos, title: 'Uploads the photos of the last scan to the add-on, to find out why a scan went wrong' }, `Send the photos of the last scan for analysis (${SC.dump.photos.length})`)) : ''),
+    r ? h('div', { class: 'card' },
       h('h2', {}, 'Result'),
-      h('div', {}, `${st.n} LEDs: ${st.decoded} recognised by code, ${st.refined} found one by one, ${st.dropped} dropped as outliers, `, h('b', { class: st.hidden && st.mode !== 'tree' ? 'warn' : 'ok' }, `${st.hidden} not visible (estimated from their neighbours${st.mode === 'tree' ? ', as expected for the far side of a tree' : ''})`),
-        h('span', { class: 'muted' }, `  ·  blobs ${st.blobs}, merged ${st.merged}, invalid ${st.invalid}, ambiguous ${st.conflicts}, doubtful ${st.uncertain}, corrected ${st.corrected}, rejected by the check ${st.rejected}, brightness ${st.level}`)),
+      h('div', {}, `${st.n} LEDs: ${st.decoded} recognised by code, ${st.refined} found one by one, ${st.dropped} dropped as outliers, `, h('b', { class: st.hidden && !st.mode.startsWith('tree') ? 'warn' : 'ok' }, `${st.hidden} not visible (estimated from their neighbours${st.mode.startsWith('tree') ? ', as expected for the far side of a tree' : ''})`),
+        h('span', { class: 'muted' }, `  ·  ${how}, blobs ${st.blobs}, merged ${st.merged}, invalid ${st.invalid}, ambiguous ${st.conflicts}, doubtful ${st.uncertain}, corrected ${st.corrected}, rejected by the check ${st.rejected}, brightness ${st.level}`)),
+      r.is3d && r.merge ? h('div', { class: r.merge.align === 'common' ? 'muted' : 'warn' },
+        r.merge.align === 'common' ? `The two views were joined by ${r.merge.used} LEDs that both saw (of ${r.merge.common}), mean mismatch ${r.merge.rms} px.`
+          : `Fewer than 6 LEDs were seen in both views (${r.merge.common}), so the views were joined by their outlines only: the result is less exact. Frame the whole tree the same way in both views.`) : null,
       st.shift > 1.2 ? h('div', { class: 'warn' }, `The phone moved about ${st.shift} px during the scan. Use a tripod for a more accurate result.`) : null,
       h('div', { class: 'muted' }, 'Green = recognised, blue = found separately, orange = estimated. The grey line is the string in LED order and should run smoothly.'),
       h('div', { class: 'row', style: 'margin:8px 0' },
@@ -583,8 +879,9 @@ function renderScan() {
         h('label', {}, h('input', { type: 'checkbox', checked: SC.opts.flip, onchange: e => { SC.opts.flip = e.target.checked; drawResults(); } }), 'Mirror'),
         h('label', {}, 'Scale ', h('select', { onchange: e => { SC.opts.mode = e.target.value; drawResults(); } }, [['fit', 'keep proportions'], ['stretch', 'fill the unit box']].map(([v, t]) => h('option', { value: v, selected: v === SC.opts.mode }, t))))),
       h('div', { class: 'row', style: 'align-items:flex-start' },
-        h('div', {}, h('div', { class: 'muted' }, 'Camera view'), h('canvas', { id: 'scan-cam', style: 'max-width:100%;background:#000;border-radius:6px' })),
+        ...r.views.map((_, k) => h('div', {}, h('div', { class: 'muted' }, r.is3d ? (k ? 'Camera view: back' : 'Camera view: front') : 'Camera view'), h('canvas', { id: 'scan-cam' + k, style: canvasStyle }))),
         h('div', {}, h('div', { class: 'muted' }, 'Scanned layout (x: -1..1, y: 0..1)'), h('canvas', { id: 'scan-new', width: 360, height: 300, style: 'max-width:100%;background:#0b0b0d;border-radius:6px' })),
+        r.is3d ? h('div', {}, h('div', { class: 'muted' }, 'Seen from above (x, z)'), h('canvas', { id: 'scan-top', width: 300, height: 300, style: 'max-width:100%;background:#0b0b0d;border-radius:6px' })) : null,
         h('div', {}, h('div', { class: 'muted' }, 'Layout now on the device'), h('canvas', { id: 'scan-old', width: 360, height: 300, style: 'max-width:100%;background:#0b0b0d;border-radius:6px' }))),
       h('div', { class: 'row', style: 'margin-top:8px' }, h('button', { class: 'primary', onclick: applyScan }, 'Apply to the garland'))) : '');
   if (!SC.running) { const el = document.getElementById('scan-status'); if (el) el.textContent = SC.status || 'Idle.'; }

@@ -901,12 +901,13 @@ class ScanPattern(BaseModel):
     bit: int = 0
     leds: list[int] = []
     level: int = 200
+    channels: list[list[int]] = []  # kind "rgb": LEDs lit in red, green, blue
 
 
 @app.post("/api/scan/pattern")
 def api_scan_pattern(req: ScanPattern):
     try:
-        return scan.pattern(req.kind, req.bit, req.leds, req.level)
+        return scan.pattern(req.kind, req.bit, req.leds, req.level, req.channels)
     except (RuntimeError, ValueError) as exc:
         raise HTTPException(409, str(exc))
 
@@ -924,7 +925,7 @@ def api_scan_state():
 class ScanApply(BaseModel):
     device: str
     coordinates: list[dict]
-    scan_type: str = "flat"  # flat | tree (one side); only logged
+    scan_type: str = "flat"  # flat | tree | tree-fb; only logged
 
 
 @app.post("/api/scan/apply")

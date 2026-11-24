@@ -12,6 +12,7 @@ import time
 import uuid
 import zipfile
 from contextlib import asynccontextmanager
+from datetime import datetime
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
@@ -875,7 +876,13 @@ def api_scan_dump_list():
     root = device.DATA_DIR / "scans"
     if not root.exists():
         return []
-    return [{"id": p.name, "files": sorted(f.name for f in p.iterdir())} for p in sorted(root.iterdir()) if p.is_dir()]
+    out = []
+    for p in sorted(root.iterdir(), reverse=True):
+        if p.is_dir():
+            fs = [f for f in p.iterdir() if f.is_file()]
+            out.append({"id": p.name, "files": sorted(f.name for f in fs), "bytes": sum(f.stat().st_size for f in fs),
+                        "time": datetime.fromtimestamp(max((f.stat().st_mtime for f in fs), default=p.stat().st_mtime)).strftime("%Y-%m-%d %H:%M:%S")})
+    return out
 
 
 @app.get("/api/scan/dump/{sid}/{fname}")

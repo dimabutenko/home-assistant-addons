@@ -1156,6 +1156,15 @@ async function scanLoadBackups() {
   } }, 'Restore this layout')));
 }
 
+// Photos of the last scans that were sent for analysis, as zip files to save (a normal browser saves them; the Home Assistant app may not).
+async function scanLoadDumps() {
+  const el = document.getElementById('scan-dumps'); if (!el) return;
+  let list = [];
+  try { list = await api('api/scan/dump'); } catch (e) { el.textContent = 'Could not read the list: ' + e.message; return; }
+  if (!list.length) { el.textContent = 'No photos were sent yet: press "Send the photos of the last scan for analysis" after a scan.'; return; }
+  el.replaceChildren(...list.map(d => h('div', {}, h('a', { href: `api/scan/dump/${d.id}.zip`, download: `${d.id}.zip`, target: '_blank' }, `${d.time} - ${d.id}.zip`), h('span', { class: 'muted' }, `  ${d.files.length} files, ${(d.bytes / 1e6).toFixed(1)} MB`))));
+}
+
 function renderScan() {
   const root = document.getElementById('view-scan'); root.replaceChildren();
   const devs = (S.status || []).map(d => d.name);
@@ -1219,9 +1228,10 @@ function renderScan() {
         h('div', {}, h('div', { class: 'muted' }, 'Layout now on the device'), h('canvas', { id: 'scan-old', width: 360, height: 300, style: 'max-width:100%;background:#0b0b0d;border-radius:6px' }))),
       h('div', { class: 'row', style: 'margin-top:8px' }, h('button', { class: 'primary', onclick: applyScan }, 'Apply to the garland'))) : '');
   if (!SC.lightsLoaded) { SC.lightsLoaded = true; scanLoadLights().then(() => { if (SC.lights.length && !SC.running) renderScan(); }); }
-  root.append(h('div', { class: 'card', style: 'margin-top:12px' }, h('h3', {}, 'Saved layouts (restore)'), h('div', { id: 'scan-backups', class: 'muted' }, 'Loading...')));
+  root.append(h('div', { class: 'card', style: 'margin-top:12px' }, h('h3', {}, 'Saved layouts (restore)'), h('div', { id: 'scan-backups', class: 'muted' }, 'Loading...')),
+    h('div', { class: 'card', style: 'margin-top:12px' }, h('h3', {}, 'Photos of the last scans (download)'), h('div', { id: 'scan-dumps', class: 'muted' }, 'Loading...')));
   if (!SC.running) { const el = document.getElementById('scan-status'); if (el) el.textContent = SC.status || 'Idle.'; }
-  drawResults(); scanLoadBackups();
+  drawResults(); scanLoadBackups(); scanLoadDumps();
 }
 
 window.addEventListener('beforeunload', () => { if (SC.running) navigator.sendBeacon('api/scan/stop'); });

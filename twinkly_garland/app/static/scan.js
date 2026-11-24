@@ -210,8 +210,8 @@ const ScanLib = (() => {
       for (let c = 0; c < 3; c++) { a += Math.max(0, calR[c][i] - darkP[c][i]); b += Math.max(0, calB[c][i] - darkP[c][i]); }
       q[i] = Math.min(a, b) / 3; sw[i] = (a + b) / 6;
     }
-    const T = Math.max(6, 0.2 * percentile(q, 99.9)), total = frames.length, nChecks = total - nb;
-    const R0 = Math.max(5, 0.012 * w), MIN_PIX = 3;
+    const T = Math.max(6, 0.1 * percentile(q, 99.9)), total = frames.length, nChecks = total - nb;  // 0.1: tuned on real photos of a tree (0.2 left dim LEDs out)
+    const R0 = Math.max(5, 0.012 * w), MIN_PIX = 2;
     const byIdx = new Map(); let pixels = 0, ill = 0, invalid = 0, uncertain = 0, corrected = 0, rejected = 0;
     const rv = [0, 0, 0], bv = [0, 0, 0];
     for (let i = 0; i < N; i++) {
@@ -229,13 +229,13 @@ const ScanLib = (() => {
         const P = frames[k]; let rvv = 0, bvv = 0;
         for (let c = 0; c < 3; c++) { const v = Math.max(0, P[c][i] - darkP[c][i]); rvv += rv[c] * v; bvv += bv[c] * v; }
         const a = (bb * rvv - rb * bvv) / det, cc = (rr * bvv - rb * rvv) / det, t = a + cc;
-        if (t < 0.4 || t > 1.8) { bad = true; break; }
+        if (t < 0.3 || t > 2.5) { bad = true; break; }
         const d = (cc - a) / t, m = Math.abs(d);
         if (m < 0.4) { bad = true; break; }
         if (m < 0.7) doubtful++;
         bits[k] = cc > a ? 1 : 0;
       }
-      if (bad || doubtful > (nChecks ? 1 : 0)) { uncertain++; continue; }
+      if (bad || doubtful > (nChecks ? 2 : 0)) { uncertain++; continue; }
       let rd = bits.slice(0, nb);
       if (nChecks) {
         const dec = eccDecode(rd, bits.slice(nb), nb);
@@ -301,21 +301,25 @@ const ScanLib = (() => {
     return { pts: out, fixed: [...new Set(fixed)] };
   }
 
-  // How clearly the camera tells the all-red photo from the all-blue one, over the lit pixels: (R-B)/(R+B) in the red photo and (B-R)/(R+B)
-  // in the blue one (1 = perfect, 0 = the same, a blown-out white LED gives about 0), and the share of lit pixels where a channel is at its limit.
+  // How clearly the camera tells the all-red photo from the all-blue one, as the decoder needs it: over the lit pixels the sine of the angle between
+  // the pixel's response to red and its response to blue (the three camera channels as a vector; 1 = completely different, 0 = the same
+  // colour, which is what a blown-out white LED looks like). The decoder un-mixes the channels, so the crosstalk between them (a red LED
+  // also lights the blue channel a bit) does not matter, only this angle does; it gives up below 0.22. And the share of lit pixels where a
+  // channel is at its limit.
   function separation(darkP, calR, calB) {
     const N = calR[0].length, q = new Float32Array(N);
     for (let i = 0; i < N; i++) { let a = 0, b = 0; for (let c = 0; c < 3; c++) { a += Math.max(0, calR[c][i] - darkP[c][i]); b += Math.max(0, calB[c][i] - darkP[c][i]); } q[i] = Math.min(a, b) / 3; }
-    const T = Math.max(6, 0.2 * percentile(q, 99.9)), sr = [], sb = []; let lit = 0, clipped = 0;
+    const T = Math.max(6, 0.2 * percentile(q, 99.9)), sn = []; let lit = 0, clipped = 0;
     for (let i = 0; i < N; i++) {
       if (q[i] <= T) continue; lit++;
-      const rR = Math.max(0, calR[0][i] - darkP[0][i]), bR = Math.max(0, calR[2][i] - darkP[2][i]), rB = Math.max(0, calB[0][i] - darkP[0][i]), bB = Math.max(0, calB[2][i] - darkP[2][i]);
-      sr.push((rR - bR) / (rR + bR + 1)); sb.push((bB - rB) / (rB + bB + 1));
+      let rr = 0, bb = 0, rb = 0;
+      for (let c = 0; c < 3; c++) { const r = Math.max(0, calR[c][i] - darkP[c][i]), b = Math.max(0, calB[c][i] - darkP[c][i]); rr += r * r; bb += b * b; rb += r * b; }
+      sn.push(Math.sqrt(Math.max(0, 1 - rb * rb / (rr * bb + 1e-9))));
       if (Math.max(calR[0][i], calR[1][i], calR[2][i], calB[0][i], calB[1][i], calB[2][i]) >= 250) clipped++;
     }
-    const med = a => { if (!a.length) return 0; const x = [...a].sort((u, v) => u - v); return x[x.length >> 1]; };
-    const sepR = med(sr), sepB = med(sb);
-    return { sepR, sepB, sep: Math.min(sepR, sepB), lit, satShare: lit ? clipped / lit : 0 };
+    sn.sort((u, v) => u - v);
+    const m = sn.length ? sn[sn.length >> 1] : 0;
+    return { sepR: m, sepB: m, sep: m, lit, satShare: lit ? clipped / lit : 0 };
   }
 
   const maxArr = (a, b) => { const o = new Float32Array(a.length); for (let i = 0; i < a.length; i++) o[i] = Math.max(a[i], b[i]); return o; };
@@ -682,10 +686,10 @@ async function tuneCamera({ cam, status, check, frac = 0.06 }) {
   await pat({ kind: 'dark' }); await settle(); const dark = await shot();
   for (let t = 0; t < 10; t++) {
     check(); await pat({ kind: 'all', level }); await settle(); const a = await shot();
-    peak = peakOf(a, dark, true);
-    status(`Setting the exposure: LED level ${level}, ${cam.info()}, brightest channel ${peak} of 255 (aim 150-230)...`, frac);
-    if (peak >= 235) { const f = Math.max(0.08, 190 / peak); if (await cam.scale(f)) continue; if (level > MIN_LEVEL) level = Math.max(MIN_LEVEL, Math.round(level * f)); else break; }
-    else if (peak < 90) { const f = Math.min(6, 180 / Math.max(peak, 4)); if (await cam.scale(f)) continue; if (level < 255) level = Math.min(255, Math.round(level * f)); else break; }
+    peak = peakOf(a, dark, true); const clip = clipOf(a, dark);
+    status(`Setting the exposure: LED level ${level}, ${cam.info()}, brightest channel ${peak} of 255, ${Math.round(100 * clip)}% of the lit pixels clipped (aim: under 5%)...`, frac);
+    if (peak >= 235 || clip > 0.05) { const f = Math.max(0.08, Math.min(0.8, 190 / peak)); if (await cam.scale(f)) continue; if (level > MIN_LEVEL) level = Math.max(MIN_LEVEL, Math.round(level * f)); else break; }
+    else if (peak < 90 && clip < 0.01) { const f = Math.min(6, 180 / Math.max(peak, 4)); if (await cam.scale(f)) continue; if (level < 255) level = Math.min(255, Math.round(level * f)); else break; }
     else break;
   }
   return { level, peak };
@@ -695,10 +699,10 @@ async function tuneCamera({ cam, status, check, frac = 0.06 }) {
 function colourVerdict(sep, peak) {
   if (!sep || !sep.lit) return { ok: false, text: 'No LEDs were seen in the red and blue photos: is the garland in view?' };
   const s = sep.sep.toFixed(2), clip = Math.round(100 * sep.satShare);
-  if (sep.sep < 0.35) return { ok: false, text: `Red and blue look almost the same to the camera (separation ${s}, ${clip}% of the lit pixels clipped): the LEDs are too bright for the camera or the camera mixes the colours. Move the phone farther away or darken further; the scan will try white patterns if it cannot read the colours.` };
-  if (sep.satShare > 0.15) return { ok: false, text: `Red and blue are distinct (separation ${s}) but ${clip}% of the lit pixels are clipped: a lower exposure would be better.` };
-  if (peak < 90) return { ok: false, text: `The LEDs are dim for the camera (brightest channel ${peak} of 255, separation ${s}): move the phone closer.` };
-  return { ok: true, text: `Colours are clearly distinct (separation ${s}, ${clip}% clipped, brightest channel ${peak} of 255).` };
+  if (sep.sep < 0.3) return { ok: false, text: `Red and blue are hard to tell apart for the camera (distinctness ${s}, 1 = perfect, the decoder gives up below 0.22; ${clip}% of the lit pixels clipped): the LEDs are too bright for the camera or the camera mixes the colours. Move the phone farther away or darken further; the scan will try white patterns if it cannot read the colours.` };
+  if (sep.satShare > 0.10) return { ok: false, text: `Red and blue are distinct enough (distinctness ${s}) but ${clip}% of the lit pixels are clipped (they turn white): a lower exposure would be better.` };
+  if (peak < 90) return { ok: false, text: `The LEDs are dim for the camera (brightest channel ${peak} of 255, distinctness ${s}): move the phone closer.` };
+  return { ok: true, text: `Colours are distinct (distinctness ${s}, ${clip}% clipped, brightest channel ${peak} of 255).` };
 }
 
 // ---- room lights ------------------------------------------------------------------------------------------------
@@ -752,7 +756,7 @@ async function tuneRoomLights({ cam, status, check, every }) {
     best = chooseLight(results);
   }
   await setRoomLights(best.c);
-  const table = results.map(r => `${lightName(r.c)}: separation ${r.sep.lit ? r.sep.sep.toFixed(2) : 'no LEDs'}, clipped ${Math.round(100 * r.sep.satShare)}%, light in the dark photo ${r.bg}, score ${r.score.toFixed(2)}`).join(' | ');
+  const table = results.map(r => `${lightName(r.c)}: distinctness ${r.sep.lit ? r.sep.sep.toFixed(2) : 'no LEDs'}, clipped ${Math.round(100 * r.sep.satShare)}%, light in the dark photo ${r.bg}, score ${r.score.toFixed(2)}`).join(' | ');
   const text = `Room lights: ${lightName(best.c)} chosen. ${table}`;
   try { await send('api/scan/note', { text }); } catch { /* the log is a convenience */ }
   return { best, results, text };
@@ -863,6 +867,18 @@ async function scanSendPhotos() {
 function scanStatus(msg, frac) {
   SC.status = msg; const el = document.getElementById('scan-status'), bar = document.getElementById('scan-bar');
   if (el) el.textContent = msg; if (bar && frac !== undefined) bar.firstChild.style.width = `${Math.round(frac * 100)}%`;
+}
+
+// Share of the lit pixels (a channel more than 60 above the dark photo) of a photo that are clipped (a channel at 250 or more): clipped LEDs
+// turn white and lose their colour.
+function clipOf(a, dk) {
+  let lit = 0, clip = 0;
+  for (let i = 0; i < a.data.length; i++) {
+    const r = a.rgb[0][i], g = a.rgb[1][i], b = a.rgb[2][i];
+    if (Math.max(r - dk.rgb[0][i], g - dk.rgb[1][i], b - dk.rgb[2][i]) <= 60) continue;
+    lit++; if (Math.max(r, g, b) >= 250) clip++;
+  }
+  return lit ? clip / lit : 0;
 }
 
 // Strongest channel (or luma) of a photo minus the dark one, 99.9th percentile: tells whether the camera is dazzled.
@@ -1212,7 +1228,7 @@ function renderScan() {
         r.merge.align === 'common' ? `The two views were joined by ${r.merge.used} LEDs that both saw (of ${r.merge.common}), mean mismatch ${r.merge.rms} px.`
           : `Fewer than 6 LEDs were seen in both views (${r.merge.common}), so the views were joined by their outlines only: the result is less exact. Frame the whole tree the same way in both views.`) : null,
       SC.lightsReport ? h('div', { class: 'muted' }, SC.lightsReport.text) : null,
-      st.sep !== null && st.sep !== undefined ? h('div', { class: st.sep < 0.5 ? 'warn' : 'muted' }, `Red against blue: separation ${st.sep} (1 = perfect, below 0.5 the colours are hard to read), ${st.clipped}% of the lit pixels clipped. ${SC.lockInfo && SC.lockInfo.exposure ? 'Camera set to ' + SC.lockInfo.exposure + '.' : ''}`) : null,
+      st.sep !== null && st.sep !== undefined ? h('div', { class: st.sep < 0.3 || st.clipped > 10 ? 'warn' : 'muted' }, `Red against blue: distinctness ${st.sep} (1 = perfect, the decoder gives up below 0.22), ${st.clipped}% of the lit pixels clipped (they turn white; under 5% is good). ${SC.lockInfo && SC.lockInfo.exposure ? 'Camera set to ' + SC.lockInfo.exposure + '.' : ''}`) : null,
       r.spikes && r.spikes.length ? h('div', { class: 'warn' }, `${r.spikes.length} LED${r.spikes.length > 1 ? 's' : ''} (${r.spikes.slice(0, 8).join(', ')}${r.spikes.length > 8 ? ', ...' : ''}) stood far away from both neighbours on the string and were put between them: a stray detection, most likely.`) : null,
       SC.lockInfo ? h('div', { class: SC.lockInfo.missing.length ? 'warn' : 'muted' }, `Camera: ${SC.lockInfo.done.length ? 'locked ' + SC.lockInfo.done.join(', ') : 'nothing could be locked'}${SC.lockInfo.missing.length ? '; not lockable here: ' + SC.lockInfo.missing.join(', ') + ' (the phone may change them during the scan; Chrome on Android locks the most)' : ''}.`) : null,
       st.shift > 1.2 ? h('div', { class: 'warn' }, `The phone moved about ${st.shift} px during the scan. Use a tripod for a more accurate result.`) : null,

@@ -12,7 +12,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from . import device, lights
+from . import device
 
 log = logging.getLogger("twinkly.scan")
 IDLE_TIMEOUT = 180  # s without a request: stop the scan and restore playback
@@ -79,10 +79,6 @@ class Session:
         except Exception as exc:
             log.warning("restore failed: %s", exc)
         device.scanning_hosts.discard(self.dev["host"])
-        try:
-            lights.restore()  # room lights the scan tuned
-        except Exception as exc:
-            log.warning("room lights not restored: %s", exc)
         global _sess
         with _guard:
             if _sess is self:

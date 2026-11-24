@@ -619,7 +619,7 @@ const SCAN_MODES = {
 };
 
 // ---- UI ------------------------------------------------------------------------------------
-const SC = { stream: null, video: null, running: false, cancel: false, waiting: false, resume: null, result: null, snap: null, opts: { rot: 0, flip: false, mode: 'fit' }, scanMode: 'flat', style: 'hue', lockInfo: null, lights: [], lightsLoaded: false, useLights: true, lightsReport: null, device: null, oldLayout: null, status: '' };
+const SC = { stream: null, video: null, running: false, cancel: false, waiting: false, resume: null, result: null, snap: null, opts: { rot: 0, flip: false, mode: 'fit' }, scanMode: 'flat', style: 'hue', lockInfo: null, device: null, oldLayout: null, status: '' };
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 function scanStopCamera() {
@@ -705,67 +705,6 @@ function colourVerdict(sep, peak) {
   return { ok: true, text: `Colours are distinct (distinctness ${s}, ${clip}% clipped, brightest channel ${peak} of 255).` };
 }
 
-// ---- room lights ------------------------------------------------------------------------------------------------
-// The lights listed in the add-on option scan_lights (for example the sofa lights of the room) can be tuned for the scan: the page tries a few
-// brightnesses (and colour temperatures), lets the camera measure how clearly it tells red from blue with each, and keeps the best. The state the
-// lights had is put back when the scan session ends (the add-on does that itself, also if the page is closed).
-async function scanLoadLights() {
-  try { SC.lights = ((await api('api/scan/lights')).lights || []).filter(l => !l.error); } catch { SC.lights = []; }
-  SC.lightsLoaded = true;
-  try { SC.useLights = localStorage.getItem('scan-lights') !== '0'; } catch { /* no storage */ }
-}
-
-async function setRoomLights(c) {
-  for (const l of SC.lights) {
-    const body = c.b === 0 ? { entity: l.entity, on: false }
-      : { entity: l.entity, on: true, brightness_pct: c.b, ...(c.k && l.color_temp && l.kelvin ? { kelvin: Math.round(Math.min(l.kelvin[1], Math.max(l.kelvin[0], c.k))) } : {}) };
-    await send('api/scan/lights/set', body);
-  }
-  await sleep(900);  // the bulbs answer within a second, the camera then needs a moment to follow
-}
-
-// The score of one setting: how clearly red and blue differ for the camera, minus a price for clipped pixels and for light in the dark photo
-// (that light is only noise for the scan).
-function lightScore(sep, bg) { return sep.sep - 0.7 * sep.satShare - bg / 255; }
-
-// The best setting; "off" wins unless something else is clearly better (the simplest room is the best room).
-function chooseLight(results) {
-  const ok = results.filter(r => r.score > -9); if (!ok.length) return results[0];
-  const best = ok.reduce((a, b) => b.score > a.score ? b : a), off = ok.find(r => r.c.b === 0);
-  return off && best !== off && best.score - off.score < 0.06 ? off : best;
-}
-
-const lightName = c => c.b === 0 ? 'off' : `${c.b}%${c.k ? ' ' + c.k + ' K' : ''}`;
-
-async function tuneRoomLights({ cam, status, check, every }) {
-  const results = [], measure = async c => {
-    check(); status(`Room lights: trying ${lightName(c)} (${results.length + 1})...`, 0.05);
-    await setRoomLights(c);
-    const t = await tuneCamera({ cam, status, check });
-    await pat({ kind: 'dark' }); await settle(); const dark = await shot();
-    await pat({ kind: 'rgb', channels: [every, [], []], level: t.level }); await settle(); const red = await shot();
-    await pat({ kind: 'rgb', channels: [[], [], every], level: t.level }); await settle(); const blue = await shot();
-    const sep = ScanLib.separation(dark.rgb, red.rgb, blue.rgb), bg = ScanLib.percentile(dark.data, 99);
-    const r = { c, sep, bg, peak: t.peak, level: t.level, score: sep.lit ? lightScore(sep, bg) : -9 };
-    results.push(r); return r;
-  };
-  for (const c of [{ b: 0 }, { b: 3 }, { b: 10 }, { b: 25 }]) await measure(c);
-  let best = chooseLight(results);
-  if (best.c.b > 0 && SC.lights.some(l => l.color_temp)) {  // a warm and a cool white at the best brightness
-    for (const k of [2700, 5500]) await measure({ b: best.c.b, k });
-    best = chooseLight(results);
-  }
-  await setRoomLights(best.c);
-  const table = results.map(r => `${lightName(r.c)}: distinctness ${r.sep.lit ? r.sep.sep.toFixed(2) : 'no LEDs'}, clipped ${Math.round(100 * r.sep.satShare)}%, light in the dark photo ${r.bg}, score ${r.score.toFixed(2)}`).join(' | ');
-  const text = `Room lights: ${lightName(best.c)} chosen. ${table}`;
-  try { await send('api/scan/note', { text }); } catch { /* the log is a convenience */ }
-  return { best, results, text };
-}
-
-async function restoreRoomLights() {
-  if (SC.lights && SC.lights.length) { try { await send('api/scan/lights/restore', {}); } catch { /* the add-on restores them when the session ends */ } }
-}
-
 // Quick check of the camera set-up without a scan: exposure, red against blue.
 async function cameraCheck() {
   const dev = document.getElementById('scan-dev').value; SC.device = dev;
@@ -777,16 +716,14 @@ async function cameraCheck() {
     const info = await send('api/scan/start', { device: dev }); started = true;
     const every = Array.from({ length: info.leds }, (_, i) => i);
     cam = await cameraControls(); SC.lockInfo = { done: cam.done, missing: cam.missing };
-    SC.lightsReport = null;
-    if (SC.useLights && SC.lights.length) SC.lightsReport = await tuneRoomLights({ cam, status: scanStatus, check, every });
     const { level, peak } = await tuneCamera({ cam, status: scanStatus, check });
     await pat({ kind: 'dark' }); await settle(); const dark = await shot();
     await pat({ kind: 'rgb', channels: [every, [], []], level }); await settle(); const red = await shot();
     await pat({ kind: 'rgb', channels: [[], [], every], level }); await settle(); const blue = await shot();
     const v = colourVerdict(ScanLib.separation(dark.rgb, red.rgb, blue.rgb), peak);
-    scanStatus(`${v.ok ? 'Camera OK. ' : 'Check: '}${v.text} (${cam.info()}, LED level ${level}.)${SC.lightsReport ? ' Room lights set to ' + lightName(SC.lightsReport.best.c) + ' while the scan runs.' : ''}`, 1);
+    scanStatus(`${v.ok ? 'Camera OK. ' : 'Check: '}${v.text} (${cam.info()}, LED level ${level}.)`, 1);
   } catch (e) { scanStatus(e.message === 'cancelled' ? 'Cancelled.' : 'Camera check failed: ' + e.message, undefined); }
-  finally { if (cam) await unlockExposure(); await restoreRoomLights(); if (started) { try { await send('api/scan/stop', {}); } catch { /* ignore */ } } SC.running = false; renderScan(); }
+  finally { if (cam) await unlockExposure(); if (started) { try { await send('api/scan/stop', {}); } catch { /* ignore */ } } SC.running = false; renderScan(); }
 }
 
 // Wait until the camera shows the pattern that was just lit: at least `minMs` (the garland, the camera's own delay), then until the
@@ -837,7 +774,7 @@ function scanLoadMode(dev) {  // the scan type is remembered per garland
   } catch { /* no storage */ }
 }
 
-function scanSaveMode() { try { localStorage.setItem('scan-lights', SC.useLights ? '1' : '0'); localStorage.setItem('scan-mode:' + SC.device, SC.scanMode); localStorage.setItem('scan-style', SC.style); } catch { /* no storage */ } }
+function scanSaveMode() { try {  localStorage.setItem('scan-mode:' + SC.device, SC.scanMode); localStorage.setItem('scan-style', SC.style); } catch { /* no storage */ } }
 
 // Sends the photos of the last scan to the add-on (lossless PNGs, colour photos in colour + a small JSON) so that a scan that went wrong can be examined.
 async function scanSendPhotos() {
@@ -910,8 +847,6 @@ async function scanView({ dev, M, scanMode, style, check, status, v, dump }) {
     const everyLed = Array.from({ length: n }, (_, i) => i);
     await pat({ kind: 'dark' }); await settle();
     const cam = await cameraControls(); SC.lockInfo = { done: cam.done, missing: cam.missing }; locked = true;
-    SC.lightsReport = null;
-    if (SC.useLights && SC.lights.length && style !== 'mono') SC.lightsReport = await tuneRoomLights({ cam, status, check, every: everyLed });
     status('Setting the exposure...', 0.06);
     const { level, peak: camPeak } = await tuneCamera({ cam, status, check });
     dump.level = level; SC.lockInfo.exposure = cam.info();
@@ -1000,7 +935,6 @@ async function scanView({ dev, M, scanMode, style, check, status, v, dump }) {
     return { pts, w, h, n, level, det, decoded, refined, dropped, mv, snap: all1.data, style: st, fellBack, sep };
   } finally {
     if (locked) await unlockExposure();
-    await restoreRoomLights();
     try { await send('api/scan/stop', {}); } catch { /* ignore */ }
   }
 }
@@ -1210,8 +1144,6 @@ function renderScan() {
         h('button', { disabled: SC.running, onclick: async () => { try { await scanOpenCamera(); toast('Camera ready.'); renderScan(); } catch (e) { toast(e.message, true, 9000); } } }, 'Open camera'),
         h('button', { class: 'primary', disabled: SC.running || !SC.stream, onclick: runScan }, 'Start scan'),
         SC.waiting ? h('button', { class: 'primary', onclick: () => SC.resume && SC.resume() }, 'Next view') : null,
-        SC.lights.length ? h('label', { title: 'Before the scan the page tries a few brightnesses and colour temperatures of these lights, lets the camera measure how well it tells red from blue, and keeps the best (off if nothing is clearly better). The lights are put back afterwards.' },
-          h('input', { type: 'checkbox', checked: SC.useLights, disabled: SC.running, onchange: e => { SC.useLights = e.target.checked; scanSaveMode(); } }), `Tune the room lights (${SC.lights.map(l => l.name).join(', ')})`) : null,
         h('button', { disabled: SC.running || !SC.stream, title: 'Sets the camera exposure and checks that red and blue LEDs look different to it, without a scan. Do this first, in the dark, with the garland in view.', onclick: cameraCheck }, 'Camera check'),
         h('button', { disabled: SC.running, title: 'Lights the garland step by step so you can check it by eye. No camera needed.', onclick: lightTest }, 'Light test'),
         h('button', { disabled: !SC.running, onclick: () => { SC.cancel = true; if (SC.resume) SC.resume(); } }, 'Cancel')),
@@ -1227,7 +1159,6 @@ function renderScan() {
       r.is3d && r.merge ? h('div', { class: r.merge.align === 'common' ? 'muted' : 'warn' },
         r.merge.align === 'common' ? `The two views were joined by ${r.merge.used} LEDs that both saw (of ${r.merge.common}), mean mismatch ${r.merge.rms} px.`
           : `Fewer than 6 LEDs were seen in both views (${r.merge.common}), so the views were joined by their outlines only: the result is less exact. Frame the whole tree the same way in both views.`) : null,
-      SC.lightsReport ? h('div', { class: 'muted' }, SC.lightsReport.text) : null,
       st.sep !== null && st.sep !== undefined ? h('div', { class: st.sep < 0.3 || st.clipped > 10 ? 'warn' : 'muted' }, `Red against blue: distinctness ${st.sep} (1 = perfect, the decoder gives up below 0.22), ${st.clipped}% of the lit pixels clipped (they turn white; under 5% is good). ${SC.lockInfo && SC.lockInfo.exposure ? 'Camera set to ' + SC.lockInfo.exposure + '.' : ''}`) : null,
       r.spikes && r.spikes.length ? h('div', { class: 'warn' }, `${r.spikes.length} LED${r.spikes.length > 1 ? 's' : ''} (${r.spikes.slice(0, 8).join(', ')}${r.spikes.length > 8 ? ', ...' : ''}) stood far away from both neighbours on the string and were put between them: a stray detection, most likely.`) : null,
       SC.lockInfo ? h('div', { class: SC.lockInfo.missing.length ? 'warn' : 'muted' }, `Camera: ${SC.lockInfo.done.length ? 'locked ' + SC.lockInfo.done.join(', ') : 'nothing could be locked'}${SC.lockInfo.missing.length ? '; not lockable here: ' + SC.lockInfo.missing.join(', ') + ' (the phone may change them during the scan; Chrome on Android locks the most)' : ''}.`) : null,
@@ -1243,7 +1174,6 @@ function renderScan() {
         r.is3d ? h('div', {}, h('div', { class: 'muted' }, 'Seen from above (x, z)'), h('canvas', { id: 'scan-top', width: 300, height: 300, style: 'max-width:100%;background:#0b0b0d;border-radius:6px' })) : null,
         h('div', {}, h('div', { class: 'muted' }, 'Layout now on the device'), h('canvas', { id: 'scan-old', width: 360, height: 300, style: 'max-width:100%;background:#0b0b0d;border-radius:6px' }))),
       h('div', { class: 'row', style: 'margin-top:8px' }, h('button', { class: 'primary', onclick: applyScan }, 'Apply to the garland'))) : '');
-  if (!SC.lightsLoaded) { SC.lightsLoaded = true; scanLoadLights().then(() => { if (SC.lights.length && !SC.running) renderScan(); }); }
   root.append(h('div', { class: 'card', style: 'margin-top:12px' }, h('h3', {}, 'Saved layouts (restore)'), h('div', { id: 'scan-backups', class: 'muted' }, 'Loading...')),
     h('div', { class: 'card', style: 'margin-top:12px' }, h('h3', {}, 'Photos of the last scans (download)'), h('div', { id: 'scan-dumps', class: 'muted' }, 'Loading...')));
   if (!SC.running) { const el = document.getElementById('scan-status'); if (el) el.textContent = SC.status || 'Idle.'; }

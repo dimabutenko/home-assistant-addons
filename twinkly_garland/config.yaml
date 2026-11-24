@@ -22,7 +22,7 @@ options:
   mqtt_port: 1883
   mqtt_user: ""
   mqtt_password: ""
-  scan_lights: []
+  scan_lights: []  # unused since 0.17.4 (the room-lights tuning was removed); kept so that existing configurations stay valid
 schema:
   devices:
     - name: str

@@ -1,6 +1,7 @@
 """Twinkly Garland add-on: API + web UI."""
 import asyncio
 import base64
+import io
 import json
 import logging
 import os
@@ -9,11 +10,12 @@ import re
 import threading
 import time
 import uuid
+import zipfile
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -877,6 +879,22 @@ def api_scan_dump_get(sid: str, fname: str):
     return FileResponse(f)
 
 
+@app.get("/api/scan/dump/{zipname}")
+def api_scan_dump_zip(zipname: str):
+    """All files of one kept scan as a zip (open it in the browser to save it)."""
+    if not zipname.endswith(".zip"):
+        raise HTTPException(404, "no such file")
+    d = _dump_dir(zipname[:-4])
+    if not d.is_dir():
+        raise HTTPException(404, "no such scan")
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as z:  # the PNGs are compressed already
+        for f in sorted(d.iterdir()):
+            if f.is_file():
+                z.write(f, f.name)
+    return Response(buf.getvalue(), media_type="application/zip", headers={"Content-Disposition": f'attachment; filename="{zipname}"'})
+
+
 @app.get("/api/devices/{name}/layout")
 def api_layout(name: str):
     return [[p["x"], p["y"]] for p in device.get_layout(find_device(name))]
@@ -920,6 +938,26 @@ def api_scan_stop():
 @app.get("/api/scan/state")
 def api_scan_state():
     return scan.state()
+
+
+@app.get("/api/devices/{name}/layout/backups")
+def api_layout_backups(name: str):
+    return scan.list_backups(find_device(name))
+
+
+class ScanRestore(BaseModel):
+    device: str
+    backup: str
+
+
+@app.post("/api/scan/restore")
+def api_scan_restore(req: ScanRestore):
+    try:
+        return scan.restore_layout(find_device(req.device), req.backup)
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(400, str(exc))
+    except Exception as exc:
+        raise HTTPException(502, f"cannot write the layout: {exc}")
 
 
 class ScanApply(BaseModel):

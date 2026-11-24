@@ -10,6 +10,7 @@ import logging
 import threading
 import time
 from datetime import datetime
+from pathlib import Path
 
 from . import device
 
@@ -193,10 +194,58 @@ def apply_layout(dev: dict, coords: list, scan_type: str = "flat") -> dict:
         if not (-10 < x < 10 and -10 < y < 10 and -10 < z < 10):
             raise ValueError("coordinate out of range")
         clean.append({"x": round(x, 6), "y": round(y, 6), "z": round(z, 6) if three else z})
-    backup = device.DATA_DIR / "layouts" / f"{dev['name']}.backup-{datetime.now():%Y%m%d-%H%M%S}.json"
-    backup.write_text(json.dumps(old))
-    with device.lock_for(dev["host"]):
-        device.retry(device.connect(dev["host"]).set_led_layout, "3d" if three else "2d", clean)
-    new = device.get_layout(dev, refresh=True)
+    backup = _save_backup(dev, old)
+    new = _write_layout(dev, clean, three)
     log.info("layout of %s written (%s scan, %s, %d LEDs)", dev["name"], scan_type, "3d" if three else "2d", len(new))
     return {"leds": len(new), "backup": backup.name}
+
+
+def _save_backup(dev: dict, layout: list) -> "Path":
+    folder = device.DATA_DIR / "layouts"
+    folder.mkdir(parents=True, exist_ok=True)
+    backup = folder / f"{dev['name']}.backup-{datetime.now():%Y%m%d-%H%M%S}.json"
+    backup.write_text(json.dumps(layout))
+    return backup
+
+
+def _write_layout(dev: dict, clean: list, three: bool) -> list:
+    with device.lock_for(dev["host"]):
+        device.retry(device.connect(dev["host"]).set_led_layout, "3d" if three else "2d", clean)
+    return device.get_layout(dev, refresh=True)
+
+
+def list_backups(dev: dict) -> list:
+    """The saved layouts of a garland, newest first (every write of a scan or a restore saves the layout it replaces)."""
+    folder, prefix, out = device.DATA_DIR / "layouts", f"{dev['name']}.backup-", []
+    if folder.is_dir():
+        for f in folder.iterdir():
+            if f.name.startswith(prefix) and f.name.endswith(".json"):
+                try:
+                    n = len(json.loads(f.read_text()))
+                except (OSError, ValueError):
+                    continue
+                t = f.name[len(prefix):-5]
+                out.append({"name": f.name, "time": f"{t[:4]}-{t[4:6]}-{t[6:8]} {t[9:11]}:{t[11:13]}:{t[13:15]}", "leds": n})
+    return sorted(out, key=lambda b: b["name"], reverse=True)
+
+
+def restore_layout(dev: dict, backup: str) -> dict:
+    """Writes a saved layout back to the garland (the layout it replaces is saved first, so a restore can be undone).
+    The saved file keeps only x, y, z: a layout with z different from 0 goes back as 3d, the others as 2d."""
+    if dev["host"] in device.scanning_hosts:
+        raise RuntimeError("stop the scan first")
+    if "/" in backup or "\\" in backup or not backup.startswith(f"{dev['name']}.backup-") or not backup.endswith(".json"):
+        raise ValueError("bad backup name")
+    f = device.DATA_DIR / "layouts" / backup
+    if not f.is_file():
+        raise ValueError("no such backup")
+    coords = json.loads(f.read_text())
+    cur = device.get_layout(dev, refresh=True)
+    if len(coords) != len(cur):
+        raise ValueError(f"the backup has {len(coords)} LEDs, the garland {len(cur)}")
+    three = any(abs(float(c.get("z", 0))) > 1e-9 for c in coords)
+    clean = [{"x": round(float(c["x"]), 6), "y": round(float(c["y"]), 6), "z": round(float(c.get("z", 0)), 6)} for c in coords]
+    saved = _save_backup(dev, cur)
+    new = _write_layout(dev, clean, three)
+    log.info("layout of %s restored from %s (%s, %d LEDs)", dev["name"], backup, "3d" if three else "2d", len(new))
+    return {"leds": len(new), "restored": backup, "saved_current_as": saved.name}

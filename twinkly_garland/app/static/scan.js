@@ -279,6 +279,28 @@ const ScanLib = (() => {
     return out;
   }
 
+  // A LED that stands far from BOTH of its neighbours on the string while the neighbours stand close to each other is a spike (a
+  // stray detection, an estimate that went wrong): it is put halfway between its neighbours. The ends are checked against their one
+  // neighbour. keys: the coordinate names ('u','v' or 'x','y','z'). Works on the complete string, after the gaps are filled.
+  function despike(pts, keys, { far = 8, near = 4, passes = 2 } = {}) {
+    const out = pts.map(p => ({ ...p })), n = out.length, fixed = [];
+    const d = (a, b) => Math.hypot(...keys.map(k => out[a][k] - out[b][k]));
+    for (let pass = 0; pass < passes; pass++) {
+      const st = []; for (let i = 0; i + 1 < n; i++) st.push(d(i, i + 1));
+      const nz = st.filter(x => x > 1e-9).sort((a, b) => a - b), med = nz[nz.length >> 1] || 1e-9;
+      let any = false;
+      for (let i = 0; i < n; i++) {
+        const a = i - 1, c = i + 1; let rep = null;
+        if (a >= 0 && c < n) { if (Math.min(d(a, i), d(i, c)) > far * med && d(a, c) < near * med) rep = k => (out[a][k] + out[c][k]) / 2; }
+        else if (i === 0 && n > 2) { if (d(0, 1) > far * med && d(1, 2) < near * med) rep = k => 2 * out[1][k] - out[2][k]; }
+        else if (i === n - 1 && n > 2) { if (d(n - 1, n - 2) > far * med && d(n - 2, n - 3) < near * med) rep = k => 2 * out[n - 2][k] - out[n - 3][k]; }
+        if (rep) { for (const k of keys) out[i][k] = rep(k); out[i].src = 'interp'; fixed.push(i); any = true; }
+      }
+      if (!any) break;
+    }
+    return { pts: out, fixed: [...new Set(fixed)] };
+  }
+
   const maxArr = (a, b) => { const o = new Float32Array(a.length); for (let i = 0; i < a.length; i++) o[i] = Math.max(a[i], b[i]); return o; };
   const minArr = (a, b) => { const o = new Float32Array(a.length); for (let i = 0; i < a.length; i++) o[i] = Math.min(a[i], b[i]); return o; };
 
@@ -553,7 +575,7 @@ const ScanLib = (() => {
     return { pts: out.map(p => ({ x: p.x * s, y: (p.y - y0) * sy, z: p.z * s, src: p.src })), common: common.length, used, align, rms: +rms.toFixed(2), scale: +T.s.toFixed(3) };
   }
 
-  return { detect, detectHue, eccLayout, checkLeds, bitLeds, framePlan, suspicious, orient, merge3d, cr1, singleBlob, interpolate, searchRuns, filterOutliers, toLayout, percentile, blur3, maxArr, minArr, unstableMask, motion, roiOf };
+  return { despike, detect, detectHue, eccLayout, checkLeds, bitLeds, framePlan, suspicious, orient, merge3d, cr1, singleBlob, interpolate, searchRuns, filterOutliers, toLayout, percentile, blur3, maxArr, minArr, unstableMask, motion, roiOf };
 })();
 
 // ---- scan types ------------------------------------------------------------------------------------------------
@@ -682,7 +704,7 @@ async function scanSendPhotos() {
     }
     const meta = { device: d.device, mode: d.mode, style: d.style, lock: SC.lockInfo, n: d.n, w: d.w, h: d.h, level: d.level, pts: d.pts || null, stats: SC.result ? SC.result.stats : null, agent: navigator.userAgent };
     await put('meta.json', JSON.stringify(meta), 'application/json');
-    scanStatus(`Photos sent (${d.id}).`, 1); toast(`Photos sent: ${d.id}`);
+    d.sent = true; scanStatus(`Photos sent (${d.id}).`, 1); toast(`Photos sent: ${d.id}`); renderScan();
   } catch (e) { scanStatus('Sending failed: ' + e.message, undefined); toast('Sending failed: ' + e.message, true, 8000); }
 }
 
@@ -877,11 +899,17 @@ async function runScan() {
 
 // The layout of a result for the current rotate / mirror / scale options: x, y (and z for two views joined).
 function buildLayout(r) {
-  if (!r.is3d) return (r.layout = ScanLib.toLayout(r.views[0].pts, SC.opts));
-  const o = { rot: SC.opts.rot, flip: SC.opts.flip };
-  const m = ScanLib.merge3d(ScanLib.orient(r.views[0].pts, o), ScanLib.orient(r.views[1].pts, o), { mode: SC.opts.mode });
-  r.merge = { common: m.common, used: m.used, align: m.align, rms: m.rms, scale: m.scale };
-  return (r.layout = m.pts);
+  let lay, keys;
+  if (!r.is3d) { lay = ScanLib.toLayout(r.views[0].pts, SC.opts).map((p, i) => ({ ...p, src: r.views[0].pts[i].src })); keys = ['x', 'y']; }
+  else {
+    const o = { rot: SC.opts.rot, flip: SC.opts.flip };
+    const m = ScanLib.merge3d(ScanLib.orient(r.views[0].pts, o), ScanLib.orient(r.views[1].pts, o), { mode: SC.opts.mode });
+    r.merge = { common: m.common, used: m.used, align: m.align, rms: m.rms, scale: m.scale };
+    lay = m.pts; keys = ['x', 'y', 'z'];
+  }
+  const ds = ScanLib.despike(lay, keys);  // a LED far away from both its neighbours is not on the string: do not write it to the garland
+  r.spikes = ds.fixed;
+  return (r.layout = ds.pts);
 }
 
 // Shows by eye that the garland really lights what the scan asks for (no camera needed).
@@ -942,19 +970,40 @@ function drawResults() {
   // layouts
   let nl;
   try { nl = buildLayout(r); } catch (e) { scanStatus('Cannot join the views: ' + e.message, undefined); return; }
-  drawScatter(lay, nl.map(p => [p.x, p.y]), nl.map((p, i) => SRC_COLOR[r.is3d ? p.src : r.views[0].pts[i].src]));
+  drawScatter(lay, nl.map(p => [p.x, p.y]), nl.map(p => SRC_COLOR[p.src]));
   if (top && r.is3d) drawScatter(top, nl.map(p => [p.x, p.z]), nl.map(p => SRC_COLOR[p.src]));
   if (SC.oldLayout) drawScatter(old, SC.oldLayout);
 }
 
 async function applyScan() {
   const r = SC.result; if (!r) return;
-  if (!confirm(`Write the scanned layout to ${SC.device}? The current layout is saved as a backup first.`)) return;
+  const n = r.layout.length, est = r.layout.filter(p => p.src === 'interp').length, pct = Math.round(100 * est / n);
+  const warn = pct >= 30 ? `
+
+CAREFUL: ${est} of ${n} LEDs (${pct}%) were not seen by the camera and are only guessed along the string. A layout that is half guessed can look wrong on the garland. Check the picture first (the grey line should run smoothly).` : '';
+  if (!confirm(`Write the scanned layout to ${SC.device}? The current layout is saved as a backup first and can be restored below.${warn}`)) return;
   try {
     const res = await send('api/scan/apply', { device: SC.device, scan_type: r.stats.mode, coordinates: r.layout.map(p => r.is3d ? { x: p.x, y: p.y, z: p.z } : { x: p.x, y: p.y }) });
-    toast(`Layout written (${res.leds} LEDs). Backup: ${res.backup}`, false, 8000);
+    toast(`Layout written (${res.leds} LEDs). Backup: ${res.backup}`, false, 8000); scanLoadBackups();
     SC.oldLayout = await api(`api/devices/${encodeURIComponent(SC.device)}/layout`); drawResults(); loadGallery();
   } catch (e) { toast('Not applied: ' + e.message, true, 8000); }
+}
+
+// Saved layouts of the selected garland (every write saves the layout it replaces): restore one if a scan wrote something wrong.
+async function scanLoadBackups() {
+  const el = document.getElementById('scan-backups'), dev = SC.device; if (!el || !dev) return;
+  let list = [];
+  try { list = await api(`api/devices/${encodeURIComponent(dev)}/layout/backups`); } catch (e) { el.textContent = 'Could not read the backups: ' + e.message; return; }
+  if (!list.length) { el.textContent = 'No saved layouts yet: the first write of a scan saves the layout that was on the garland.'; return; }
+  const sel = h('select', { id: 'scan-backup-sel' }, list.map((b, i) => h('option', { value: b.name }, `${b.time} (${b.leds} LEDs)${i === list.length - 1 ? ' - the oldest: before your first scan' : ''}`)));
+  el.replaceChildren(h('div', { class: 'row' }, sel, h('button', { onclick: async () => {
+    const name = sel.value; if (!confirm(`Write the layout saved at ${name.split('backup-')[1]} back to ${dev}? The layout that is on the garland now is saved first.`)) return;
+    try {
+      const res = await send('api/scan/restore', { device: dev, backup: name });
+      toast(`Layout restored (${res.leds} LEDs).`, false, 8000);
+      SC.oldLayout = await api(`api/devices/${encodeURIComponent(dev)}/layout`); drawResults(); loadGallery(); scanLoadBackups();
+    } catch (e) { toast('Not restored: ' + e.message, true, 8000); }
+  } }, 'Restore this layout')));
 }
 
 function renderScan() {
@@ -991,7 +1040,8 @@ function renderScan() {
       h('div', { class: 'bar', id: 'scan-bar', style: 'margin-top:8px' }, h('div', { style: 'width:0%' })),
       h('div', { id: 'scan-status', class: 'muted' }, SC.status || 'Idle.')),
     h('div', { class: 'card', style: 'margin-bottom:12px' }, h('h3', {}, 'Camera'), video,
-      SC.dump && SC.dump.photos.length ? h('div', { class: 'row', style: 'margin-top:8px' }, h('button', { disabled: SC.running, onclick: scanSendPhotos, title: 'Uploads the photos of the last scan to the add-on, to find out why a scan went wrong' }, `Send the photos of the last scan for analysis (${SC.dump.photos.length})`)) : ''),
+      SC.dump && SC.dump.photos.length ? h('div', { class: 'row', style: 'margin-top:8px' }, h('button', { disabled: SC.running, onclick: scanSendPhotos, title: 'Uploads the photos of the last scan to the add-on, to find out why a scan went wrong' }, `Send the photos of the last scan for analysis (${SC.dump.photos.length})`),
+        SC.dump.sent ? h('a', { href: `api/scan/dump/${SC.dump.id}.zip`, download: `${SC.dump.id}.zip`, style: 'align-self:center' }, 'Download the sent photos (.zip)') : null) : ''),
     r ? h('div', { class: 'card' },
       h('h2', {}, 'Result'),
       h('div', {}, `${st.n} LEDs: ${st.decoded} recognised by code, ${st.refined} found one by one, ${st.dropped} dropped as outliers, `, h('b', { class: st.hidden && !st.mode.startsWith('tree') ? 'warn' : 'ok' }, `${st.hidden} not visible (estimated from their neighbours${st.mode.startsWith('tree') ? ', as expected for the far side of a tree' : ''})`),
@@ -999,6 +1049,7 @@ function renderScan() {
       r.is3d && r.merge ? h('div', { class: r.merge.align === 'common' ? 'muted' : 'warn' },
         r.merge.align === 'common' ? `The two views were joined by ${r.merge.used} LEDs that both saw (of ${r.merge.common}), mean mismatch ${r.merge.rms} px.`
           : `Fewer than 6 LEDs were seen in both views (${r.merge.common}), so the views were joined by their outlines only: the result is less exact. Frame the whole tree the same way in both views.`) : null,
+      r.spikes && r.spikes.length ? h('div', { class: 'warn' }, `${r.spikes.length} LED${r.spikes.length > 1 ? 's' : ''} (${r.spikes.slice(0, 8).join(', ')}${r.spikes.length > 8 ? ', ...' : ''}) stood far away from both neighbours on the string and were put between them: a stray detection, most likely.`) : null,
       SC.lockInfo ? h('div', { class: SC.lockInfo.missing.length ? 'warn' : 'muted' }, `Camera: ${SC.lockInfo.done.length ? 'locked ' + SC.lockInfo.done.join(', ') : 'nothing could be locked'}${SC.lockInfo.missing.length ? '; not lockable here: ' + SC.lockInfo.missing.join(', ') + ' (the phone may change them during the scan; Chrome on Android locks the most)' : ''}.`) : null,
       st.shift > 1.2 ? h('div', { class: 'warn' }, `The phone moved about ${st.shift} px during the scan. Use a tripod for a more accurate result.`) : null,
       h('div', { class: 'muted' }, 'Green = recognised, blue = found separately, orange = estimated. The grey line is the string in LED order and should run smoothly.'),
@@ -1012,8 +1063,9 @@ function renderScan() {
         r.is3d ? h('div', {}, h('div', { class: 'muted' }, 'Seen from above (x, z)'), h('canvas', { id: 'scan-top', width: 300, height: 300, style: 'max-width:100%;background:#0b0b0d;border-radius:6px' })) : null,
         h('div', {}, h('div', { class: 'muted' }, 'Layout now on the device'), h('canvas', { id: 'scan-old', width: 360, height: 300, style: 'max-width:100%;background:#0b0b0d;border-radius:6px' }))),
       h('div', { class: 'row', style: 'margin-top:8px' }, h('button', { class: 'primary', onclick: applyScan }, 'Apply to the garland'))) : '');
+  root.append(h('div', { class: 'card', style: 'margin-top:12px' }, h('h3', {}, 'Saved layouts (restore)'), h('div', { id: 'scan-backups', class: 'muted' }, 'Loading...')));
   if (!SC.running) { const el = document.getElementById('scan-status'); if (el) el.textContent = SC.status || 'Idle.'; }
-  drawResults();
+  drawResults(); scanLoadBackups();
 }
 
 window.addEventListener('beforeunload', () => { if (SC.running) navigator.sendBeacon('api/scan/stop'); });

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.15.2
+- **Check frames in the scan** (a Hamming code over the bits of the Gray code): 4 more photos per scan (14 code frames for 600 LEDs instead of 10). Every LED gets its code checked: one wrongly read bit (a merged blob, a flicker, a reflection) is corrected, anything worse is rejected instead of ending up at a wrong place. In a synthetic scan with 3% of the bits read wrongly the number of wrongly placed LEDs went from 32 to 0 and the number of correctly found ones from 340 to 547 of 600.
+- **Outlier filter**: after decoding and before the layout is built, a LED is dropped when its distance per index to both its previous and its next known neighbour is more than 5 times the typical step (the median distance between LEDs with consecutive numbers). Repeated until nothing more is dropped. In synthetic tests 83-96% of misplaced LEDs were caught with 1-4 good ones lost. The result shows the number of LEDs dropped, corrected and rejected by the check.
+
 ## 0.15.1
 - **One garland for every preview.** A "Preview on" selector in the page header (remembered in the browser) sets the garland whose LED layout all pictures are drawn on: the library thumbnails, the effect editor, the formula previews (also live and replay; "Play live on the garland" plays on it) and the Scan tab. The separate selector of the effect editor is gone.
 - **Scan photos can be sent for analysis.** After a scan (also a failed one) the Scan tab has a button that uploads its photos (lossless grey PNGs) and a small result file to the add-on (`api/scan/dump`, the last 4 scans are kept), so a scan that went wrong can be examined offline.

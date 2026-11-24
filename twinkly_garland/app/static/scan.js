@@ -61,8 +61,35 @@ const ScanLib = (() => {
     return Math.min(hi, Math.max(lo, thr / bins));
   }
 
+  // Error correction for the code frames (a Hamming code over the bits of the Gray code): r extra "check" frames, each the XOR of a
+  // subset of the code bits. A LED whose bits and checks do not agree was read wrongly (a merged blob, a flicker): one wrong bit is corrected,
+  // anything worse is rejected instead of ending up at a wrong place. Every code bit gets its own non-zero r-bit signature (never a single 1,
+  // those belong to the check bits themselves), so the signature of the disagreement says which bit is wrong.
+  function eccLayout(nb) {
+    let r = 2; while ((1 << r) - 1 - r < nb) r++;
+    const cols = []; for (let v = 3; cols.length < nb; v++) if (v & (v - 1)) cols.push(v);
+    return { r, cols, sets: Array.from({ length: r }, (_, j) => cols.map((c, k) => (c >> j) & 1 ? k : -1).filter(k => k >= 0)) };
+  }
+  const grayOf = i => i ^ (i >> 1);
+  // LEDs lit in check frame j
+  function checkLeds(n, nb, j) {
+    const { sets } = eccLayout(nb), out = [];
+    for (let i = 0; i < n; i++) { const g = grayOf(i); let p = 0; for (const k of sets[j]) p ^= (g >> k) & 1; if (p) out.push(i); }
+    return out;
+  }
+  // bits: data bits read from the photos, checks: the check bits; returns the corrected data bits or null
+  function eccDecode(bits, checks, nb) {
+    const { cols, sets } = eccLayout(nb); let syn = 0;
+    for (let j = 0; j < sets.length; j++) { let p = checks[j]; for (const k of sets[j]) p ^= bits[k]; syn |= p << j; }
+    if (!syn) return { bits, fixed: false };
+    const k = cols.indexOf(syn);
+    if (k >= 0) { const b = bits.slice(); b[k] ^= 1; return { bits: b, fixed: true }; }
+    if (!(syn & (syn - 1))) return { bits, fixed: false };  // a single check bit was read wrongly: the data are fine
+    return null;
+  }
+
   // dark, all: gray frames (Uint8/Float arrays). bits[k]: frame where LED i is on if bit k of gray(i) is set.
-  function detect({ w, h, dark, all, bits, n }) {
+  function detect({ w, h, dark, all, bits, checks = [], n }) {
     const N = w * h, ref = new Float32Array(N);
     for (let i = 0; i < N; i++) ref[i] = Math.max(0, all[i] - dark[i]);
     const blurred = blur3(ref, w, h);
@@ -80,14 +107,28 @@ const ScanLib = (() => {
     const comps = [];
     for (let l = 1; l <= count; l++) if (area[l] >= 2 && sw[l] > 0) comps.push(l);
     const areas = comps.map(l => area[l]).sort((a, b) => a - b), med = areas[areas.length >> 1] || 1;
+    const spc = checks.map(() => new Float64Array(count + 1));
+    for (let i = 0; i < N; i++) { const l = labels[i]; if (l) for (let k = 0; k < checks.length; k++) spc[k][l] += Math.max(0, checks[k][i] - dark[i]); }
     const ratios = bits.map((_, k) => comps.map(l => Math.min(1.5, sp[k][l] / sw[l])));
-    const thr = ratios.map(r => otsu(r));
-    const byIdx = new Map(); let invalid = 0, merged = 0, uncertain = 0;
+    const cratios = checks.map((_, k) => comps.map(l => Math.min(1.5, spc[k][l] / sw[l])));
+    const thr = ratios.map(r => otsu(r)), cthr = cratios.map(r => otsu(r));
+    const byIdx = new Map(); let invalid = 0, merged = 0, uncertain = 0, corrected = 0, rejected = 0;
     comps.forEach((l, ci) => {
       if (area[l] > 5 * med) { merged++; return; }
-      let code = 0, margin = 1;
-      for (let k = 0; k < bits.length; k++) { if (ratios[k][ci] > thr[k]) code |= 1 << k; margin = Math.min(margin, Math.abs(ratios[k][ci] - thr[k])); }
-      if (margin < 0.15) { uncertain++; return; }  // a bit is close to the threshold: check this LED separately
+      let rd = [], margins = [];
+      for (let k = 0; k < bits.length; k++) { rd.push(ratios[k][ci] > thr[k] ? 1 : 0); margins.push(Math.abs(ratios[k][ci] - thr[k])); }
+      let cd = [];
+      for (let k = 0; k < checks.length; k++) { cd.push(cratios[k][ci] > cthr[k] ? 1 : 0); margins.push(Math.abs(cratios[k][ci] - cthr[k])); }
+      const doubtful = margins.filter(m => m < 0.15).length;
+      // without check frames one doubtful bit is too many; with them one wrong bit is corrected, two are not
+      if (checks.length ? doubtful > 1 : doubtful > 0) { uncertain++; return; }
+      if (checks.length) {
+        const dec = eccDecode(rd, cd, bits.length);
+        if (!dec) { rejected++; return; }
+        if (dec.fixed) corrected++;
+        rd = dec.bits;
+      }
+      let code = 0; for (let k = 0; k < rd.length; k++) if (rd[k]) code |= 1 << k;
       const idx = grayDecode(code);
       if (idx >= n) { invalid++; return; }
       if (!byIdx.has(idx)) byIdx.set(idx, []);
@@ -95,7 +136,7 @@ const ScanLib = (() => {
     });
     const pts = new Array(n).fill(null); let conflicts = 0;
     for (const [idx, list] of byIdx) { if (list.length === 1) pts[idx] = { ...list[0], src: 'code' }; else conflicts++; }
-    return { pts, peak, threshold: T, blobs: comps.length, merged, invalid, conflicts, uncertain };
+    return { pts, peak, threshold: T, blobs: comps.length, merged, invalid, conflicts, uncertain, corrected, rejected };
   }
 
   // LEDs worth checking one by one: far from their neighbours on the string (a wrongly decoded
@@ -186,6 +227,30 @@ const ScanLib = (() => {
     return { u: sx[best] / sw[best], v: sy[best] / sw[best] };
   }
 
+  // Mislabelled or misplaced LEDs: neighbours on the string are about one step apart, so a LED whose distance per index to BOTH its
+  // previous and its next known LED is far above the typical step is not on the string. The typical step is the median distance
+  // between LEDs with consecutive numbers (taken from the inner ones); the limit is `factor` times that. The first and the last known LED
+  // have only one neighbour and are never dropped. Repeated until nothing more is dropped.
+  function filterOutliers(pts, { factor = 5, passes = 4 } = {}) {
+    const out = pts.map(p => p && { ...p }), removed = [];
+    for (let pass = 0; pass < passes; pass++) {
+      const known = []; out.forEach((p, i) => p && known.push(i));
+      if (known.length < 5) break;
+      const dist = (a, b) => Math.hypot(out[a].u - out[b].u, out[a].v - out[b].v);
+      let steps = []; for (let k = 1; k + 2 < known.length; k++) if (known[k + 1] - known[k] === 1) steps.push(dist(known[k], known[k + 1]));
+      if (steps.length < 8) { steps = []; for (let k = 0; k + 1 < known.length; k++) if (known[k + 1] - known[k] <= 4) steps.push(dist(known[k], known[k + 1]) / (known[k + 1] - known[k])); }
+      if (steps.length < 3) break;
+      steps.sort((a, b) => a - b); const limit = factor * steps[steps.length >> 1], drop = [];
+      for (let k = 1; k + 1 < known.length; k++) {
+        const a = known[k - 1], b = known[k], c = known[k + 1];
+        if (Math.min(dist(a, b) / (b - a), dist(b, c) / (c - b)) > limit) drop.push(b);
+      }
+      if (!drop.length) break;
+      for (const i of drop) { out[i] = null; removed.push(i); }
+    }
+    return { pts: out, removed };
+  }
+
   // Tree seen from one side: among the LEDs nobody recognised by code some are only too close together (merged blobs) and a photo of
   // each one alone finds them, others are really hidden and nothing will ever show. Every run of missing LEDs along the string is probed
   // with a stride of 3; between two probes that both show nothing the LEDs are taken as hidden (the far side comes in long blocks),
@@ -244,7 +309,7 @@ const ScanLib = (() => {
     return c.map(([x, y]) => ({ x: (x - xc) * s, y: (y - y0) * s }));
   }
 
-  return { detect, suspicious, singleBlob, interpolate, searchRuns, toLayout, percentile, blur3, maxArr, minArr, unstableMask, motion, roiOf };
+  return { detect, eccLayout, checkLeds, suspicious, singleBlob, interpolate, searchRuns, filterOutliers, toLayout, percentile, blur3, maxArr, minArr, unstableMask, motion, roiOf };
 })();
 
 // ---- scan types ------------------------------------------------------------------------------------------------
@@ -355,10 +420,14 @@ async function runScan() {
     await lockExposure();
     scanStatus('Photo: everything off...', 0.1); await pat({ kind: 'dark' }); await sleep(600); dark = await shot();
     scanStatus('Photo: everything on...', 0.14); await pat({ kind: 'all', level }); await sleep(600); const all1 = await shot();
-    const bits = [];
+    const bits = [], checks = [], nChecks = ScanLib.eccLayout(nb).r, nFrames = nb + nChecks;
     for (let k = 0; k < nb; k++) {
-      check(); scanStatus(`Photo: pattern ${k + 1} of ${nb}...`, 0.18 + 0.4 * k / nb);
+      check(); scanStatus(`Photo: pattern ${k + 1} of ${nFrames}...`, 0.18 + 0.4 * k / nFrames);
       await pat({ kind: 'bit', bit: k, level }); await sleep(600); bits.push((await shot()).data);
+    }
+    for (let j = 0; j < nChecks; j++) {  // check frames: they let a wrongly read LED be told from a right one
+      check(); scanStatus(`Photo: check pattern ${j + 1} of ${nChecks} (pattern ${nb + j + 1} of ${nFrames})...`, 0.18 + 0.4 * (nb + j) / nFrames);
+      await pat({ kind: 'leds', leds: ScanLib.checkLeds(n, nb, j), level }); await sleep(600); checks.push((await shot()).data);
     }
     // second pair of photos at the end: only what is the same in both counts (drops flickering lights, passing cars)
     scanStatus('Photo: everything off, again...', 0.58); await pat({ kind: 'dark' }); await sleep(600); const dark2 = await shot();
@@ -366,18 +435,19 @@ async function runScan() {
     scanStatus('Recognising the LEDs...', 0.62); await sleep(30);
     const w = all1.w, h = all1.h;
     SC.dump = { id: new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14), w, h, n, mode: scanMode, level, device: dev,
-      photos: [['dark', dark.data], ['all', all1.data], ...bits.map((b, k) => ['bit' + k, b]), ['dark2', dark2.data], ['all2', all2.data]] };
+      photos: [['dark', dark.data], ['all', all1.data], ...bits.map((b, k) => ['bit' + k, b]), ...checks.map((b, k) => ['check' + k, b]), ['dark2', dark2.data], ['all2', all2.data]] };
     const mv = ScanLib.motion(w, h, dark.data, all1.data, dark2.data, all2.data);
     if (mv && mv.shift > 2) throw new Error(`The phone moved by about ${mv.shift.toFixed(1)} px during the scan. Put it on a tripod or a stable surface and try again.`);
     const dmax = ScanLib.maxArr(dark.data, dark2.data), all = { data: ScanLib.minArr(all1.data, all2.data) };
     const unstable = ScanLib.unstableMask(dark.data, dark2.data, w, h);
     dark = { w, h, data: dmax };
-    const det = ScanLib.detect({ w, h, dark: dark.data, all: all.data, bits, n });
+    const det = ScanLib.detect({ w, h, dark: dark.data, all: all.data, bits, checks, n });
     let pts = det.pts;
     const decoded = pts.filter(Boolean).length;
     if (decoded < Math.max(M.minCount, n * M.minShare)) throw new Error(scanMode === 'tree'
       ? `Only ${decoded} of ${n} LEDs could be recognised (${Math.round(100 * decoded / n)}%), too few even for a view from one side. Move the phone closer so that the tree fills the picture, darken the room, and check that the whole tree is in view.`
       : `Only ${decoded} of ${n} LEDs could be recognised. The phone probably moved (use a tripod), the garland is not fully in view, or the room is too bright. For a tree seen from one side choose the scan type "Tree, one side".`);
+    const f1 = ScanLib.filterOutliers(pts); pts = f1.pts; let dropped = f1.removed.length;  // wrongly decoded LEDs do not stay on the string
     // refine: missing and suspicious LEDs one at a time
     const todo = [...new Set([...(M.refineHidden ? pts.map((p, i) => p ? -1 : i).filter(i => i >= 0) : []), ...ScanLib.suspicious(pts, M.aloneToo)])];
     const limit = Math.min(todo.length, M.refineLimit); let refined = 0;
@@ -396,11 +466,12 @@ async function runScan() {
       }, { limit: M.searchLimit, check, progress: (u, l, i) => scanStatus(`Looking for LED ${i} on its own (${u} of at most ${l}), brightness ${lv}...`, 0.62 + 0.36 * u / l) });
       refined += stat.found;
     }
+    const f2 = ScanLib.filterOutliers(pts); pts = f2.pts; dropped += f2.removed.length;
     const hidden = pts.filter(p => !p).length;
     pts = ScanLib.interpolate(pts, { arc: M.arc });
     if (pts.some(p => !p)) throw new Error('No LED was found. Make sure the garland is in view and the room is dark.');
     SC.dump.pts = pts.map(p => ({ u: +p.u.toFixed(2), v: +p.v.toFixed(2), src: p.src }));
-    SC.result = { pts, w, h, n, stats: { mode: scanMode, n, decoded, refined, hidden, shift: mv ? +mv.shift.toFixed(1) : null, blobs: det.blobs, merged: det.merged, invalid: det.invalid, conflicts: det.conflicts, uncertain: det.uncertain, level } };
+    SC.result = { pts, w, h, n, stats: { mode: scanMode, n, decoded, refined, dropped, hidden, shift: mv ? +mv.shift.toFixed(1) : null, blobs: det.blobs, merged: det.merged, invalid: det.invalid, conflicts: det.conflicts, uncertain: det.uncertain, corrected: det.corrected, rejected: det.rejected, level } };
     SC.snap = { w, h, data: all1.data };
     SC.oldLayout = await api(`api/devices/${encodeURIComponent(dev)}/layout`);
     scanStatus('Done. Check the result below, then apply it.', 1);
@@ -503,8 +574,8 @@ function renderScan() {
       SC.dump ? h('div', { class: 'row', style: 'margin-top:8px' }, h('button', { disabled: SC.running, onclick: scanSendPhotos, title: 'Uploads the photos of the last scan to the add-on, to find out why a scan went wrong' }, `Send the photos of the last scan for analysis (${SC.dump.photos.length})`)) : ''),
     SC.result ? h('div', { class: 'card' },
       h('h2', {}, 'Result'),
-      h('div', {}, `${st.n} LEDs: ${st.decoded} recognised by code, ${st.refined} found one by one, `, h('b', { class: st.hidden && st.mode !== 'tree' ? 'warn' : 'ok' }, `${st.hidden} not visible (estimated from their neighbours${st.mode === 'tree' ? ', as expected for the far side of a tree' : ''})`),
-        h('span', { class: 'muted' }, `  ·  blobs ${st.blobs}, merged ${st.merged}, invalid ${st.invalid}, ambiguous ${st.conflicts}, doubtful ${st.uncertain}, brightness ${st.level}`)),
+      h('div', {}, `${st.n} LEDs: ${st.decoded} recognised by code, ${st.refined} found one by one, ${st.dropped} dropped as outliers, `, h('b', { class: st.hidden && st.mode !== 'tree' ? 'warn' : 'ok' }, `${st.hidden} not visible (estimated from their neighbours${st.mode === 'tree' ? ', as expected for the far side of a tree' : ''})`),
+        h('span', { class: 'muted' }, `  ·  blobs ${st.blobs}, merged ${st.merged}, invalid ${st.invalid}, ambiguous ${st.conflicts}, doubtful ${st.uncertain}, corrected ${st.corrected}, rejected by the check ${st.rejected}, brightness ${st.level}`)),
       st.shift > 1.2 ? h('div', { class: 'warn' }, `The phone moved about ${st.shift} px during the scan. Use a tripod for a more accurate result.`) : null,
       h('div', { class: 'muted' }, 'Green = recognised, blue = found separately, orange = estimated. The grey line is the string in LED order and should run smoothly.'),
       h('div', { class: 'row', style: 'margin:8px 0' },

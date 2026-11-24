@@ -1,6 +1,6 @@
 name: Twinkly Garland
 url: "https://github.com/dimabutenko/home-assistant-addons"
-version: 0.17.11
+version: 0.17.12
 slug: twinkly_garland
 description: "Local control of Twinkly Gen2 garlands: effects stored on the devices, ensure/reconcile, layout preview"
 arch: ["aarch64"]

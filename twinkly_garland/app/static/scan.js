@@ -805,19 +805,26 @@ async function tuneCamera({ cam, status, check, every, style = 'hue', frac = 0.0
     return { level, peak, usable: undefined, sep: undefined };
   }
   // the top of a hill: one step in one direction while the number of readable LEDs grows (by 4% or more), if not, back and the other direction.
-  // While nothing counts (no LED seen, or the colours washed out) the steps go on without waiting for an improvement.
-  let best = await measure(), depth = 0;
+  // While nothing counts (no LED seen, or the colours washed out) the steps go on without waiting for an improvement. At the end the setting is the
+  // one NEAREST to the start whose count is within 7% of the best: the last steps up usually add a few LEDs that the decoder cannot read by code
+  // (the halos run into each other, the glow of the wall floods it: 189 LEDs by code at an exposure of 553, 225 at 48) and that then have to be
+  // found one by one, which takes much longer.
+  let best = await measure(), depth = 0, start = best, trail = [best];
   const dirs = best.lit === 0 ? [1.5] : best.sep >= 0.3 ? [1.5, 1 / 1.5] : [1 / 1.5, 1.5];  // no LED seen: only brighter (a black picture must not dim the LEDs); colours washed out: darker first
   for (const f of dirs) {
-    const stack = [];
+    const stack = []; trail = [start];
     for (let t = 0; t < 8; t++) {
       const undo = await adjust(f); if (!undo) break;
-      stack.push(undo); const m = await measure();
+      stack.push(undo); const m = await measure(); trail.push(m);
       if (m.eff > best.eff * 1.04 && m.eff > 0) { best = m; depth = stack.length; }
       else if (!(best.eff === 0 && m.eff === 0)) break;
     }
-    for (let k = stack.length - 1; k >= depth; k--) await stack[k]();  // the steps after the best one are taken back
-    if (depth > 0) break;                                              // it got better this way: do not try the other one
+    if (depth > 0) {
+      let pick = depth; for (let k = 0; k <= depth; k++) if (trail[k].eff >= 0.93 * best.eff) { pick = k; break; }
+      for (let k = stack.length - 1; k >= pick; k--) await stack[k]();  // the steps after the chosen one are taken back
+      best = trail[pick]; break;                                          // it got better this way: do not try the other one
+    }
+    for (let k = stack.length - 1; k >= 0; k--) await stack[k]();        // nothing better that way: back to the start
   }
   const m = best;
   return { level, peak: m.peak, usable: m.count, sep: m.sep };

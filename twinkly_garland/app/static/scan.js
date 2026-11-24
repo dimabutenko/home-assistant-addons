@@ -301,6 +301,23 @@ const ScanLib = (() => {
     return { pts: out, fixed: [...new Set(fixed)] };
   }
 
+  // How clearly the camera tells the all-red photo from the all-blue one, over the lit pixels: (R-B)/(R+B) in the red photo and (B-R)/(R+B)
+  // in the blue one (1 = perfect, 0 = the same, a blown-out white LED gives about 0), and the share of lit pixels where a channel is at its limit.
+  function separation(darkP, calR, calB) {
+    const N = calR[0].length, q = new Float32Array(N);
+    for (let i = 0; i < N; i++) { let a = 0, b = 0; for (let c = 0; c < 3; c++) { a += Math.max(0, calR[c][i] - darkP[c][i]); b += Math.max(0, calB[c][i] - darkP[c][i]); } q[i] = Math.min(a, b) / 3; }
+    const T = Math.max(6, 0.2 * percentile(q, 99.9)), sr = [], sb = []; let lit = 0, clipped = 0;
+    for (let i = 0; i < N; i++) {
+      if (q[i] <= T) continue; lit++;
+      const rR = Math.max(0, calR[0][i] - darkP[0][i]), bR = Math.max(0, calR[2][i] - darkP[2][i]), rB = Math.max(0, calB[0][i] - darkP[0][i]), bB = Math.max(0, calB[2][i] - darkP[2][i]);
+      sr.push((rR - bR) / (rR + bR + 1)); sb.push((bB - rB) / (rB + bB + 1));
+      if (Math.max(calR[0][i], calR[1][i], calR[2][i], calB[0][i], calB[1][i], calB[2][i]) >= 250) clipped++;
+    }
+    const med = a => { if (!a.length) return 0; const x = [...a].sort((u, v) => u - v); return x[x.length >> 1]; };
+    const sepR = med(sr), sepB = med(sb);
+    return { sepR, sepB, sep: Math.min(sepR, sepB), lit, satShare: lit ? clipped / lit : 0 };
+  }
+
   const maxArr = (a, b) => { const o = new Float32Array(a.length); for (let i = 0; i < a.length; i++) o[i] = Math.max(a[i], b[i]); return o; };
   const minArr = (a, b) => { const o = new Float32Array(a.length); for (let i = 0; i < a.length; i++) o[i] = Math.min(a[i], b[i]); return o; };
 
@@ -575,7 +592,7 @@ const ScanLib = (() => {
     return { pts: out.map(p => ({ x: p.x * s, y: (p.y - y0) * sy, z: p.z * s, src: p.src })), common: common.length, used, align, rms: +rms.toFixed(2), scale: +T.s.toFixed(3) };
   }
 
-  return { despike, detect, detectHue, eccLayout, checkLeds, bitLeds, framePlan, suspicious, orient, merge3d, cr1, singleBlob, interpolate, searchRuns, filterOutliers, toLayout, percentile, blur3, maxArr, minArr, unstableMask, motion, roiOf };
+  return { separation, despike, detect, detectHue, eccLayout, checkLeds, bitLeds, framePlan, suspicious, orient, merge3d, cr1, singleBlob, interpolate, searchRuns, filterOutliers, toLayout, percentile, blur3, maxArr, minArr, unstableMask, motion, roiOf };
 })();
 
 // ---- scan types ------------------------------------------------------------------------------------------------
@@ -612,18 +629,42 @@ async function scanOpenCamera() {
   SC.video.srcObject = SC.stream; await SC.video.play();
 }
 
-// Keep brightness and colours constant while patterns change: the phone's own automatics would follow the patterns. Best effort, only
-// what the camera offers (Chrome on Android offers most, iPhones and Firefox offer almost nothing); the values are frozen where they are.
-async function lockExposure() {
+// What the camera lets the page control (Chrome on Android offers most, iPhones and Firefox offer almost nothing). The page puts the
+// camera on manual at the values it has now, can then scale the exposure up or down (exposure time first, then ISO; or the exposure
+// compensation where only that is offered), and freezes white balance and focus. `scale(f)` answers whether anything could be changed.
+async function cameraControls() {
   const t = SC.stream.getVideoTracks()[0], caps = t.getCapabilities ? t.getCapabilities() : {}, st = t.getSettings ? t.getSettings() : {}, done = [], missing = [];
-  const lock = async (label, mode, extra) => {
-    if (!(caps[mode] || []).includes('manual')) { missing.push(label); return; }
-    try { await t.applyConstraints({ advanced: [{ [mode]: 'manual', ...extra }] }); done.push(label); } catch { missing.push(label); }
+  const has = (m, v) => (caps[m] || []).includes(v);
+  const apply = async c => { try { await t.applyConstraints({ advanced: [c] }); return true; } catch { return false; } };
+  const clamp = (v, c) => Math.min(c.max, Math.max(c.min, v));
+  const snap = (v, c) => c.step ? c.min + Math.round((v - c.min) / c.step) * c.step : v;
+  const exp = { time: null, iso: null, comp: null }; let mode = null;
+  if (has('exposureMode', 'manual') && caps.exposureTime && st.exposureTime) {
+    exp.time = st.exposureTime; exp.iso = caps.iso && st.iso ? st.iso : null;
+    if (await apply({ exposureMode: 'manual', exposureTime: exp.time, ...(exp.iso ? { iso: exp.iso } : {}) })) { done.push('exposure'); mode = 'manual'; } else missing.push('exposure');
+  } else if (caps.exposureCompensation && st.exposureCompensation !== undefined) { exp.comp = st.exposureCompensation; mode = 'compensation'; done.push('exposure compensation'); }
+  else missing.push('exposure');
+  if (has('whiteBalanceMode', 'manual') && await apply({ whiteBalanceMode: 'manual', ...(st.colorTemperature ? { colorTemperature: st.colorTemperature } : {}) })) done.push('white balance'); else missing.push('white balance');
+  if (st.focusDistance && has('focusMode', 'manual') && await apply({ focusMode: 'manual', focusDistance: st.focusDistance })) done.push('focus'); else if (st.focusDistance) missing.push('focus');
+  return {
+    done, missing,
+    info: () => mode === 'manual' ? `exposure ${exp.time}${exp.iso ? ', ISO ' + exp.iso : ''}` : mode === 'compensation' ? `exposure compensation ${exp.comp}` : 'exposure automatic',
+    async scale(f) {
+      if (mode === 'manual') {
+        const t0 = exp.time, i0 = exp.iso, time = snap(clamp(t0 * f, caps.exposureTime), caps.exposureTime);
+        let iso = i0; if (iso) iso = snap(clamp(iso * (f * t0 / time), caps.iso), caps.iso);
+        if (Math.abs(time * (iso || 1) / (t0 * (i0 || 1)) - 1) < 0.05) return false;
+        if (!(await apply({ exposureTime: time, ...(iso ? { iso } : {}) }))) return false;
+        exp.time = time; exp.iso = iso; return true;
+      }
+      if (mode === 'compensation') {
+        const next = snap(clamp(exp.comp + Math.log2(f), caps.exposureCompensation), caps.exposureCompensation);
+        if (Math.abs(next - exp.comp) < 0.05 || !(await apply({ exposureCompensation: next }))) return false;
+        exp.comp = next; return true;
+      }
+      return false;
+    },
   };
-  await lock('exposure', 'exposureMode', { ...(st.exposureTime ? { exposureTime: st.exposureTime } : {}), ...(st.iso ? { iso: st.iso } : {}) });
-  await lock('white balance', 'whiteBalanceMode', st.colorTemperature ? { colorTemperature: st.colorTemperature } : {});
-  if (st.focusDistance) await lock('focus', 'focusMode', { focusDistance: st.focusDistance });
-  return { done, missing };
 }
 
 async function unlockExposure() {  // give the camera its automatics back
@@ -631,6 +672,54 @@ async function unlockExposure() {  // give the camera its automatics back
   for (const c of [{ exposureMode: 'continuous' }, { whiteBalanceMode: 'continuous' }, { focusMode: 'continuous' }]) {
     try { await t.applyConstraints({ advanced: [c] }); } catch { /* not supported */ }
   }
+}
+
+// Brightness. In a dark room the phone's automatic exposure turns itself up until the lit LEDs are blown out to white, and then red and
+// blue can no longer be told apart. So the exposure is turned DOWN until the LEDs are bright but not clipped (the strongest channel of the
+// all-on photo about 190 of 255); where the browser does not allow that the LEDs themselves are dimmed instead.
+async function tuneCamera({ cam, status, check, frac = 0.06 }) {
+  const MIN_LEVEL = 30; let level = 255, peak = 0;
+  await pat({ kind: 'dark' }); await settle(); const dark = await shot();
+  for (let t = 0; t < 10; t++) {
+    check(); await pat({ kind: 'all', level }); await settle(); const a = await shot();
+    peak = peakOf(a, dark, true);
+    status(`Setting the exposure: LED level ${level}, ${cam.info()}, brightest channel ${peak} of 255 (aim 150-230)...`, frac);
+    if (peak >= 235) { const f = Math.max(0.08, 190 / peak); if (await cam.scale(f)) continue; if (level > MIN_LEVEL) level = Math.max(MIN_LEVEL, Math.round(level * f)); else break; }
+    else if (peak < 90) { const f = Math.min(6, 180 / Math.max(peak, 4)); if (await cam.scale(f)) continue; if (level < 255) level = Math.min(255, Math.round(level * f)); else break; }
+    else break;
+  }
+  return { level, peak };
+}
+
+// What the colour photos of a scan say about the setup, for the user.
+function colourVerdict(sep, peak) {
+  if (!sep || !sep.lit) return { ok: false, text: 'No LEDs were seen in the red and blue photos: is the garland in view?' };
+  const s = sep.sep.toFixed(2), clip = Math.round(100 * sep.satShare);
+  if (sep.sep < 0.35) return { ok: false, text: `Red and blue look almost the same to the camera (separation ${s}, ${clip}% of the lit pixels clipped): the LEDs are too bright for the camera or the camera mixes the colours. Move the phone farther away or darken further; the scan will try white patterns if it cannot read the colours.` };
+  if (sep.satShare > 0.15) return { ok: false, text: `Red and blue are distinct (separation ${s}) but ${clip}% of the lit pixels are clipped: a lower exposure would be better.` };
+  if (peak < 90) return { ok: false, text: `The LEDs are dim for the camera (brightest channel ${peak} of 255, separation ${s}): move the phone closer.` };
+  return { ok: true, text: `Colours are clearly distinct (separation ${s}, ${clip}% clipped, brightest channel ${peak} of 255).` };
+}
+
+// Quick check of the camera set-up without a scan: exposure, red against blue.
+async function cameraCheck() {
+  const dev = document.getElementById('scan-dev').value; SC.device = dev;
+  SC.running = true; SC.cancel = false; renderScan();
+  const check = () => { if (SC.cancel) throw new Error('cancelled'); };
+  let cam = null, started = false;
+  try {
+    scanStatus('Switching the garland to scan mode...', 0.02);
+    const info = await send('api/scan/start', { device: dev }); started = true;
+    const every = Array.from({ length: info.leds }, (_, i) => i);
+    cam = await cameraControls(); SC.lockInfo = { done: cam.done, missing: cam.missing };
+    const { level, peak } = await tuneCamera({ cam, status: scanStatus, check });
+    await pat({ kind: 'dark' }); await settle(); const dark = await shot();
+    await pat({ kind: 'rgb', channels: [every, [], []], level }); await settle(); const red = await shot();
+    await pat({ kind: 'rgb', channels: [[], [], every], level }); await settle(); const blue = await shot();
+    const v = colourVerdict(ScanLib.separation(dark.rgb, red.rgb, blue.rgb), peak);
+    scanStatus(`${v.ok ? 'Camera OK. ' : 'Check: '}${v.text} (${cam.info()}, LED level ${level}.)`, 1);
+  } catch (e) { scanStatus(e.message === 'cancelled' ? 'Cancelled.' : 'Camera check failed: ' + e.message, undefined); }
+  finally { if (cam) await unlockExposure(); if (started) { try { await send('api/scan/stop', {}); } catch { /* ignore */ } } SC.running = false; renderScan(); }
 }
 
 // Wait until the camera shows the pattern that was just lit: at least `minMs` (the garland, the camera's own delay), then until the
@@ -739,22 +828,12 @@ async function scanView({ dev, M, scanMode, style, check, status, v, dump }) {
       dump.w = s.w; dump.h = s.h; dump.photos.push([tag + name, colourShots ? s.rgb : [s.data]]);
       return s;
     };
-    // LED brightness (1-255). A saturated blob centre is fine for locating an LED, so do not dim the LEDs
-    // below MIN_LEVEL just because the camera is dazzled: a dim LED cannot be seen by eye either.
-    const MIN_LEVEL = 100;
-    let level = 200;
-    await pat({ kind: 'dark' }); await settle(); let dark = await shot();
-    status('Setting the LED brightness...', 0.06);
-    for (let t = 0; t < 3; t++) {
-      check(); await pat({ kind: 'all', level }); await settle(); const a = await shot();
-      const peak = peakOf(a, dark, true);
-      status(`Setting the LED brightness: ${level} (camera peak ${peak})...`, 0.06);
-      if (peak >= 250 && level > MIN_LEVEL) level = Math.max(MIN_LEVEL, Math.round(level * 0.7));
-      else if (peak < 60 && level < 255) level = Math.min(255, Math.round(level * 1.6));
-      else break;
-    }
-    dump.level = level;
-    SC.lockInfo = await lockExposure(); locked = true;
+    await pat({ kind: 'dark' }); await settle();
+    const cam = await cameraControls(); SC.lockInfo = { done: cam.done, missing: cam.missing }; locked = true;
+    status('Setting the exposure...', 0.06);
+    const { level, peak: camPeak } = await tuneCamera({ cam, status, check });
+    dump.level = level; SC.lockInfo.exposure = cam.info();
+    let dark;
     status('Photo: everything off...', 0.1); dark = await take('dark', { kind: 'dark' });
     status('Photo: everything on...', 0.14); const all1 = await take('all', { kind: 'all', level });
     const everyLed = Array.from({ length: n }, (_, i) => i);
@@ -788,7 +867,11 @@ async function scanView({ dev, M, scanMode, style, check, status, v, dump }) {
       }
       return { cal, frames };
     };
-    let st = style, cap = await capture(st);
+    let st = style, cap = await capture(st), sep = null;
+    if (st === 'hue') {
+      sep = ScanLib.separation(dark.rgb, cap.cal[0], cap.cal[1]);
+      const v = colourVerdict(sep, camPeak); if (!v.ok) status(v.text, 0.58);
+    }
     // second pair of photos at the end: only what is the same in both counts (drops flickering lights, passing cars)
     status('Photo: everything off, again...', 0.58); const dark2 = await take('dark2', { kind: 'dark' });
     status('Photo: everything on, again...', 0.6); const all2 = await take('all2', { kind: 'all', level });
@@ -833,7 +916,7 @@ async function scanView({ dev, M, scanMode, style, check, status, v, dump }) {
       refined += stat.found;
     }
     const f2 = ScanLib.filterOutliers(pts); pts = f2.pts; dropped += f2.removed.length;
-    return { pts, w, h, n, level, det, decoded, refined, dropped, mv, snap: all1.data, style: st, fellBack };
+    return { pts, w, h, n, level, det, decoded, refined, dropped, mv, snap: all1.data, style: st, fellBack, sep };
   } finally {
     if (locked) await unlockExposure();
     try { await send('api/scan/stop', {}); } catch { /* ignore */ }
@@ -868,6 +951,7 @@ async function runScan() {
       mode: scanMode, n, decoded: sumOf(vs, r => r.decoded), refined: sumOf(vs, r => r.refined), dropped: sumOf(vs, r => r.dropped),
       shift: vs.some(r => r.mv) ? +Math.max(...vs.map(r => r.mv ? r.mv.shift : 0)).toFixed(1) : null,
       blobs: sumOf(vs, r => r.det.blobs), merged: sumOf(vs, r => r.det.merged), invalid: sumOf(vs, r => r.det.invalid), conflicts: sumOf(vs, r => r.det.conflicts),
+      sep: vs[0].sep ? +vs[0].sep.sep.toFixed(2) : null, clipped: vs[0].sep ? Math.round(100 * vs[0].sep.satShare) : null,
       uncertain: sumOf(vs, r => r.det.uncertain), corrected: sumOf(vs, r => r.det.corrected), rejected: sumOf(vs, r => r.det.rejected), level: r0.level,
       styles: [...new Set(vs.map(r => r.style))], fellBack: vs.some(r => r.fellBack),
     };
@@ -1035,6 +1119,7 @@ function renderScan() {
         h('button', { disabled: SC.running, onclick: async () => { try { await scanOpenCamera(); toast('Camera ready.'); renderScan(); } catch (e) { toast(e.message, true, 9000); } } }, 'Open camera'),
         h('button', { class: 'primary', disabled: SC.running || !SC.stream, onclick: runScan }, 'Start scan'),
         SC.waiting ? h('button', { class: 'primary', onclick: () => SC.resume && SC.resume() }, 'Next view') : null,
+        h('button', { disabled: SC.running || !SC.stream, title: 'Sets the camera exposure and checks that red and blue LEDs look different to it, without a scan. Do this first, in the dark, with the garland in view.', onclick: cameraCheck }, 'Camera check'),
         h('button', { disabled: SC.running, title: 'Lights the garland step by step so you can check it by eye. No camera needed.', onclick: lightTest }, 'Light test'),
         h('button', { disabled: !SC.running, onclick: () => { SC.cancel = true; if (SC.resume) SC.resume(); } }, 'Cancel')),
       h('div', { class: 'bar', id: 'scan-bar', style: 'margin-top:8px' }, h('div', { style: 'width:0%' })),
@@ -1049,6 +1134,7 @@ function renderScan() {
       r.is3d && r.merge ? h('div', { class: r.merge.align === 'common' ? 'muted' : 'warn' },
         r.merge.align === 'common' ? `The two views were joined by ${r.merge.used} LEDs that both saw (of ${r.merge.common}), mean mismatch ${r.merge.rms} px.`
           : `Fewer than 6 LEDs were seen in both views (${r.merge.common}), so the views were joined by their outlines only: the result is less exact. Frame the whole tree the same way in both views.`) : null,
+      st.sep !== null && st.sep !== undefined ? h('div', { class: st.sep < 0.5 ? 'warn' : 'muted' }, `Red against blue: separation ${st.sep} (1 = perfect, below 0.5 the colours are hard to read), ${st.clipped}% of the lit pixels clipped. ${SC.lockInfo && SC.lockInfo.exposure ? 'Camera set to ' + SC.lockInfo.exposure + '.' : ''}`) : null,
       r.spikes && r.spikes.length ? h('div', { class: 'warn' }, `${r.spikes.length} LED${r.spikes.length > 1 ? 's' : ''} (${r.spikes.slice(0, 8).join(', ')}${r.spikes.length > 8 ? ', ...' : ''}) stood far away from both neighbours on the string and were put between them: a stray detection, most likely.`) : null,
       SC.lockInfo ? h('div', { class: SC.lockInfo.missing.length ? 'warn' : 'muted' }, `Camera: ${SC.lockInfo.done.length ? 'locked ' + SC.lockInfo.done.join(', ') : 'nothing could be locked'}${SC.lockInfo.missing.length ? '; not lockable here: ' + SC.lockInfo.missing.join(', ') + ' (the phone may change them during the scan; Chrome on Android locks the most)' : ''}.`) : null,
       st.shift > 1.2 ? h('div', { class: 'warn' }, `The phone moved about ${st.shift} px during the scan. Use a tripod for a more accurate result.`) : null,

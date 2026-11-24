@@ -725,19 +725,24 @@ async function unlockExposure() {  // give the camera its automatics back
   }
 }
 
-// Brightness. What the decoder needs is as many LED pixels as possible that are bright enough to read (a camera value of 30 or more above the
-// dark photo, so that the 8 bits still hold the colour) and not clipped (under 240, a clipped pixel turns white). The cores of the LEDs are
-// always clipped (a tiny, very bright point): that does not matter, the halo round them carries the colour. Too low an exposure loses the dim
-// LEDs (those turned away from the camera, behind branches) and the halos, too high a one blows the halos out. So the exposure is searched like
-// the top of a hill: one step darker, and while that gives more usable pixels another one; if not, back and one step brighter, and so on.
-// Where the browser does not let the page control the exposure the LED brightness is moved instead (30..255).
-async function tuneCamera({ cam, status, check, frac = 0.06 }) {
-  const MIN_LEVEL = 30; let level = 255;
+// Brightness. The brighter the LEDs are for the camera, the more of their pixels (the halo round the core) the decoder can read, and the dim LEDs
+// (turned away from the camera, behind branches) are seen at all; but beyond a point the halo is blown out, red and blue both turn white and the
+// colour is gone. How far that is shows in the "distinctness" of red and blue (the angle between the response of a pixel to red and to blue). It
+// falls steadily with the brightness: on real photos 0.92 at an exposure of 2.66 (too dark: 168 of 600 LEDs found), 0.85 at 9.46, about 0.6 for the
+// scan that found 302 LEDs, 0.28 at 266 (red and blue washed out). So the aim is the BRIGHTEST setting whose distinctness is still 0.65 or more:
+// if it is lower, darker steps (x0.6) until it is not; if it is higher, brighter steps (x1.6) while it stays so (one step too far is taken back).
+// The page does not count pixels for this: the glow of the wall round the tree would be counted too and it grows with the brightness.
+// The camera exposure is moved; where the browser does not allow that the LED brightness is (30..255).
+async function tuneCamera({ cam, status, check, every, style = 'hue', frac = 0.06 }) {
+  const MIN_LEVEL = 30, GOOD = 0.65; let level = 255;
   await pat({ kind: 'dark' }); await settle(); const dark = await shot();
   const measure = async () => {
-    check(); await pat({ kind: 'all', level }); await settle(); const a = await shot();
-    const m = { peak: peakOf(a, dark, true), use: usableOf(a, dark), clip: clipOf(a, dark) };
-    status(`Setting the exposure: LED level ${level}, ${cam.info()}: ${m.use} usable LED pixels, brightest channel ${m.peak} of 255...`, frac);
+    check();
+    await pat({ kind: 'rgb', channels: [every, [], []], level }); await settle(); const red = await shot();
+    await pat({ kind: 'rgb', channels: [[], [], every], level }); await settle(); const blue = await shot();
+    const sep = ScanLib.separation(dark.rgb, red.rgb, blue.rgb);
+    const m = { sep: sep.lit ? sep.sep : 0, lit: sep.lit, peak: Math.max(peakOf(red, dark, true), peakOf(blue, dark, true)), use: usableOf(red, dark) + usableOf(blue, dark) };
+    status(`Setting the exposure: LED level ${level}, ${cam.info()}: colour distinctness ${m.sep.toFixed(2)} (aim: ${GOOD} or more, as bright as that allows), brightest channel ${m.peak} of 255...`, frac);
     return m;
   };
   // one step brighter / darker: the camera if it can, else the LEDs; returns how to undo it, or null when there is no room left
@@ -747,18 +752,33 @@ async function tuneCamera({ cam, status, check, frac = 0.06 }) {
     if (nl === level) return null;
     const old = level; level = nl; return async () => { level = old; };
   };
-  let best = await measure(), undo = [], bestDepth = 0;
-  for (const f of [0.6, 1 / 0.6]) {
-    const stack = [];
-    for (let t = 0; t < 6; t++) {
-      const u = await adjust(f); if (!u) break;
-      stack.push(u); const m = await measure();
-      if (m.use > best.use * 1.05) { best = m; undo = stack.slice(); bestDepth = stack.length; } else break;
+  if (style !== 'hue') {
+    // codes that switch the LEDs on and off (colour bits, white): bright blobs, but not blown up (blown-up blobs merge): the brightest channel of the
+    // all-on photo about 190-230 of 255
+    let peak = 0;
+    for (let t = 0; t < 10; t++) {
+      check(); await pat({ kind: 'all', level }); await settle(); const a = await shot(); peak = peakOf(a, dark, true);
+      status(`Setting the exposure: LED level ${level}, ${cam.info()}, brightest channel ${peak} of 255 (aim 150-230)...`, frac);
+      if (peak >= 235) { if (!(await adjust(Math.max(0.1, 190 / peak)))) break; }
+      else if (peak < 120) { if (!(await adjust(Math.min(4, 170 / Math.max(peak, 4))))) break; }
+      else break;
     }
-    if (bestDepth > 0) { for (let k = stack.length - 1; k >= bestDepth; k--) await stack[k](); break; }  // the last steps were worse: take them back
-    for (let k = stack.length - 1; k >= 0; k--) await stack[k]();  // nothing better that way: back to the start, try the other way
+    return { level, peak, usable: undefined, sep: undefined };
   }
-  return { level, peak: best.peak, usable: best.use };
+  let m = await measure();
+  if (!m.lit) {  // no LED seen: too dark, or the garland is not in view
+    for (let t = 0; t < 6 && !m.lit; t++) { if (!(await adjust(1.6))) break; m = await measure(); }
+  } else if (m.sep < GOOD) {
+    for (let t = 0; t < 8 && m.sep < GOOD; t++) { if (!(await adjust(m.sep < 0.1 ? 0.3 : 0.6))) break; m = await measure(); }  // colours completely washed out: a bigger step
+  } else {
+    for (let t = 0; t < 6 && m.peak < 250; t++) {
+      const undo = await adjust(1.6); if (!undo) break;
+      const m2 = await measure();
+      if (m2.sep < GOOD) { await undo(); break; }
+      m = m2;
+    }
+  }
+  return { level, peak: m.peak, usable: m.use, sep: m.sep };
 }
 
 // What the colour photos of a scan say about the setup, for the user.
@@ -782,7 +802,7 @@ async function cameraCheck() {
     if (info.profile && info.profile !== 'RGB') throw new Error(`this garland has the LED profile ${info.profile}: it is scanned with white patterns, the red / blue check does not apply`);
     const every = Array.from({ length: info.leds }, (_, i) => i);
     cam = await cameraControls(); SC.lockInfo = { done: cam.done, missing: cam.missing };
-    const { level, peak, usable } = await tuneCamera({ cam, status: scanStatus, check });
+    const { level, peak, usable } = await tuneCamera({ cam, status: scanStatus, check, every });
     await pat({ kind: 'dark' }); await settle(); const dark = await shot();
     await pat({ kind: 'rgb', channels: [every, [], []], level }); await settle(); const red = await shot();
     await pat({ kind: 'rgb', channels: [[], [], every], level }); await settle(); const blue = await shot();
@@ -948,7 +968,7 @@ async function scanView({ dev, M, scanMode, style: wanted, check, status, v, dum
     await pat({ kind: 'dark' }); await settle();
     const cam = await cameraControls(); SC.lockInfo = { done: cam.done, missing: cam.missing }; locked = true;
     status('Setting the exposure...', 0.06);
-    const { level, peak: camPeak, usable: camUsable } = await tuneCamera({ cam, status, check });
+    const { level, peak: camPeak, usable: camUsable } = await tuneCamera({ cam, status, check, every: everyLed, style });
     dump.level = level; SC.lockInfo.exposure = cam.info();
     let dark;
     status('Photo: everything off...', 0.1); dark = await take('dark', { kind: 'dark' });

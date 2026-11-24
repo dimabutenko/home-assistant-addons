@@ -369,6 +369,28 @@ const ScanLib = (() => {
     return out;
   }
 
+  // How many LEDs the decoder can read at this brightness, counted from the all-red and the all-blue photo: the number of connected areas of
+  // LED size (4 to 400 pixels) in which both photos are more than T above the dark photo, nothing is clipped (under 245) and the response to red and to
+  // blue differ by an angle of at least minSin. The halo of an LED qualifies, its clipped core does not have to; the glow of the wall round the tree
+  // forms a few huge areas that are not counted; LEDs that run into each other form one big area and are lost; LEDs that are too dim give no area. On
+  // the real scans (exposure, LEDs found by the scan, count): 2.7 -> 168, 101; 48 -> 248, 233; automatic -> 302, 292.
+  function readableBlobs(darkP, calR, calB, w, h, { T = 15, minSin = 0.3, clip = 245, minArea = 4, maxArea = 400 } = {}) {
+    const N = w * h, mask = new Uint8Array(N);
+    for (let i = 0; i < N; i++) {
+      let sr = 0, sb = 0, rr = 0, bb = 0, rb = 0, mx = 0;
+      for (let c = 0; c < 3; c++) {
+        const r = Math.max(0, calR[c][i] - darkP[c][i]), b = Math.max(0, calB[c][i] - darkP[c][i]);
+        sr += r; sb += b; rr += r * r; bb += b * b; rb += r * b; mx = Math.max(mx, calR[c][i], calB[c][i]);
+      }
+      if (Math.min(sr, sb) / 3 <= T || mx >= clip) continue;
+      if (Math.sqrt(Math.max(0, 1 - rb * rb / (rr * bb + 1e-9))) >= minSin) mask[i] = 1;
+    }
+    const { labels, count } = components(mask, w, h), area = new Int32Array(count + 1);
+    for (let i = 0; i < N; i++) if (labels[i]) area[labels[i]]++;
+    let n = 0; for (let l = 1; l <= count; l++) if (area[l] >= minArea && area[l] <= maxArea) n++;
+    return n;
+  }
+
   const maxArr = (a, b) => { const o = new Float32Array(a.length); for (let i = 0; i < a.length; i++) o[i] = Math.max(a[i], b[i]); return o; };
   const minArr = (a, b) => { const o = new Float32Array(a.length); for (let i = 0; i < a.length; i++) o[i] = Math.min(a[i], b[i]); return o; };
 
@@ -643,7 +665,7 @@ const ScanLib = (() => {
     return { pts: out.map(p => ({ x: p.x * s, y: (p.y - y0) * sy, z: p.z * s, src: p.src })), common: common.length, used, align, rms: +rms.toFixed(2), scale: +T.s.toFixed(3) };
   }
 
-  return { lumaOf, estimateShift, shiftPlane, separation, despike, detect, detectHue, eccLayout, checkLeds, bitLeds, framePlan, suspicious, orient, merge3d, cr1, singleBlob, interpolate, searchRuns, filterOutliers, toLayout, percentile, blur3, maxArr, minArr, unstableMask, motion, roiOf };
+  return { readableBlobs, lumaOf, estimateShift, shiftPlane, separation, despike, detect, detectHue, eccLayout, checkLeds, bitLeds, framePlan, suspicious, orient, merge3d, cr1, singleBlob, interpolate, searchRuns, filterOutliers, toLayout, percentile, blur3, maxArr, minArr, unstableMask, motion, roiOf };
 })();
 
 // ---- scan types ------------------------------------------------------------------------------------------------
@@ -666,7 +688,7 @@ const SCAN_MODES = {
 };
 
 // ---- UI ------------------------------------------------------------------------------------
-const SC = { stream: null, video: null, running: false, cancel: false, waiting: false, resume: null, result: null, snap: null, opts: { rot: 0, flip: false, mode: 'fit' }, scanMode: 'flat', style: 'hue', stabilise: true, lockInfo: null, device: null, oldLayout: null, status: '' };
+const SC = { stream: null, video: null, running: false, cancel: false, waiting: false, resume: null, result: null, snap: null, opts: { rot: 0, flip: false, mode: 'fit' }, scanMode: 'flat', style: 'hue', stabilise: true, checkText: '', lockInfo: null, device: null, oldLayout: null, status: '' };
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 function scanStopCamera() {
@@ -725,25 +747,25 @@ async function unlockExposure() {  // give the camera its automatics back
   }
 }
 
-// Brightness. The brighter the LEDs are for the camera, the more of their pixels (the halo round the core) the decoder can read, and the dim LEDs
-// (turned away from the camera, behind branches) are seen at all; but beyond a point the halo is blown out, red and blue both turn white and the
-// colour is gone. How far that is shows in the "distinctness" of red and blue (the angle between the response of a pixel to red and to blue). It
-// falls steadily with the brightness: on real photos 0.92 at an exposure of 2.66 (too dark: 168 of 600 LEDs found), 0.85 at 9.46, about 0.6 for the
-// scan that found 302 LEDs, 0.28 at 266 (red and blue washed out). So the aim is the BRIGHTEST setting whose distinctness is still 0.65 or more:
-// if it is lower, darker steps (x0.6) until it is not; if it is higher, brighter steps (x1.6) while it stays so (one step too far is taken back).
-// The page does not count pixels for this: the glow of the wall round the tree would be counted too and it grows with the brightness.
+// Brightness. The brighter the LEDs are for the camera, the more of their halo the decoder can read and the more dim LEDs (turned away from the
+// camera, behind branches) are seen at all; but beyond a point the halos run into each other and the colour is washed out. What counts is how
+// many LEDs the decoder can read: the number of LED-sized readable areas in the all-red and all-blue photo (ScanLib.readableBlobs), which on the real
+// scans went with the number of LEDs the scan found (101 -> 168, 233 -> 248, 292 -> 302). The exposure is searched like the top of a hill. (Two
+// earlier aims were wrong: "few clipped pixels" lowered the exposure until the LEDs were too dim, "many usable pixels" and a fixed colour
+// distinctness were fooled by the glow of the wall and by the fact that more light gives more LEDs even when the colour is a little worse.)
 // The camera exposure is moved; where the browser does not allow that the LED brightness is (30..255).
 async function tuneCamera({ cam, status, check, every, style = 'hue', frac = 0.06 }) {
-  const MIN_LEVEL = 30, GOOD = 0.65; let level = 255;
+  const MIN_LEVEL = 30; let level = 255;
   await pat({ kind: 'dark' }); await settle(); const dark = await shot();
   const measure = async () => {
     check();
     await pat({ kind: 'rgb', channels: [every, [], []], level }); await settle(); const red = await shot();
     await pat({ kind: 'rgb', channels: [[], [], every], level }); await settle(); const blue = await shot();
     const sep = ScanLib.separation(dark.rgb, red.rgb, blue.rgb);
-    const m = { sep: sep.lit ? sep.sep : 0, lit: sep.lit, peak: Math.max(peakOf(red, dark, true), peakOf(blue, dark, true)), use: usableOf(red, dark) + usableOf(blue, dark) };
-    status(`Setting the exposure: LED level ${level}, ${cam.info()}: colour distinctness ${m.sep.toFixed(2)} (aim: ${GOOD} or more, as bright as that allows), brightest channel ${m.peak} of 255...`, frac);
-    note(`tune: level ${level}, ${cam.info()}, distinctness ${m.sep.toFixed(2)}, lit ${m.lit}, clipped ${Math.round(100 * sep.satShare)}%, peak ${m.peak}, usable ${m.use}; brightest 0.5% of the red photo RGB ${topMean(red, dark)}, of the blue photo ${topMean(blue, dark)}; last wait ${SC.lastSettle ? SC.lastSettle.ms + ' ms' + (SC.lastSettle.gaveUp ? ' (gave up, picture still changing: ' + SC.lastSettle.changed + ' px)' : '') : '-'}`);
+    const m = { sep: sep.lit ? sep.sep : 0, lit: sep.lit, peak: Math.max(peakOf(red, dark, true), peakOf(blue, dark, true)), use: usableOf(red, dark) + usableOf(blue, dark), count: ScanLib.readableBlobs(dark.rgb, red.rgb, blue.rgb, red.w, red.h) };
+    m.eff = m.sep >= 0.3 ? m.count : 0;  // washed-out colours (red and blue alike) count for nothing: the rings left at the edges of the halos would be counted
+    status(`Setting the exposure: LED level ${level}, ${cam.info()}: ${m.count} LEDs readable, colour distinctness ${m.sep.toFixed(2)}, brightest channel ${m.peak} of 255...`, frac);
+    note(`tune: level ${level}, ${cam.info()}, readable LEDs ${m.count}, distinctness ${m.sep.toFixed(2)}, lit ${m.lit}, clipped ${Math.round(100 * sep.satShare)}%, peak ${m.peak}, usable ${m.use}; brightest 0.5% of the red photo RGB ${topMean(red, dark)}, of the blue photo ${topMean(blue, dark)}; last wait ${SC.lastSettle ? SC.lastSettle.ms + ' ms' + (SC.lastSettle.gaveUp ? ' (gave up, picture still changing: ' + SC.lastSettle.changed + ' px)' : '') : '-'}`);
     return m;
   };
   // one step brighter / darker: the camera if it can, else the LEDs; returns how to undo it, or null when there is no room left
@@ -766,26 +788,29 @@ async function tuneCamera({ cam, status, check, every, style = 'hue', frac = 0.0
     }
     return { level, peak, usable: undefined, sep: undefined };
   }
-  let m = await measure();
-  if (!m.lit) {  // no LED seen: too dark, or the garland is not in view
-    for (let t = 0; t < 6 && !m.lit; t++) { if (!(await adjust(1.6))) break; m = await measure(); }
-  } else if (m.sep < GOOD) {
-    for (let t = 0; t < 8 && m.sep < GOOD; t++) { if (!(await adjust(m.sep < 0.1 ? 0.3 : 0.6))) break; m = await measure(); }  // colours completely washed out: a bigger step
-  } else {
-    for (let t = 0; t < 6 && m.peak < 250; t++) {
-      const undo = await adjust(1.6); if (!undo) break;
-      const m2 = await measure();
-      if (m2.sep < GOOD) { await undo(); break; }
-      m = m2;
+  // the top of a hill: one step in one direction while the number of readable LEDs grows (by 4% or more), if not, back and the other direction.
+  // While nothing counts (no LED seen, or the colours washed out) the steps go on without waiting for an improvement.
+  let best = await measure(), depth = 0;
+  const dirs = best.lit === 0 || best.sep >= 0.3 ? [1.5, 1 / 1.5] : [1 / 1.5, 1.5];  // colours already washed out: darker first
+  for (const f of dirs) {
+    const stack = [];
+    for (let t = 0; t < 8; t++) {
+      const undo = await adjust(f); if (!undo) break;
+      stack.push(undo); const m = await measure();
+      if (m.eff > best.eff * 1.04 && m.eff > 0) { best = m; depth = stack.length; }
+      else if (!(best.eff === 0 && m.eff === 0)) break;
     }
+    for (let k = stack.length - 1; k >= depth; k--) await stack[k]();  // the steps after the best one are taken back
+    if (depth > 0) break;                                              // it got better this way: do not try the other one
   }
-  return { level, peak: m.peak, usable: m.use, sep: m.sep };
+  const m = best;
+  return { level, peak: m.peak, usable: m.count, sep: m.sep };
 }
 
 // What the colour photos of a scan say about the setup, for the user.
-function colourVerdict(sep, peak, usable) {
+function colourVerdict(sep, peak, count) {
   if (!sep || !sep.lit) return { ok: false, text: 'No LEDs were seen in the red and blue photos: is the garland in view?' };
-  const s = sep.sep.toFixed(2), us = usable !== undefined ? `, ${usable} usable LED pixels` : '';
+  const s = sep.sep.toFixed(2), us = count !== undefined ? `, ${count} LEDs readable` : '';
   if (sep.sep < 0.3) return { ok: false, text: `Red and blue are hard to tell apart for the camera (distinctness ${s}, 1 = perfect, the decoder gives up below 0.22${us}): the LEDs are too bright for the camera or the camera mixes the colours. Move the phone farther away or darken further; the scan will try white patterns if it cannot read the colours.` };
   if (peak < 90) return { ok: false, text: `The LEDs are dim for the camera (brightest channel ${peak} of 255, distinctness ${s}${us}): move the phone closer.` };
   return { ok: true, text: `Colours are distinct (distinctness ${s}${us}, brightest channel ${peak} of 255).` };
@@ -810,13 +835,14 @@ async function cameraCheck() {
     const v = colourVerdict(ScanLib.separation(dark.rgb, red.rgb, blue.rgb), peak, usable);
     note(`check: ${v.text} (${cam.info()}, LED level ${level}); brightest 0.5% of the red photo RGB ${topMean(red, dark)}, of the blue photo ${topMean(blue, dark)}`);
     SC.dump = { id: new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14) + 'c', w: red.w, h: red.h, n: info.leds, mode: 'check', style: 'check', level, device: dev, photos: [['dark', dark.rgb], ['calr', red.rgb], ['calb', blue.rgb]] };
-    scanStatus(`${v.ok ? 'Camera OK. ' : 'Check: '}${v.text} (${cam.info()}, LED level ${level}.)`, 1);
+    SC.checkText = `${v.ok ? 'Camera OK. ' : 'Check: '}${v.text} (${cam.info()}, LED level ${level}.)`;
+    scanStatus(SC.checkText, 1);
   } catch (e) { scanStatus(e.message === 'cancelled' ? 'Cancelled.' : 'Camera check failed: ' + e.message, undefined); }
   finally { if (cam) await unlockExposure(); if (started) { try { await send('api/scan/stop', {}); } catch { /* ignore */ } } SC.running = false; renderScan(); }
 }
 
 // Wait until the camera shows the pattern that was just lit: at least `minMs` (the garland, the camera's own delay), then until the
-// live picture stops changing (two looks 40 ms apart with fewer than 4 pixels changed by more than 12). This also waits out an automatic
+// live picture stops changing (two looks 40 ms apart with fewer than 8 pixels changed by more than 20 and by more than a quarter of their value). This also waits out an automatic
 // exposure that is still adapting. A function declaration so tests can replace it.
 const sigCv = document.createElement('canvas');
 function liveFrame() {
@@ -830,9 +856,9 @@ async function settle(minMs = 150, maxMs = 1500) {
   await sleep(minMs); const t0 = performance.now(); let prev = liveFrame(), calm = 0, worst = 0;
   while (performance.now() - t0 < maxMs) {
     await sleep(40); const cur = liveFrame(); let ch = 0;
-    for (let i = 0; i < cur.length; i++) if (Math.abs(cur[i] - prev[i]) > 12) ch++;
+    for (let i = 0; i < cur.length; i++) { const d = Math.abs(cur[i] - prev[i]); if (d > 20 && d > 0.25 * Math.max(cur[i], prev[i])) ch++; }  // noise of a bright pixel is no change
     prev = cur; worst = Math.max(worst, ch);
-    if (ch < 4) { if (++calm >= 2) { SC.lastSettle = { ms: Math.round(minMs + performance.now() - t0), gaveUp: false, changed: ch }; return; } } else calm = 0;
+    if (ch < 8) { if (++calm >= 2) { SC.lastSettle = { ms: Math.round(minMs + performance.now() - t0), gaveUp: false, changed: ch }; return; } } else calm = 0;
   }
   SC.lastSettle = { ms: Math.round(minMs + performance.now() - t0), gaveUp: true, changed: worst };  // the picture never calmed down
 }
@@ -1296,7 +1322,8 @@ function renderScan() {
         h('button', { disabled: SC.running, title: 'Lights the garland step by step so you can check it by eye. No camera needed.', onclick: lightTest }, 'Light test'),
         h('button', { disabled: !SC.running, onclick: () => { SC.cancel = true; if (SC.resume) SC.resume(); } }, 'Cancel')),
       h('div', { class: 'bar', id: 'scan-bar', style: 'margin-top:8px' }, h('div', { style: 'width:0%' })),
-      h('div', { id: 'scan-status', class: 'muted' }, SC.status || 'Idle.')),
+      h('div', { id: 'scan-status', class: 'muted' }, SC.status || 'Idle.'),
+      SC.checkText ? h('div', { class: 'muted', style: 'margin-top:4px' }, 'Last camera check: ' + SC.checkText) : null),
     h('div', { class: 'card', style: 'margin-bottom:12px' }, h('h3', {}, 'Camera'), video,
       SC.dump && SC.dump.photos.length ? h('div', { class: 'row', style: 'margin-top:8px' }, h('button', { disabled: SC.running, onclick: scanSendPhotos, title: 'Uploads the photos of the last scan to the add-on, to find out why a scan went wrong' }, `Send the photos of the last scan for analysis (${SC.dump.photos.length})`),
         SC.dump.sent ? h('a', { href: `api/scan/dump/${SC.dump.id}.zip`, download: `${SC.dump.id}.zip`, style: 'align-self:center' }, 'Download the sent photos (.zip)') : null) : ''),

@@ -22,6 +22,7 @@ options:
   mqtt_port: 1883
   mqtt_user: ""
   mqtt_password: ""
+  scan_lights: []
 schema:
   devices:
     - name: str
@@ -32,3 +33,5 @@ schema:
   mqtt_port: port?
   mqtt_user: str?
   mqtt_password: password?
+  scan_lights:
+    - str

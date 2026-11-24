@@ -51,10 +51,20 @@ class Session:
         self.sent = 0  # number of the last frame that went out
         self.stop_evt = threading.Event()
         self.touched = time.time()
+        self.playing = False  # a sequence is being played by play(): single patterns are refused meanwhile
         self.thread = threading.Thread(target=self._run, daemon=True)
+        self.ping_thread = threading.Thread(target=self._ping_loop, daemon=True)
+
+    def _ping_loop(self):
+        """Static frames stop rendering without an HTTP ping: one a second, in its own thread, so that a slow ping never delays a frame."""
+        while not self.stop_evt.wait(1.0):
+            try:
+                with device.lock_for(self.dev["host"]):
+                    self.ci.get_mode()
+            except Exception as exc:
+                log.warning("ping failed: %s", exc)
 
     def _run(self):
-        last_ping = 0.0
         try:
             with device.lock_for(self.dev["host"]):
                 device.retry(self.ci.set_mode, "rt")
@@ -62,11 +72,7 @@ class Session:
                 with self.lock:
                     frame, seq = self.frame, self.seq
                 try:
-                    with device.lock_for(self.dev["host"]):
-                        self.ci.set_rt_frame_socket(io.BytesIO(frame), 3)
-                        if time.time() - last_ping > 1.0:  # static frames stop rendering without an HTTP ping
-                            self.ci.get_mode()
-                            last_ping = time.time()
+                    self.ci.set_rt_frame_socket(io.BytesIO(frame), 3)  # no HTTP lock: the token is only read (the live stream does the same)
                 except Exception as exc:
                     log.warning("rt frame failed: %s", exc)
                 self.sent = seq
@@ -136,6 +142,7 @@ def start(dev: dict) -> dict:
     with _guard:
         _sess = s
     s.thread.start()
+    s.ping_thread.start()
     time.sleep(0.4)  # let the first (dark) frame go out
     return {"leds": s.n, "bits": max(1, (s.n - 1).bit_length()), "profile": s.profile, "bytes_per_led": s.bytes_per_led}
 
@@ -147,34 +154,74 @@ def _show(s: "Session", frame: bytes):
     time.sleep(0.06)
 
 
+def _frame(s: "Session", kind: str, bit: int = 0, leds=(), level: int = 200, channels=()) -> tuple:
+    """The bytes of a pattern and the number of LEDs that are lit."""
+    level = min(255, max(1, int(level)))
+    n = s.n
+    if kind == "dark":
+        return bytes(3 * n), 0
+    if kind == "all":
+        return bytes((level, level, level)) * n, n
+    if kind == "bit":
+        lit = [(gray(i) >> bit) & 1 for i in range(n)]
+        return b"".join(bytes((level, level, level)) if p else bytes(3) for p in lit), sum(lit)
+    if kind == "leds":
+        chosen = {int(i) for i in leds if 0 <= int(i) < n}
+        return b"".join(bytes((level, level, level)) if i in chosen else bytes(3) for i in range(n)), len(chosen)
+    if kind == "rgb":  # colour code frame: channels = [LEDs lit in red, in green, in blue]
+        if len(channels) != 3:
+            raise ValueError("rgb pattern needs three lists of LEDs")
+        sets = [{int(i) for i in ch if 0 <= int(i) < n} for ch in channels]
+        return b"".join(bytes(level if i in sets[c] else 0 for c in range(3)) for i in range(n)), len(sets[0] | sets[1] | sets[2])
+    raise ValueError(f"unknown pattern {kind!r}")
+
+
 def pattern(kind: str, bit: int = 0, leds: list = (), level: int = 200, channels: list = ()) -> dict:
     s = _sess
     if s is None:
         raise RuntimeError("no scan is running")
-    level = min(255, max(1, int(level)))
-    on = (level, level, level)
-    n = s.n
-    if kind == "dark":
-        px = [0] * n
-    elif kind == "all":
-        px = [1] * n
-    elif kind == "bit":
-        px = [(gray(i) >> bit) & 1 for i in range(n)]
-    elif kind == "leds":
-        chosen = {int(i) for i in leds if 0 <= int(i) < n}
-        px = [1 if i in chosen else 0 for i in range(n)]
-    elif kind == "rgb":  # colour code frame: channels = [LEDs lit in red, in green, in blue]
-        if len(channels) != 3:
-            raise ValueError("rgb pattern needs three lists of LEDs")
-        sets = [{int(i) for i in ch if 0 <= int(i) < n} for ch in channels]
-        frame = b"".join(bytes(level if i in sets[c] else 0 for c in range(3)) for i in range(n))
-        _show(s, frame)
-        return {"ok": True, "lit": len(sets[0] | sets[1] | sets[2])}
-    else:
-        raise ValueError(f"unknown pattern {kind!r}")
-    frame = b"".join(bytes(on) if p else b"\x00\x00\x00" for p in px)
+    if s.playing:
+        raise RuntimeError("a sequence is playing")
+    frame, lit = _frame(s, kind, bit, leds, level, channels)
     _show(s, frame)
-    return {"ok": True, "lit": sum(px)}
+    return {"ok": True, "lit": lit}
+
+
+def play(steps: list, slot_ms: int = 240, lead_ms: int = 700) -> dict:
+    """Plays a sequence of patterns by itself, one every `slot_ms`, the first after `lead_ms` (the page films it: no round trip per
+    pattern). Each step is {kind, bit, leds, level, channels} like pattern(). The frames are built first, then a thread sets them on time
+    (the sender thread puts every new frame on the wire at once)."""
+    s = _sess
+    if s is None:
+        raise RuntimeError("no scan is running")
+    if s.playing:
+        raise RuntimeError("a sequence is already playing")
+    if not 1 <= len(steps) <= 80:
+        raise ValueError("a sequence has 1 to 80 steps")
+    slot_ms, lead_ms = int(min(2000, max(60, slot_ms))), int(min(5000, max(0, lead_ms)))
+    frames = [_frame(s, st.get("kind", "dark"), st.get("bit", 0), st.get("leds", ()), st.get("level", 200), st.get("channels", ()))[0] for st in steps]
+    s.playing = True
+    s.touched = time.time()
+
+    def run():
+        try:
+            t0 = time.perf_counter() + lead_ms / 1000.0
+            for k, fr in enumerate(frames):
+                target = t0 + k * slot_ms / 1000.0
+                while not s.stop_evt.is_set():
+                    d = target - time.perf_counter()
+                    if d <= 0:
+                        break
+                    time.sleep(min(d, 0.005))
+                if s.stop_evt.is_set():
+                    return
+                s.set_frame(fr)
+            time.sleep(slot_ms / 1000.0)  # the last pattern gets its slot too
+        finally:
+            s.playing = False
+
+    threading.Thread(target=run, daemon=True).start()
+    return {"slots": len(frames), "slot_ms": slot_ms, "lead_ms": lead_ms, "duration_ms": lead_ms + slot_ms * len(frames)}
 
 
 def stop() -> dict:
@@ -184,12 +231,13 @@ def stop() -> dict:
     s.stop_evt.set()
     s.wake.set()
     s.thread.join(timeout=15)
+    s.ping_thread.join(timeout=5)
     return {"stopped": True}
 
 
 def state() -> dict:
     s = _sess
-    return {"running": s is not None, "device": s.dev["name"] if s else None, "leds": s.n if s else None}
+    return {"running": s is not None, "device": s.dev["name"] if s else None, "leds": s.n if s else None, "playing": bool(s and s.playing)}
 
 
 def apply_layout(dev: dict, coords: list, scan_type: str = "flat") -> dict:
@@ -223,7 +271,16 @@ def _save_backup(dev: dict, layout: list) -> "Path":
     return backup
 
 
+def _plain(v: float) -> float:
+    """A number that the garland reads right. JSON from Python writes anything under 0.0001 in the exponent form (2.2e-05) and the firmware of the
+    garland drops the exponent: 2.2e-05 came out as 2.2 and put a LED two (or five) widths of the tree away from where it was (in two real scans:
+    LEDs on the centre line of the picture, whose x is nearly 0). Such a number is written as 0.0."""
+    v = float(v)
+    return 0.0 if abs(v) < 1e-4 else round(v, 6)
+
+
 def _write_layout(dev: dict, clean: list, three: bool) -> list:
+    clean = [{k: _plain(p[k]) for k in ("x", "y", "z")} for p in clean]
     with device.lock_for(dev["host"]):
         device.retry(device.connect(dev["host"]).set_led_layout, "3d" if three else "2d", clean)
     return device.get_layout(dev, refresh=True)

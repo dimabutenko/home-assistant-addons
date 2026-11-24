@@ -703,7 +703,8 @@ const SCAN_MODES = {
 };
 
 // ---- UI ------------------------------------------------------------------------------------
-const SC = { stream: null, video: null, running: false, cancel: false, waiting: false, resume: null, result: null, snap: null, opts: { rot: 0, flip: false, mode: 'fit' }, scanMode: 'flat', style: 'hue', stabilise: true, checkText: '', lockInfo: null, device: null, oldLayout: null, status: '' };
+const SC = { stream: null, video: null, running: false, cancel: false, waiting: false, resume: null, result: null, snap: null, opts: { rot: 0, flip: false, mode: 'fit' }, scanMode: 'flat', style: 'hue', stabilise: true, videoScan: false,  // videoScan: the add-on plays the patterns, the page films them (unfinished, off)
+   checkText: '', lockInfo: null, device: null, oldLayout: null, status: '' };
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 function scanStopCamera() {
@@ -735,7 +736,7 @@ async function cameraControls() {
   if (has('whiteBalanceMode', 'manual') && await apply({ whiteBalanceMode: 'manual', ...(st.colorTemperature ? { colorTemperature: st.colorTemperature } : {}) })) done.push('white balance'); else missing.push('white balance');
   if (st.focusDistance && has('focusMode', 'manual') && await apply({ focusMode: 'manual', focusDistance: st.focusDistance })) done.push('focus'); else if (st.focusDistance) missing.push('focus');
   return {
-    done, missing,
+    done, missing, locked: mode === 'manual',
     info: () => mode === 'manual' ? `exposure ${exp.time}${exp.iso ? ', ISO ' + exp.iso : ''}` : mode === 'compensation' ? `exposure compensation ${exp.comp}` : 'exposure automatic',
     async scale(f) {
       if (mode === 'manual') {
@@ -806,7 +807,7 @@ async function tuneCamera({ cam, status, check, every, style = 'hue', frac = 0.0
   // the top of a hill: one step in one direction while the number of readable LEDs grows (by 4% or more), if not, back and the other direction.
   // While nothing counts (no LED seen, or the colours washed out) the steps go on without waiting for an improvement.
   let best = await measure(), depth = 0;
-  const dirs = best.lit === 0 || best.sep >= 0.3 ? [1.5, 1 / 1.5] : [1 / 1.5, 1.5];  // colours already washed out: darker first
+  const dirs = best.lit === 0 ? [1.5] : best.sep >= 0.3 ? [1.5, 1 / 1.5] : [1 / 1.5, 1.5];  // no LED seen: only brighter (a black picture must not dim the LEDs); colours washed out: darker first
   for (const f of dirs) {
     const stack = [];
     for (let t = 0; t < 8; t++) {
@@ -984,6 +985,96 @@ function peakOf(a, dk, colour) {
   return pk;
 }
 
+// ---- video: the add-on plays the patterns by itself, the page films them ----------------------------------------------------------------
+// One photo per pattern with a round trip each took about a second per pattern. Here the add-on plays the whole sequence on a timer (a pattern
+// every slotMs) and the page records the live picture with the time of every frame. The start is found from the first big change of the picture
+// (the first pattern is "all on", the garland was dark before), the slot k then runs from marker + k * slotMs: only the middle of a slot is used
+// (the garland and the camera need a moment after a change), the frames of that part are averaged into one photo. Both delays (garland, camera) are
+// the same for every change, so measuring the slots from the first observed change cancels them; what is left is the jitter of the timer.
+const VIDEO = { slotMs: 240, leadMs: 700, winA: 0.30, winB: 0.85, baselineMs: 350 };
+
+// Colour sums of a coarse grid (40 x 22 cells, every third pixel): the signature of a frame, to find the start and to check the slots.
+function thumbOfPlanes(rgb, w, h) {
+  const GX = 40, GY = 22, o = new Float32Array(GX * GY * 3);
+  for (let y = 0; y < h; y += 3) { const cy = Math.min(GY - 1, Math.floor(y * GY / h)); for (let x = 0; x < w; x += 3) { const i = y * w + x, c = (cy * GX + Math.min(GX - 1, Math.floor(x * GX / w))) * 3; o[c] += rgb[0][i]; o[c + 1] += rgb[1][i]; o[c + 2] += rgb[2][i]; } }
+  return o;
+}
+const thumbSum = t => { let s = 0; for (let i = 0; i < t.length; i++) s += t[i]; return s; };
+const thumbDiff = (a, b) => { let d = 0, s = 0; for (let i = 0; i < a.length; i++) { d += Math.abs(a[i] - b[i]); s += a[i] + b[i]; } return d / (s + 1); };
+
+// The next frame of the live picture: { t (ms), w, h, thumb, rgb: [R, G, B] planes (made only when asked for) }. A function declaration so that tests can replace it.
+const frameCv = document.createElement('canvas');
+function nextVideoFrame() {
+  return new Promise(res => {
+    const v = SC.video, cb = (now, md) => {
+      const w = v.videoWidth, h = v.videoHeight; frameCv.width = w; frameCv.height = h;
+      const g = frameCv.getContext('2d', { willReadFrequently: true }); g.drawImage(v, 0, 0, w, h);
+      const d = g.getImageData(0, 0, w, h).data; let planes = null;
+      const f = { t: (md && md.captureTime) || now, w, h, get rgb() {
+        if (!planes) { planes = [new Uint8Array(w * h), new Uint8Array(w * h), new Uint8Array(w * h)]; for (let i = 0; i < w * h; i++) { planes[0][i] = d[4 * i]; planes[1][i] = d[4 * i + 1]; planes[2][i] = d[4 * i + 2]; } }
+        return planes;
+      } };
+      const GX = 40, GY = 22, th = new Float32Array(GX * GY * 3);
+      for (let y = 0; y < h; y += 3) { const cy = Math.min(GY - 1, Math.floor(y * GY / h)); for (let x = 0; x < w; x += 3) { const i = 4 * (y * w + x), c = (cy * GX + Math.min(GX - 1, Math.floor(x * GX / w))) * 3; th[c] += d[i]; th[c + 1] += d[i + 1]; th[c + 2] += d[i + 2]; } }
+      f.thumb = th; res(f);
+    };
+    if (v.requestVideoFrameCallback) v.requestVideoFrameCallback(cb); else requestAnimationFrame(now => cb(now, null));
+  });
+}
+
+// Films a sequence of patterns that the add-on plays by itself. The garland has to be dark when this is called. Returns
+// { dark, shots: [one photo per step, null where the slot could not be used], marker, info } or null when the recording failed (the caller then takes the
+// photos one by one). A photo is { w, h, rgb: [R, G, B], data: luma }.
+async function recordSequence({ steps, slotMs = VIDEO.slotMs, status, check, frac0 = 0.18, frac1 = 0.58 }) {
+  let f = await nextVideoFrame();
+  const w = f.w, h = f.h, N = w * h, acc = [new Uint16Array(N), new Uint16Array(N), new Uint16Array(N)];
+  let nAcc = 0, thumbs = [];
+  const add = fr => { const p = fr.rgb; for (let c = 0; c < 3; c++) { const a = acc[c], q = p[c]; for (let i = 0; i < N; i++) a[i] += q[i]; } nAcc++; thumbs.push(fr.thumb); };
+  const finish = () => {
+    if (!nAcc) { thumbs = []; return null; }
+    const rgb = acc.map(a => { const o = new Uint8Array(N); for (let i = 0; i < N; i++) o[i] = Math.round(a[i] / nAcc); return o; }), data = new Uint8Array(N);
+    for (let i = 0; i < N; i++) data[i] = Math.round(0.299 * rgb[0][i] + 0.587 * rgb[1][i] + 0.114 * rgb[2][i]);
+    const mean = new Float32Array(thumbs[0].length); for (const t of thumbs) for (let i = 0; i < mean.length; i++) mean[i] += t[i] / thumbs.length;
+    let dev = 0; for (const t of thumbs) dev = Math.max(dev, thumbDiff(t, mean));  // how much the frames of the slot differ from each other
+    const r = { shot: { w, h, rgb, data }, thumb: mean, n: nAcc, dev };
+    acc.forEach(a => a.fill(0)); nAcc = 0; thumbs = []; return r;
+  };
+  // 1. the dark baseline
+  const t0 = f.t;
+  while (f.t - t0 < VIDEO.baselineMs) { check(); add(f); f = await nextVideoFrame(); }
+  const base = finish(); if (!base || base.n < 2) { note(`video: only ${base ? base.n : 0} frames of the dark baseline, the camera gives too few frames`); return null; }
+  // 2. the add-on starts the sequence
+  const plan = await send('api/scan/sequence', { steps, slot_ms: slotMs, lead_ms: VIDEO.leadMs });
+  // 3. the first big change of the picture is the start of the first pattern
+  let prev = f, marker = null; const deadline = performance.now() + plan.lead_ms + 3000;
+  for (;;) {
+    check(); if (performance.now() > deadline) { note('video: the start of the sequence (the first change of the picture) was not seen'); return null; }
+    f = await nextVideoFrame();
+    if (thumbDiff(f.thumb, base.thumb) > 0.04) { marker = (prev.t + f.t) / 2; break; }  // the picture is no longer the dark one (noise of the dark one: about 0.002)
+    prev = f;
+  }
+  // 4. the slots
+  const slots = new Array(steps.length).fill(null); let cur = -1, last = 0;
+  const hard = performance.now() + slotMs * steps.length + 4000;
+  for (;;) {
+    check(); const rel = f.t - marker, k = Math.floor(rel / slotMs);
+    if (k !== cur) { if (cur >= 0 && cur < steps.length) slots[cur] = finish(); cur = k; if (k > last) { last = k; status(`Recording the sequence: pattern ${Math.min(k + 1, steps.length)} of ${steps.length}...`, frac0 + (frac1 - frac0) * Math.min(1, k / steps.length)); } }
+    if (k >= steps.length) break;
+    const ph = rel / slotMs - k; if (ph >= VIDEO.winA && ph <= VIDEO.winB) add(f);
+    if (performance.now() > hard) { note(`video: the recording did not end in time (slot ${cur} of ${steps.length})`); return null; }
+    f = await nextVideoFrame();
+  }
+  // 5. which slots can be used
+  const bad = new Set();
+  slots.forEach((sl, k) => { if (!sl || sl.n < 2 || sl.dev > 0.12) bad.add(k); });
+  const ds = []; for (let k = 1; k < slots.length; k++) if (slots[k] && slots[k - 1]) ds.push(thumbDiff(slots[k].thumb, slots[k - 1].thumb));
+  const med = ds.sort((a, b) => a - b)[ds.length >> 1] || 0;
+  for (let k = 1; k < slots.length; k++) if (slots[k] && slots[k - 1] && thumbDiff(slots[k].thumb, slots[k - 1].thumb) < 0.25 * med) bad.add(k);  // looks like the previous pattern: the change came late
+  if (bad.size > Math.max(2, Math.floor(steps.length * 0.1))) { note(`video: too many unusable slots (${[...bad].join(',')} of ${steps.length}), the photos are taken one by one`); return null; }
+  note(`video: ${steps.length} patterns in ${Math.round(slotMs * steps.length)} ms, frames per slot ${slots.map(sl => sl ? sl.n : 0).join(' ')}, unusable: ${bad.size ? [...bad].join(',') : 'none'}`);
+  return { dark: base.shot, shots: slots.map((sl, k) => bad.has(k) ? null : sl.shot), marker, info: { bad: [...bad] } };
+}
+
 // A shaking phone (a hand, a tripod that sags): every photo of the scan is moved back onto the first all-on photo. The shift of a photo is found by
 // correlating the light of its LEDs with the reference (translation only), the planes are resampled. The closing all-on photo is moved too, and
 // its shift (the latest one) is what the single-LED photos afterwards are corrected with.
@@ -1028,48 +1119,69 @@ async function scanView({ dev, M, scanMode, style: wanted, check, status, v, dum
     const cam = await cameraControls(); SC.lockInfo = { done: cam.done, missing: cam.missing }; locked = true;
     status('Setting the exposure...', 0.06);
     const { level, peak: camPeak, usable: camUsable } = await tuneCamera({ cam, status, check, every: everyLed, style });
+    if (style === 'hue' && !camUsable) throw new Error('The camera does not see any LED of the garland (the picture is black or the garland is not in view). Check the camera view and press Start scan again.');
     dump.level = level; SC.lockInfo.exposure = cam.info();
     let dark;
-    status('Photo: everything off...', 0.1); dark = await take('dark', { kind: 'dark' });
-    status('Photo: everything on...', 0.14); const all1 = await take('all', { kind: 'all', level });
-    const capture = async st => {
-      if (st === 'hue') {
-        // two reference photos (all red, all blue), then one photo per code bit: every LED red (0) or blue (1)
-        const total = nb + ScanLib.eccLayout(nb).r, frames = [], cal = [], steps = total + 2;
-        status(`Photo: all LEDs red (1 of ${steps})...`, 0.18 + 0.4 / steps);
-        cal.push((await take('calr', { kind: 'rgb', channels: [everyLed, [], []], level })).rgb);
-        status(`Photo: all LEDs blue (2 of ${steps})...`, 0.18 + 0.4 * 2 / steps);
-        cal.push((await take('calb', { kind: 'rgb', channels: [[], [], everyLed], level })).rgb);
+    // The photos of the code: what has to be lit, and how the photos become what the decoder wants.
+    const stepsOf = st => {
+      const out = [];
+      if (st === 'hue') {  // two reference photos (all red, all blue), then one photo per code bit: every LED red (0) or blue (1)
+        const total = nb + ScanLib.eccLayout(nb).r;
+        out.push({ name: 'calr', body: { kind: 'rgb', channels: [everyLed, [], []], level } }, { name: 'calb', body: { kind: 'rgb', channels: [[], [], everyLed], level } });
         for (let k = 0; k < total; k++) {
-          status(`Photo: code pattern ${k + 1} of ${total} (${k + 3} of ${steps})...`, 0.18 + 0.4 * (k + 3) / steps);
           const ones = ScanLib.bitLeds(n, nb, k), one = new Uint8Array(n); for (const i of ones) one[i] = 1;
-          frames.push((await take('f' + k, { kind: 'rgb', channels: [everyLed.filter(i => !one[i]), [], ones], level })).rgb);
+          out.push({ name: 'f' + k, body: { kind: 'rgb', channels: [everyLed.filter(i => !one[i]), [], ones], level } });
         }
-        return { cal, frames };
+        return out;
       }
-      // rgb: one frame carries three bits (red, green and blue of every LED on / off) after three photos with all LEDs red / green / blue
-      // that tell the camera's response to each colour. mono: one bit per frame.
-      const col = st === 'rgb', plan = ScanLib.framePlan(nb, col), cal = [], frames = [], steps = plan.length + (col ? 3 : 0); let done = 0;
-      if (col) for (let j = 0; j < 3; j++) {
-        status(`Photo: all LEDs ${['red', 'green', 'blue'][j]} (${++done} of ${steps})...`, 0.18 + 0.4 * done / steps);
-        cal.push((await take('cal' + 'rgb'[j], { kind: 'rgb', channels: [0, 1, 2].map(c => c === j ? everyLed : []), level })).rgb);
-      }
-      for (let f = 0; f < plan.length; f++) {
-        status(`Photo: ${col ? 'colour ' : ''}code pattern ${f + 1} of ${plan.length} (${++done} of ${steps})...`, 0.18 + 0.4 * done / steps);
-        const bits = plan[f].bits;
-        const s = await take('f' + f, col ? { kind: 'rgb', channels: bits.map(k => k < 0 ? [] : ScanLib.bitLeds(n, nb, k)), level } : { kind: 'leds', leds: ScanLib.bitLeds(n, nb, bits[0]), level });
-        frames.push({ planes: col ? s.rgb : [s.data], bits });
-      }
-      return { cal, frames };
+      // rgb: one frame carries three bits (red, green and blue of every LED on / off) after three photos with all LEDs red / green / blue that tell
+      // the camera's response to each colour. mono: one bit per frame.
+      const col = st === 'rgb', plan = ScanLib.framePlan(nb, col);
+      if (col) for (let j = 0; j < 3; j++) out.push({ name: 'cal' + 'rgb'[j], body: { kind: 'rgb', channels: [0, 1, 2].map(c => c === j ? everyLed : []), level } });
+      plan.forEach((p, f) => out.push({ name: 'f' + f, body: col ? { kind: 'rgb', channels: p.bits.map(k => k < 0 ? [] : ScanLib.bitLeds(n, nb, k)), level } : { kind: 'leds', leds: ScanLib.bitLeds(n, nb, p.bits[0]), level } }));
+      return out;
     };
-    let st = style, cap = await capture(st), sep = null;
+    const assemble = (st, shots) => {  // shots in the order of stepsOf(st)
+      if (st === 'hue') return { cal: [shots[0].rgb, shots[1].rgb], frames: shots.slice(2).map(x => x.rgb) };
+      const col = st === 'rgb', plan = ScanLib.framePlan(nb, col), nc = col ? 3 : 0;
+      return { cal: col ? shots.slice(0, 3).map(x => x.rgb) : [], frames: plan.map((p, f) => ({ planes: col ? shots[nc + f].rgb : [shots[nc + f].data], bits: p.bits })) };
+    };
+    const capture = async st => {  // one photo per pattern
+      const list = stepsOf(st), shots = [];
+      for (let i = 0; i < list.length; i++) { status(`Photo: ${list[i].name} (${i + 1} of ${list.length})...`, 0.18 + 0.4 * (i + 1) / list.length); shots.push(await take(list[i].name, list[i].body)); }
+      return assemble(st, shots);
+    };
+    const keep = (name, x) => { dump.w = x.w; dump.h = x.h; dump.photos.push([tag + name, colourShots ? x.rgb : [x.data]]); };
+    let st = style, cap, sep = null, rec = null, dark2, all2, all1;
+    // The whole sequence as a video, when the exposure is really locked (an exposure that adapts would change from pattern to pattern): the add-on
+    // plays the patterns by itself and the page films them. If it does not work out the photos are taken one by one.
+    if (SC.videoScan && cam.locked) {
+      await pat({ kind: 'dark' }); await settle();
+      const list = stepsOf(st), steps = [{ kind: 'all', level }, ...list.map(x => x.body), { kind: 'dark' }, { kind: 'all', level }];
+      const names = ['all', ...list.map(x => x.name), 'dark2', 'all2'];
+      try { rec = await recordSequence({ steps, status, check }); } catch (e) { if (e.message === 'cancelled') throw e; note('video failed: ' + e.message); rec = null; }
+      if (rec) {
+        for (let i = 0; i < rec.shots.length; i++) {
+          if (rec.shots[i]) keep(names[i], rec.shots[i]);
+          else { status(`Pattern ${names[i]} was not usable in the video, one photo of it...`, 0.58); rec.shots[i] = await take(names[i], steps[i]); }
+        }
+        dark = rec.dark; keep('dark', dark);
+        all1 = rec.shots[0]; cap = assemble(st, rec.shots.slice(1, 1 + list.length)); dark2 = rec.shots[rec.shots.length - 2]; all2 = rec.shots[rec.shots.length - 1];
+      } else status('The video did not work out, the photos are taken one by one...', 0.15);
+    }
+    if (!rec) {
+      status('Photo: everything off...', 0.1); dark = await take('dark', { kind: 'dark' });
+      status('Photo: everything on...', 0.14); all1 = await take('all', { kind: 'all', level });
+      cap = await capture(st);
+    }
     if (st === 'hue') {
       sep = ScanLib.separation(dark.rgb, cap.cal[0], cap.cal[1]);
       const v = colourVerdict(sep, camPeak, camUsable); if (!v.ok) status(v.text, 0.58);
     }
-    // second pair of photos at the end: only what is the same in both counts (drops flickering lights, passing cars)
-    status('Photo: everything off, again...', 0.58); const dark2 = await take('dark2', { kind: 'dark' });
-    status('Photo: everything on, again...', 0.6); const all2 = await take('all2', { kind: 'all', level });
+    if (!rec) {  // second pair of photos at the end: only what is the same in both counts (drops flickering lights, passing cars)
+      status('Photo: everything off, again...', 0.58); dark2 = await take('dark2', { kind: 'dark' });
+      status('Photo: everything on, again...', 0.6); all2 = await take('all2', { kind: 'all', level });
+    }
     status('Recognising the LEDs...', 0.62); await sleep(30);
     const w = all1.w, h = all1.h;
     let mv, allL, lastShift = { dx: 0, dy: 0 };

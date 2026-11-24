@@ -937,6 +937,21 @@ def api_scan_pattern(req: ScanPattern):
         raise HTTPException(409, str(exc))
 
 
+class ScanSequence(BaseModel):
+    steps: list[ScanPattern]
+    slot_ms: int = 240
+    lead_ms: int = 700
+
+
+@app.post("/api/scan/sequence")
+def api_scan_sequence(req: ScanSequence):
+    """Plays patterns one after the other by itself (the page films them): every `slot_ms`, the first after `lead_ms`."""
+    try:
+        return scan.play([st.model_dump() for st in req.steps], req.slot_ms, req.lead_ms)
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(409, str(exc))
+
+
 @app.post("/api/scan/stop")
 def api_scan_stop():
     return scan.stop()

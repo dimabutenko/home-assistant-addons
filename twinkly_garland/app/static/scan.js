@@ -505,23 +505,6 @@ const ScanLib = (() => {
     return cr1(t0, a, b, t3, p0, pa, pb, p3, i);
   }
 
-  // Continuing the string beyond its first / last known LED: the step per index of the nearest known LEDs, capped at twice the typical step and
-  // damped (each further LED goes a little less far: 0.97 per LED), so that the LEDs spread out along the string instead of piling up on one point.
-  // get(i): the value of a known LED i; wrap: an angle. Returns (before, dist) -> the offset from the nearest known LED.
-  function endExtension(known, get, wrap = false) {
-    const dif = (x, y) => { let d = x - y; if (wrap) d -= 2 * Math.PI * Math.round(d / (2 * Math.PI)); return d; };
-    const typ = []; for (let k = 0; k + 1 < known.length; k++) if (known[k + 1] - known[k] <= 3) typ.push(Math.abs(dif(get(known[k + 1]), get(known[k]))) / (known[k + 1] - known[k]));
-    typ.sort((a, b) => a - b); const cap = 2 * (typ[typ.length >> 1] || 0);
-    const slope = before => {
-      const k = before ? known.slice(0, 6) : known.slice(-6).reverse();  // nearest first
-      if (k.length < 2) return 0;
-      const a = k[0], b = k[k.length - 1], s = dif(get(a), get(b)) / (a - b);
-      return Math.max(-cap, Math.min(cap, s));
-    };
-    const sb = slope(true), sa = slope(false);
-    return (before, dist) => (before ? -sb : sa) * (1 - Math.pow(0.97, dist)) / 0.03;
-  }
-
   // Fill gaps along the string (neighbouring LEDs are physically adjacent) with a Catmull-Rom curve through the known LEDs on both sides
   // (a long gap between close neighbours must not swing wildly: the curve may leave the straight line by at most 0.4 of the gap's length).
   // With `arc` (a tree seen from one side) a long hidden run whose ends are far apart sideways is the string going round the back of the
@@ -529,8 +512,7 @@ const ScanLib = (() => {
   function interpolate(pts, { arc = false } = {}) {
     const out = pts.map(p => p && { ...p }), known = []; out.forEach((p, i) => p && known.push(i));
     if (!known.length) return out;
-    const us = known.map(i => pts[i].u), vs = known.map(i => pts[i].v), minU = Math.min(...us), maxU = Math.max(...us), minV = Math.min(...vs), maxV = Math.max(...vs), width = maxU - minU, height = maxV - minV;
-    const extU = endExtension(known, k => pts[k].u), extV = endExtension(known, k => pts[k].v);
+    const us = known.map(i => pts[i].u), width = Math.max(...us) - Math.min(...us);
     let pos = 0;
     for (let i = 0; i < out.length; i++) {
       if (out[i]) continue;
@@ -543,12 +525,7 @@ const ScanLib = (() => {
         const du = u - lu, dv = v - lv, m = Math.hypot(du, dv);
         if (m > lim) { const f = lim / m; u = lu + du * f; v = lv + dv * f; }
         out[i] = { u, v, src: 'interp' };
-      } else {  // before the first / after the last known LED: continue the string (damped), do not pile the LEDs up on one point
-        const before = i < known[0], k = before ? known[0] : known[known.length - 1], dist = Math.abs(i - k);
-        let u = pts[k].u + extU(before, dist), v = pts[k].v + extV(before, dist);
-        u = Math.min(maxU + 0.05 * width, Math.max(minU - 0.05 * width, u)); v = Math.min(maxV + 0.05 * height, Math.max(minV - 0.05 * height, v));
-        out[i] = { u, v, src: 'interp' };
-      }
+      } else { const k = known[pos] < i ? known[pos] : known[0]; out[i] = { u: out[k].u, v: out[k].v, src: 'interp' }; }  // beyond the ends: the nearest seen LED (a continuation of the string was tried on real photos and was worse)
     }
     return out;
   }
@@ -645,7 +622,6 @@ const ScanLib = (() => {
       const p = P[i], r = R(p.y), xr = Math.max(-1, Math.min(1, (p.x - cx) / r));
       Y[i] = p.y; TH[i] = Math.atan2(p.side * Math.sqrt(1 - xr * xr), xr);
     }
-    const extY = endExtension(known, k => Y[k]), extT = endExtension(known, k => TH[k], true);
     const out = new Array(n); let pos = 0;
     for (let i = 0; i < n; i++) {
       let y, th; const src = P[i] ? P[i].src : 'interp';
@@ -658,10 +634,7 @@ const ScanLib = (() => {
           const lim = 0.4 * Math.abs(Y[b] - Y[a]); if (Math.abs(y - ly) > lim) y = ly + Math.sign(y - ly) * lim;
           let d = TH[b] - TH[a]; d -= 2 * Math.PI * Math.round(d / (2 * Math.PI));
           th = TH[a] + d * t;
-        } else {  // before the first / after the last LED seen: continue the string (damped height and turn)
-          const before = i < known[0], k = before ? known[0] : known[known.length - 1], dist = Math.abs(i - k);
-          y = Math.min(y1 + 0.05 * H, Math.max(y0 - 0.05 * H, Y[k] + extY(before, dist))); th = TH[k] + extT(before, dist);
-        }
+        } else { const k = known[pos] < i ? known[pos] : known[0]; y = Y[k]; th = TH[k]; }
       }
       const r = R(y); out[i] = { x: r * Math.cos(th), y, z: r * Math.sin(th), src };
     }
@@ -752,31 +725,49 @@ async function unlockExposure() {  // give the camera its automatics back
   }
 }
 
-// Brightness. In a dark room the phone's automatic exposure turns itself up until the lit LEDs are blown out to white, and then red and
-// blue can no longer be told apart. So the exposure is turned DOWN until the LEDs are bright but not clipped (the strongest channel of the
-// all-on photo about 190 of 255); where the browser does not allow that the LEDs themselves are dimmed instead.
+// Brightness. What the decoder needs is as many LED pixels as possible that are bright enough to read (a camera value of 30 or more above the
+// dark photo, so that the 8 bits still hold the colour) and not clipped (under 240, a clipped pixel turns white). The cores of the LEDs are
+// always clipped (a tiny, very bright point): that does not matter, the halo round them carries the colour. Too low an exposure loses the dim
+// LEDs (those turned away from the camera, behind branches) and the halos, too high a one blows the halos out. So the exposure is searched like
+// the top of a hill: one step darker, and while that gives more usable pixels another one; if not, back and one step brighter, and so on.
+// Where the browser does not let the page control the exposure the LED brightness is moved instead (30..255).
 async function tuneCamera({ cam, status, check, frac = 0.06 }) {
-  const MIN_LEVEL = 30; let level = 255, peak = 0;
+  const MIN_LEVEL = 30; let level = 255;
   await pat({ kind: 'dark' }); await settle(); const dark = await shot();
-  for (let t = 0; t < 10; t++) {
+  const measure = async () => {
     check(); await pat({ kind: 'all', level }); await settle(); const a = await shot();
-    peak = peakOf(a, dark, true); const clip = clipOf(a, dark);
-    status(`Setting the exposure: LED level ${level}, ${cam.info()}, brightest channel ${peak} of 255, ${Math.round(100 * clip)}% of the lit pixels clipped (aim: under 5%)...`, frac);
-    if (peak >= 235 || clip > 0.05) { const f = Math.max(0.08, Math.min(0.8, 190 / peak)); if (await cam.scale(f)) continue; if (level > MIN_LEVEL) level = Math.max(MIN_LEVEL, Math.round(level * f)); else break; }
-    else if (peak < 90 && clip < 0.01) { const f = Math.min(6, 180 / Math.max(peak, 4)); if (await cam.scale(f)) continue; if (level < 255) level = Math.min(255, Math.round(level * f)); else break; }
-    else break;
+    const m = { peak: peakOf(a, dark, true), use: usableOf(a, dark), clip: clipOf(a, dark) };
+    status(`Setting the exposure: LED level ${level}, ${cam.info()}: ${m.use} usable LED pixels, brightest channel ${m.peak} of 255...`, frac);
+    return m;
+  };
+  // one step brighter / darker: the camera if it can, else the LEDs; returns how to undo it, or null when there is no room left
+  const adjust = async f => {
+    if (await cam.scale(f)) return async () => { await cam.scale(1 / f); };
+    const nl = Math.max(MIN_LEVEL, Math.min(255, Math.round(level * f)));
+    if (nl === level) return null;
+    const old = level; level = nl; return async () => { level = old; };
+  };
+  let best = await measure(), undo = [], bestDepth = 0;
+  for (const f of [0.6, 1 / 0.6]) {
+    const stack = [];
+    for (let t = 0; t < 6; t++) {
+      const u = await adjust(f); if (!u) break;
+      stack.push(u); const m = await measure();
+      if (m.use > best.use * 1.05) { best = m; undo = stack.slice(); bestDepth = stack.length; } else break;
+    }
+    if (bestDepth > 0) { for (let k = stack.length - 1; k >= bestDepth; k--) await stack[k](); break; }  // the last steps were worse: take them back
+    for (let k = stack.length - 1; k >= 0; k--) await stack[k]();  // nothing better that way: back to the start, try the other way
   }
-  return { level, peak };
+  return { level, peak: best.peak, usable: best.use };
 }
 
 // What the colour photos of a scan say about the setup, for the user.
-function colourVerdict(sep, peak) {
+function colourVerdict(sep, peak, usable) {
   if (!sep || !sep.lit) return { ok: false, text: 'No LEDs were seen in the red and blue photos: is the garland in view?' };
-  const s = sep.sep.toFixed(2), clip = Math.round(100 * sep.satShare);
-  if (sep.sep < 0.3) return { ok: false, text: `Red and blue are hard to tell apart for the camera (distinctness ${s}, 1 = perfect, the decoder gives up below 0.22; ${clip}% of the lit pixels clipped): the LEDs are too bright for the camera or the camera mixes the colours. Move the phone farther away or darken further; the scan will try white patterns if it cannot read the colours.` };
-  if (sep.satShare > 0.10) return { ok: false, text: `Red and blue are distinct enough (distinctness ${s}) but ${clip}% of the lit pixels are clipped (they turn white): a lower exposure would be better.` };
-  if (peak < 90) return { ok: false, text: `The LEDs are dim for the camera (brightest channel ${peak} of 255, distinctness ${s}): move the phone closer.` };
-  return { ok: true, text: `Colours are distinct (distinctness ${s}, ${clip}% clipped, brightest channel ${peak} of 255).` };
+  const s = sep.sep.toFixed(2), us = usable !== undefined ? `, ${usable} usable LED pixels` : '';
+  if (sep.sep < 0.3) return { ok: false, text: `Red and blue are hard to tell apart for the camera (distinctness ${s}, 1 = perfect, the decoder gives up below 0.22${us}): the LEDs are too bright for the camera or the camera mixes the colours. Move the phone farther away or darken further; the scan will try white patterns if it cannot read the colours.` };
+  if (peak < 90) return { ok: false, text: `The LEDs are dim for the camera (brightest channel ${peak} of 255, distinctness ${s}${us}): move the phone closer.` };
+  return { ok: true, text: `Colours are distinct (distinctness ${s}${us}, brightest channel ${peak} of 255).` };
 }
 
 // Quick check of the camera set-up without a scan: exposure, red against blue.
@@ -791,11 +782,11 @@ async function cameraCheck() {
     if (info.profile && info.profile !== 'RGB') throw new Error(`this garland has the LED profile ${info.profile}: it is scanned with white patterns, the red / blue check does not apply`);
     const every = Array.from({ length: info.leds }, (_, i) => i);
     cam = await cameraControls(); SC.lockInfo = { done: cam.done, missing: cam.missing };
-    const { level, peak } = await tuneCamera({ cam, status: scanStatus, check });
+    const { level, peak, usable } = await tuneCamera({ cam, status: scanStatus, check });
     await pat({ kind: 'dark' }); await settle(); const dark = await shot();
     await pat({ kind: 'rgb', channels: [every, [], []], level }); await settle(); const red = await shot();
     await pat({ kind: 'rgb', channels: [[], [], every], level }); await settle(); const blue = await shot();
-    const v = colourVerdict(ScanLib.separation(dark.rgb, red.rgb, blue.rgb), peak);
+    const v = colourVerdict(ScanLib.separation(dark.rgb, red.rgb, blue.rgb), peak, usable);
     scanStatus(`${v.ok ? 'Camera OK. ' : 'Check: '}${v.text} (${cam.info()}, LED level ${level}.)`, 1);
   } catch (e) { scanStatus(e.message === 'cancelled' ? 'Cancelled.' : 'Camera check failed: ' + e.message, undefined); }
   finally { if (cam) await unlockExposure(); if (started) { try { await send('api/scan/stop', {}); } catch { /* ignore */ } } SC.running = false; renderScan(); }
@@ -881,6 +872,16 @@ function scanStatus(msg, frac) {
   if (el) el.textContent = msg; if (bar && frac !== undefined) bar.firstChild.style.width = `${Math.round(frac * 100)}%`;
 }
 
+// Number of pixels of a photo that the decoder can use: a channel at least 30 above the dark photo and no channel clipped (under 240).
+function usableOf(a, dk) {
+  let n = 0;
+  for (let i = 0; i < a.data.length; i++) {
+    const r = a.rgb[0][i], g = a.rgb[1][i], b = a.rgb[2][i];
+    if (Math.max(r, g, b) < 240 && Math.max(r - dk.rgb[0][i], g - dk.rgb[1][i], b - dk.rgb[2][i]) >= 30) n++;
+  }
+  return n;
+}
+
 // Share of the lit pixels (a channel more than 60 above the dark photo) of a photo that are clipped (a channel at 250 or more): clipped LEDs
 // turn white and lose their colour.
 function clipOf(a, dk) {
@@ -947,7 +948,7 @@ async function scanView({ dev, M, scanMode, style: wanted, check, status, v, dum
     await pat({ kind: 'dark' }); await settle();
     const cam = await cameraControls(); SC.lockInfo = { done: cam.done, missing: cam.missing }; locked = true;
     status('Setting the exposure...', 0.06);
-    const { level, peak: camPeak } = await tuneCamera({ cam, status, check });
+    const { level, peak: camPeak, usable: camUsable } = await tuneCamera({ cam, status, check });
     dump.level = level; SC.lockInfo.exposure = cam.info();
     let dark;
     status('Photo: everything off...', 0.1); dark = await take('dark', { kind: 'dark' });
@@ -985,7 +986,7 @@ async function scanView({ dev, M, scanMode, style: wanted, check, status, v, dum
     let st = style, cap = await capture(st), sep = null;
     if (st === 'hue') {
       sep = ScanLib.separation(dark.rgb, cap.cal[0], cap.cal[1]);
-      const v = colourVerdict(sep, camPeak); if (!v.ok) status(v.text, 0.58);
+      const v = colourVerdict(sep, camPeak, camUsable); if (!v.ok) status(v.text, 0.58);
     }
     // second pair of photos at the end: only what is the same in both counts (drops flickering lights, passing cars)
     status('Photo: everything off, again...', 0.58); const dark2 = await take('dark2', { kind: 'dark' });
@@ -1268,7 +1269,7 @@ function renderScan() {
       r.is3d && r.merge ? h('div', { class: r.merge.align === 'common' ? 'muted' : 'warn' },
         r.merge.align === 'common' ? `The two views were joined by ${r.merge.used} LEDs that both saw (of ${r.merge.common}), mean mismatch ${r.merge.rms} px.`
           : `Fewer than 6 LEDs were seen in both views (${r.merge.common}), so the views were joined by their outlines only: the result is less exact. Frame the whole tree the same way in both views.`) : null,
-      st.sep !== null && st.sep !== undefined ? h('div', { class: st.sep < 0.3 || st.clipped > 10 ? 'warn' : 'muted' }, `Red against blue: distinctness ${st.sep} (1 = perfect, the decoder gives up below 0.22), ${st.clipped}% of the lit pixels clipped (they turn white; under 5% is good). ${SC.lockInfo && SC.lockInfo.exposure ? 'Camera set to ' + SC.lockInfo.exposure + '.' : ''}`) : null,
+      st.sep !== null && st.sep !== undefined ? h('div', { class: st.sep < 0.3 ? 'warn' : 'muted' }, `Red against blue: distinctness ${st.sep} (1 = perfect, the decoder gives up below 0.22; the bright cores of the LEDs are clipped, ${st.clipped}% of the lit pixels, which does not matter: the colour is in the halo). ${SC.lockInfo && SC.lockInfo.exposure ? 'Camera set to ' + SC.lockInfo.exposure + '.' : ''}`) : null,
       r.spikes && r.spikes.length ? h('div', { class: 'warn' }, `${r.spikes.length} LED${r.spikes.length > 1 ? 's' : ''} (${r.spikes.slice(0, 8).join(', ')}${r.spikes.length > 8 ? ', ...' : ''}) stood far away from both neighbours on the string and were put between them: a stray detection, most likely.`) : null,
       SC.lockInfo ? h('div', { class: SC.lockInfo.missing.length ? 'warn' : 'muted' }, `Camera: ${SC.lockInfo.done.length ? 'locked ' + SC.lockInfo.done.join(', ') : 'nothing could be locked'}${SC.lockInfo.missing.length ? '; not lockable here: ' + SC.lockInfo.missing.join(', ') + ' (the phone may change them during the scan; Chrome on Android locks the most)' : ''}.`) : null,
       st.shift > 1.2 ? h('div', { class: st.shift > 6 ? 'warn' : 'muted' }, `The phone moved by up to ${st.shift} px during the scan; every photo was moved back into place, but a tripod is still more exact.`) : null,

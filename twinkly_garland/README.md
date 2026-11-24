@@ -121,8 +121,11 @@ needed and press "Apply to the garland". The previous layout is saved in `/data/
 
 Scan types: *flat wall or window* (every LED visible), *tree, one side* (the far side is estimated along the string) and
 *tree, front and back (3D)*: two views, the scan asks you to move the phone to the opposite side after the first one; the
-result is a 3D layout (a cone) written to the garland as `3d`. The patterns are coloured by default (three bits per photo,
-needs a calibration of the camera's colours, falls back to white patterns by itself); the checkbox turns it off.
+result is a 3D layout (a cone) written to the garland as `3d`. Patterns (selector in the tab): *hue* (default: every LED is
+lit in every photo, red = 0 and blue = 1, read pixel by pixel; best for dense strings), *colour bits* (three bits per photo,
+fewest photos) and *white on / off*. A style that is not read makes the scan repeat itself with white by itself. The page
+locks exposure, white balance and focus where the browser allows (Chrome on Android most; iPhone and Firefox hardly) and
+says in the result what it could lock.
 
 ## HTTP API (also usable from HA `rest_command`)
 

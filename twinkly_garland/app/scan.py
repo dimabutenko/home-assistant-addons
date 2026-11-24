@@ -39,6 +39,9 @@ class Session:
                 self.prev_uid = ""
         self.frame = bytes(3 * self.n)
         self.lock = threading.Lock()
+        self.wake = threading.Event()  # a new frame was set: send it now, do not wait for the next tick
+        self.seq = 0   # number of the last frame set
+        self.sent = 0  # number of the last frame that went out
         self.stop_evt = threading.Event()
         self.touched = time.time()
         self.thread = threading.Thread(target=self._run, daemon=True)
@@ -50,7 +53,7 @@ class Session:
                 device.retry(self.ci.set_mode, "rt")
             while not self.stop_evt.is_set() and time.time() - self.touched < IDLE_TIMEOUT:
                 with self.lock:
-                    frame = self.frame
+                    frame, seq = self.frame, self.seq
                 try:
                     with device.lock_for(self.dev["host"]):
                         self.ci.set_rt_frame_socket(io.BytesIO(frame), 3)
@@ -59,7 +62,9 @@ class Session:
                             last_ping = time.time()
                 except Exception as exc:
                     log.warning("rt frame failed: %s", exc)
-                self.stop_evt.wait(0.15)
+                self.sent = seq
+                self.wake.wait(0.15)
+                self.wake.clear()
         finally:
             self._restore()
 
@@ -79,10 +84,20 @@ class Session:
                 _sess = None
         log.info("scan session closed")
 
-    def set_frame(self, frame: bytes):
+    def set_frame(self, frame: bytes) -> int:
         with self.lock:
             self.frame = frame
+            self.seq += 1
+            seq = self.seq
         self.touched = time.time()
+        self.wake.set()
+        return seq
+
+    def wait_sent(self, seq: int, timeout: float = 0.6):
+        """Waits until the frame `seq` (or a later one) has been sent to the device."""
+        end = time.time() + timeout
+        while self.sent < seq and time.time() < end and not self.stop_evt.is_set():
+            time.sleep(0.005)
 
 
 def current() -> "Session | None":
@@ -109,6 +124,13 @@ def start(dev: dict) -> dict:
     return {"leds": s.n, "bits": max(1, (s.n - 1).bit_length())}
 
 
+def _show(s: "Session", frame: bytes):
+    """Sends the frame at once and returns when it is out and the device has had a moment to light it
+    (the browser then waits for the camera to see it)."""
+    s.wait_sent(s.set_frame(frame))
+    time.sleep(0.06)
+
+
 def pattern(kind: str, bit: int = 0, leds: list = (), level: int = 200, channels: list = ()) -> dict:
     s = _sess
     if s is None:
@@ -128,8 +150,7 @@ def pattern(kind: str, bit: int = 0, leds: list = (), level: int = 200, channels
     else:
         raise ValueError(f"unknown pattern {kind!r}")
     frame = b"".join(bytes(on) if p else b"\x00\x00\x00" for p in px)
-    s.set_frame(frame)
-    time.sleep(0.25)  # the stream resends every 0.15 s: make sure the device has rendered it
+    _show(s, frame)
     return {"ok": True, "lit": sum(px)}
 
 
@@ -138,6 +159,7 @@ def stop() -> dict:
     if s is None:
         return {"stopped": False}
     s.stop_evt.set()
+    s.wake.set()
     s.thread.join(timeout=15)
     return {"stopped": True}
 

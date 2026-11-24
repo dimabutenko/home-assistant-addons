@@ -191,6 +191,76 @@ const ScanLib = (() => {
     return { pts, peak, threshold: T, blobs: comps.length, merged, invalid, conflicts, uncertain, corrected, rejected, ill };
   }
 
+  // Hue-coded frames, decoded pixel by pixel (the way the Twinkly app does it, with our own code): in every code frame EVERY LED is lit,
+  // red for a 0 and blue for a 1 (nothing is switched off, so a LED is visible in every photo and no brightness threshold is needed:
+  // the colour decides). Two photos with all LEDs red / all blue give every pixel its own response to the two colours; a code photo is
+  // un-mixed with them (v = a * red + c * blue, least squares over the three camera channels): a pure 0 is (1, 0), a pure 1 is (0, 1),
+  // a pixel between two LEDs of different colours is a mixture and is doubtful. Every pixel collects its bits over all frames,
+  // the check bits correct one doubtful or wrong bit, and the pixel then "votes" for the LED whose code it carries. A LED is where its
+  // pixels are (brightness-weighted centre of the pixels within a few pixels of their median): merged blobs do not matter, the pixels at
+  // the centre of every LED still carry its own code and the pixels in between are dropped.
+  // darkP: planes of the dark photo, calR / calB: planes of all-red / all-blue, frames[k]: planes of the photo carrying code bit k
+  // (data bits first, then the check bits), dark / all: luma (all is only used for `peak`), exclude: pixels not to be used.
+  function detectHue({ w, h, dark, all, darkP, calR, calB, frames, nb, n, exclude }) {
+    const N = w * h, ref = new Float32Array(N), q = new Float32Array(N), sw = new Float32Array(N);
+    for (let i = 0; i < N; i++) ref[i] = Math.max(0, all[i] - dark[i]);
+    const peak = percentile(blur3(ref, w, h), 99.9);
+    for (let i = 0; i < N; i++) {
+      let a = 0, b = 0;
+      for (let c = 0; c < 3; c++) { a += Math.max(0, calR[c][i] - darkP[c][i]); b += Math.max(0, calB[c][i] - darkP[c][i]); }
+      q[i] = Math.min(a, b) / 3; sw[i] = (a + b) / 6;
+    }
+    const T = Math.max(6, 0.2 * percentile(q, 99.9)), total = frames.length, nChecks = total - nb;
+    const R0 = Math.max(5, 0.012 * w), MIN_PIX = 3;
+    const byIdx = new Map(); let pixels = 0, ill = 0, invalid = 0, uncertain = 0, corrected = 0, rejected = 0;
+    const rv = [0, 0, 0], bv = [0, 0, 0];
+    for (let i = 0; i < N; i++) {
+      if (q[i] <= T || (exclude && exclude[i])) continue;
+      pixels++;
+      let rr = 0, bb = 0, rb = 0;
+      for (let c = 0; c < 3; c++) {
+        rv[c] = Math.max(0, calR[c][i] - darkP[c][i]); bv[c] = Math.max(0, calB[c][i] - darkP[c][i]);
+        rr += rv[c] * rv[c]; bb += bv[c] * bv[c]; rb += rv[c] * bv[c];
+      }
+      const det = rr * bb - rb * rb;
+      if (!(det > 0.05 * rr * bb)) { ill++; continue; }  // the two colours look the same here (a saturated pixel)
+      const bits = new Array(total); let doubtful = 0, bad = false;
+      for (let k = 0; k < total && !bad; k++) {
+        const P = frames[k]; let rvv = 0, bvv = 0;
+        for (let c = 0; c < 3; c++) { const v = Math.max(0, P[c][i] - darkP[c][i]); rvv += rv[c] * v; bvv += bv[c] * v; }
+        const a = (bb * rvv - rb * bvv) / det, cc = (rr * bvv - rb * rvv) / det, t = a + cc;
+        if (t < 0.4 || t > 1.8) { bad = true; break; }
+        const d = (cc - a) / t, m = Math.abs(d);
+        if (m < 0.4) { bad = true; break; }
+        if (m < 0.7) doubtful++;
+        bits[k] = cc > a ? 1 : 0;
+      }
+      if (bad || doubtful > (nChecks ? 1 : 0)) { uncertain++; continue; }
+      let rd = bits.slice(0, nb);
+      if (nChecks) {
+        const dec = eccDecode(rd, bits.slice(nb), nb);
+        if (!dec) { rejected++; continue; }
+        if (dec.fixed) corrected++;
+        rd = dec.bits;
+      }
+      let code = 0; for (let k = 0; k < rd.length; k++) if (rd[k]) code |= 1 << k;
+      const idx = grayDecode(code);
+      if (idx >= n) { invalid++; continue; }
+      let L = byIdx.get(idx); if (!L) byIdx.set(idx, L = { x: [], y: [], w: [] });
+      const x = i % w; L.x.push(x); L.y.push((i - x) / w); L.w.push(sw[i]);
+    }
+    const med = a => { const s = [...a].sort((u, v) => u - v); return s[s.length >> 1]; };
+    const pts = new Array(n).fill(null); let conflicts = 0;
+    for (const [idx, L] of byIdx) {
+      const mx = med(L.x), my = med(L.y); let sx = 0, sy = 0, s = 0, kept = 0;
+      for (let j = 0; j < L.x.length; j++) if (Math.hypot(L.x[j] - mx, L.y[j] - my) <= R0) { sx += L.x[j] * L.w[j]; sy += L.y[j] * L.w[j]; s += L.w[j]; kept++; }
+      if (kept < MIN_PIX || s <= 0) continue;
+      if (L.x.length - kept > kept) { conflicts++; continue; }  // two separate places claim this code: nobody is sure
+      pts[idx] = { u: sx / s, v: sy / s, area: kept, src: 'code' };
+    }
+    return { pts, peak, threshold: T, blobs: byIdx.size, merged: 0, invalid, conflicts, uncertain, corrected, rejected, ill, pixels };
+  }
+
   // LEDs worth checking one by one: far from their neighbours on the string (a wrongly decoded
   // blob) or standing alone in a run of missing LEDs (nothing to compare with).
   function suspicious(pts, aloneToo = true) {
@@ -483,7 +553,7 @@ const ScanLib = (() => {
     return { pts: out.map(p => ({ x: p.x * s, y: (p.y - y0) * sy, z: p.z * s, src: p.src })), common: common.length, used, align, rms: +rms.toFixed(2), scale: +T.s.toFixed(3) };
   }
 
-  return { detect, eccLayout, checkLeds, bitLeds, framePlan, suspicious, orient, merge3d, cr1, singleBlob, interpolate, searchRuns, filterOutliers, toLayout, percentile, blur3, maxArr, minArr, unstableMask, motion, roiOf };
+  return { detect, detectHue, eccLayout, checkLeds, bitLeds, framePlan, suspicious, orient, merge3d, cr1, singleBlob, interpolate, searchRuns, filterOutliers, toLayout, percentile, blur3, maxArr, minArr, unstableMask, motion, roiOf };
 })();
 
 // ---- scan types ------------------------------------------------------------------------------------------------
@@ -506,7 +576,7 @@ const SCAN_MODES = {
 };
 
 // ---- UI ------------------------------------------------------------------------------------
-const SC = { stream: null, video: null, running: false, cancel: false, waiting: false, resume: null, result: null, snap: null, opts: { rot: 0, flip: false, mode: 'fit' }, scanMode: 'flat', colour: true, device: null, oldLayout: null, status: '' };
+const SC = { stream: null, video: null, running: false, cancel: false, waiting: false, resume: null, result: null, snap: null, opts: { rot: 0, flip: false, mode: 'fit' }, scanMode: 'flat', style: 'hue', lockInfo: null, device: null, oldLayout: null, status: '' };
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 function scanStopCamera() {
@@ -520,10 +590,45 @@ async function scanOpenCamera() {
   SC.video.srcObject = SC.stream; await SC.video.play();
 }
 
-async function lockExposure() {  // keep brightness and colours constant while patterns change (best effort, each setting on its own)
-  const t = SC.stream.getVideoTracks()[0];
-  for (const c of [{ exposureMode: 'manual' }, { whiteBalanceMode: 'manual' }]) {
+// Keep brightness and colours constant while patterns change: the phone's own automatics would follow the patterns. Best effort, only
+// what the camera offers (Chrome on Android offers most, iPhones and Firefox offer almost nothing); the values are frozen where they are.
+async function lockExposure() {
+  const t = SC.stream.getVideoTracks()[0], caps = t.getCapabilities ? t.getCapabilities() : {}, st = t.getSettings ? t.getSettings() : {}, done = [], missing = [];
+  const lock = async (label, mode, extra) => {
+    if (!(caps[mode] || []).includes('manual')) { missing.push(label); return; }
+    try { await t.applyConstraints({ advanced: [{ [mode]: 'manual', ...extra }] }); done.push(label); } catch { missing.push(label); }
+  };
+  await lock('exposure', 'exposureMode', { ...(st.exposureTime ? { exposureTime: st.exposureTime } : {}), ...(st.iso ? { iso: st.iso } : {}) });
+  await lock('white balance', 'whiteBalanceMode', st.colorTemperature ? { colorTemperature: st.colorTemperature } : {});
+  if (st.focusDistance) await lock('focus', 'focusMode', { focusDistance: st.focusDistance });
+  return { done, missing };
+}
+
+async function unlockExposure() {  // give the camera its automatics back
+  const t = SC.stream && SC.stream.getVideoTracks()[0]; if (!t) return;
+  for (const c of [{ exposureMode: 'continuous' }, { whiteBalanceMode: 'continuous' }, { focusMode: 'continuous' }]) {
     try { await t.applyConstraints({ advanced: [c] }); } catch { /* not supported */ }
+  }
+}
+
+// Wait until the camera shows the pattern that was just lit: at least `minMs` (the garland, the camera's own delay), then until the
+// live picture stops changing (two looks 40 ms apart with fewer than 4 pixels changed by more than 12). This also waits out an automatic
+// exposure that is still adapting. A function declaration so tests can replace it.
+const sigCv = document.createElement('canvas');
+function liveFrame() {
+  const v = SC.video; sigCv.width = 320; sigCv.height = 180;
+  const g = sigCv.getContext('2d', { willReadFrequently: true }); g.drawImage(v, 0, 0, 320, 180);
+  const d = g.getImageData(0, 0, 320, 180).data, o = new Uint8Array(320 * 180);
+  for (let i = 0; i < o.length; i++) o[i] = d[4 * i + 1];
+  return o;
+}
+async function settle(minMs = 150, maxMs = 1500) {
+  await sleep(minMs); const t0 = performance.now(); let prev = liveFrame(), calm = 0;
+  while (performance.now() - t0 < maxMs) {
+    await sleep(40); const cur = liveFrame(); let ch = 0;
+    for (let i = 0; i < cur.length; i++) if (Math.abs(cur[i] - prev[i]) > 12) ch++;
+    prev = cur;
+    if (ch < 4) { if (++calm >= 2) return; } else calm = 0;
   }
 }
 
@@ -537,7 +642,7 @@ async function shot() {
   for (let n = 0; n < 2; n++) {
     ctx.drawImage(v, 0, 0, w, h); const d = ctx.getImageData(0, 0, w, h).data;
     for (let i = 0; i < w * h; i++) { acc[0][i] += d[4 * i]; acc[1][i] += d[4 * i + 1]; acc[2][i] += d[4 * i + 2]; }
-    if (n === 0) await sleep(120);
+    if (n === 0) await sleep(40);
   }
   const rgb = acc.map(a => { const o = new Uint8Array(w * h); for (let i = 0; i < o.length; i++) o[i] = (a[i] + 1) >> 1; return o; });
   const data = new Uint8Array(w * h); for (let i = 0; i < data.length; i++) data[i] = Math.round(0.299 * rgb[0][i] + 0.587 * rgb[1][i] + 0.114 * rgb[2][i]);
@@ -550,13 +655,13 @@ function scanLoadMode(dev) {  // the scan type is remembered per garland
   SC.device = dev;
   try {
     const m = localStorage.getItem('scan-mode:' + dev); if (m && SCAN_MODES[m] && !SCAN_MODES[m].disabled) SC.scanMode = m;
-    SC.colour = localStorage.getItem('scan-colour') !== '0';
+    const c = localStorage.getItem('scan-style'); if (c === 'hue' || c === 'rgb' || c === 'mono') SC.style = c;
   } catch { /* no storage */ }
 }
 
-function scanSaveMode() { try { localStorage.setItem('scan-mode:' + SC.device, SC.scanMode); localStorage.setItem('scan-colour', SC.colour ? '1' : '0'); } catch { /* no storage */ } }
+function scanSaveMode() { try { localStorage.setItem('scan-mode:' + SC.device, SC.scanMode); localStorage.setItem('scan-style', SC.style); } catch { /* no storage */ } }
 
-// Sends the photos of the last scan to the add-on (lossless PNGs, colour ones in colour + a small JSON) so that a scan that went wrong can be examined.
+// Sends the photos of the last scan to the add-on (lossless PNGs, colour photos in colour + a small JSON) so that a scan that went wrong can be examined.
 async function scanSendPhotos() {
   const d = SC.dump; if (!d) return;
   const cv = document.createElement('canvas'); cv.width = d.w; cv.height = d.h; const g = cv.getContext('2d');
@@ -575,7 +680,7 @@ async function scanSendPhotos() {
       g.putImageData(img, 0, 0);
       await put(name + '.png', await new Promise(res => cv.toBlob(res, 'image/png')), 'image/png');
     }
-    const meta = { device: d.device, mode: d.mode, colour: d.colour, n: d.n, w: d.w, h: d.h, level: d.level, pts: d.pts || null, stats: SC.result ? SC.result.stats : null, agent: navigator.userAgent };
+    const meta = { device: d.device, mode: d.mode, style: d.style, lock: SC.lockInfo, n: d.n, w: d.w, h: d.h, level: d.level, pts: d.pts || null, stats: SC.result ? SC.result.stats : null, agent: navigator.userAgent };
     await put('meta.json', JSON.stringify(meta), 'application/json');
     scanStatus(`Photos sent (${d.id}).`, 1); toast(`Photos sent: ${d.id}`);
   } catch (e) { scanStatus('Sending failed: ' + e.message, undefined); toast('Sending failed: ' + e.message, true, 8000); }
@@ -598,40 +703,57 @@ function peakOf(a, dk, colour) {
 }
 
 // One view of the garland: photos -> positions of the LEDs found (null where nothing was found; nothing interpolated yet).
-async function scanView({ dev, M, scanMode, colour, check, status, v, dump }) {
+// style: 'hue' (every LED lit in every frame, red = 0, blue = 1, decoded pixel by pixel), 'rgb' (R, G, B on / off = three bits per frame)
+// or 'mono' (white on / off, one bit per frame). When the chosen style is not read the scan repeats itself with 'mono'.
+async function scanView({ dev, M, scanMode, style, check, status, v, dump }) {
   const tag = v ? `v${v}_` : '';
   status('Switching the garland to scan mode...', 0.02);
   const info = await send('api/scan/start', { device: dev }); const n = info.leds, nb = info.bits;
   dump.n = n;
+  let locked = false, colourShots = style !== 'mono';
   try {
-    const take = async (name, body, settle = 600) => {  // light a pattern, wait, photograph, keep for the dump
-      check(); await pat(body); await sleep(settle); const s = await shot();
-      dump.w = s.w; dump.h = s.h; dump.photos.push([tag + name, colour ? s.rgb : [s.data]]);
+    const take = async (name, body) => {  // light a pattern, wait until the camera shows it, photograph, keep for the dump
+      check(); await pat(body); await settle(); const s = await shot();
+      dump.w = s.w; dump.h = s.h; dump.photos.push([tag + name, colourShots ? s.rgb : [s.data]]);
       return s;
     };
     // LED brightness (1-255). A saturated blob centre is fine for locating an LED, so do not dim the LEDs
     // below MIN_LEVEL just because the camera is dazzled: a dim LED cannot be seen by eye either.
     const MIN_LEVEL = 100;
     let level = 200;
-    await pat({ kind: 'dark' }); await sleep(600); let dark = await shot();
+    await pat({ kind: 'dark' }); await settle(); let dark = await shot();
     status('Setting the LED brightness...', 0.06);
     for (let t = 0; t < 3; t++) {
-      check(); await pat({ kind: 'all', level }); await sleep(600); const a = await shot();
-      const peak = peakOf(a, dark, colour);
+      check(); await pat({ kind: 'all', level }); await settle(); const a = await shot();
+      const peak = peakOf(a, dark, true);
       status(`Setting the LED brightness: ${level} (camera peak ${peak})...`, 0.06);
       if (peak >= 250 && level > MIN_LEVEL) level = Math.max(MIN_LEVEL, Math.round(level * 0.7));
       else if (peak < 60 && level < 255) level = Math.min(255, Math.round(level * 1.6));
       else break;
     }
     dump.level = level;
-    await lockExposure();
+    SC.lockInfo = await lockExposure(); locked = true;
     status('Photo: everything off...', 0.1); dark = await take('dark', { kind: 'dark' });
     status('Photo: everything on...', 0.14); const all1 = await take('all', { kind: 'all', level });
     const everyLed = Array.from({ length: n }, (_, i) => i);
-    // The code frames. Colour: one frame carries three bits (red, green and blue of every LED), after three photos with all LEDs red / green /
-    // blue that tell the camera's response to each colour. White: one bit per frame.
-    const capture = async col => {
-      const plan = ScanLib.framePlan(nb, col), cal = [], frames = [], steps = plan.length + (col ? 3 : 0); let done = 0;
+    const capture = async st => {
+      if (st === 'hue') {
+        // two reference photos (all red, all blue), then one photo per code bit: every LED red (0) or blue (1)
+        const total = nb + ScanLib.eccLayout(nb).r, frames = [], cal = [], steps = total + 2;
+        status(`Photo: all LEDs red (1 of ${steps})...`, 0.18 + 0.4 / steps);
+        cal.push((await take('calr', { kind: 'rgb', channels: [everyLed, [], []], level })).rgb);
+        status(`Photo: all LEDs blue (2 of ${steps})...`, 0.18 + 0.4 * 2 / steps);
+        cal.push((await take('calb', { kind: 'rgb', channels: [[], [], everyLed], level })).rgb);
+        for (let k = 0; k < total; k++) {
+          status(`Photo: code pattern ${k + 1} of ${total} (${k + 3} of ${steps})...`, 0.18 + 0.4 * (k + 3) / steps);
+          const ones = ScanLib.bitLeds(n, nb, k), one = new Uint8Array(n); for (const i of ones) one[i] = 1;
+          frames.push((await take('f' + k, { kind: 'rgb', channels: [everyLed.filter(i => !one[i]), [], ones], level })).rgb);
+        }
+        return { cal, frames };
+      }
+      // rgb: one frame carries three bits (red, green and blue of every LED on / off) after three photos with all LEDs red / green / blue
+      // that tell the camera's response to each colour. mono: one bit per frame.
+      const col = st === 'rgb', plan = ScanLib.framePlan(nb, col), cal = [], frames = [], steps = plan.length + (col ? 3 : 0); let done = 0;
       if (col) for (let j = 0; j < 3; j++) {
         status(`Photo: all LEDs ${['red', 'green', 'blue'][j]} (${++done} of ${steps})...`, 0.18 + 0.4 * done / steps);
         cal.push((await take('cal' + 'rgb'[j], { kind: 'rgb', channels: [0, 1, 2].map(c => c === j ? everyLed : []), level })).rgb);
@@ -644,7 +766,7 @@ async function scanView({ dev, M, scanMode, colour, check, status, v, dump }) {
       }
       return { cal, frames };
     };
-    let cap = await capture(colour), col = colour;
+    let st = style, cap = await capture(st);
     // second pair of photos at the end: only what is the same in both counts (drops flickering lights, passing cars)
     status('Photo: everything off, again...', 0.58); const dark2 = await take('dark2', { kind: 'dark' });
     status('Photo: everything on, again...', 0.6); const all2 = await take('all2', { kind: 'all', level });
@@ -655,13 +777,15 @@ async function scanView({ dev, M, scanMode, colour, check, status, v, dump }) {
     const darkL = ScanLib.maxArr(dark.data, dark2.data), allL = ScanLib.minArr(all1.data, all2.data);
     const darkRGB = [0, 1, 2].map(c => ScanLib.maxArr(dark.rgb[c], dark2.rgb[c]));
     const unstable = ScanLib.unstableMask(dark.data, dark2.data, w, h);
-    const decode = (c, k) => ScanLib.detect({ w, h, dark: darkL, all: allL, darkP: c ? darkRGB : [darkL], cal: c ? k.cal : [[allL]], frames: k.frames, nb, n });
-    let det = decode(col, cap), fellBack = false;
+    const decode = (s, k) => s === 'hue'
+      ? ScanLib.detectHue({ w, h, dark: darkL, all: allL, darkP: darkRGB, calR: k.cal[0], calB: k.cal[1], frames: k.frames, nb, n, exclude: unstable })
+      : ScanLib.detect({ w, h, dark: darkL, all: allL, darkP: s === 'rgb' ? darkRGB : [darkL], cal: s === 'rgb' ? k.cal : [[allL]], frames: k.frames, nb, n });
+    let det = decode(st, cap), fellBack = false;
     let pts = det.pts, decoded = pts.filter(Boolean).length;
     const enough = () => decoded >= Math.max(M.minCount, n * M.minShare);
-    if (col && !enough()) {  // the colours were not read (a camera that mixes them, a very bright room): the same with white patterns
+    if (st !== 'mono' && !enough()) {  // the colours were not read (a camera that mixes them, a very bright room): the same with white patterns
       status('The colour patterns were not recognised, repeating with white ones...', 0.62);
-      col = false; cap = await capture(false); det = decode(false, cap); pts = det.pts; decoded = pts.filter(Boolean).length; fellBack = true;
+      st = 'mono'; colourShots = false; cap = await capture('mono'); det = decode('mono', cap); pts = det.pts; decoded = pts.filter(Boolean).length; fellBack = true;
     }
     if (!enough()) throw new Error(scanMode.startsWith('tree')
       ? `Only ${decoded} of ${n} LEDs could be recognised (${Math.round(100 * decoded / n)}%), too few even for a view from one side. Move the phone closer so that the tree fills the picture, darken the room, and check that the whole tree is in view.`
@@ -674,21 +798,22 @@ async function scanView({ dev, M, scanMode, colour, check, status, v, dump }) {
     const lv = Math.max(level, 200);
     for (let q = 0; q < limit; q++) {
       check(); const i = todo[q]; status(`Checking LED ${i} separately (${q + 1} of ${limit}), brightness ${lv}...`, 0.62 + 0.36 * q / Math.max(1, limit));
-      await pat({ kind: 'leds', leds: [i], level: lv }); await sleep(450);
+      await pat({ kind: 'leds', leds: [i], level: lv }); await settle(120);
       const s = await shot(), b = ScanLib.singleBlob({ w, h, dark: darkL, frame: s.data, minPeak: Math.max(10, det.peak * 0.3), roi, exclude: unstable });
       pts[i] = b ? { ...b, src: 'single' } : null; if (b) refined++;  // a LED that does not show up alone was a false detection
     }
     if (M.searchRuns) {  // a tree: look for the LEDs that are visible but were too close together to be told apart by code
       const minPeak = Math.max(10, det.peak * M.singleFactor), roi2 = ScanLib.roiOf(pts, w, h, { x: 0.15, top: 0.6, bottom: 0.1 });
       const stat = await ScanLib.searchRuns(pts, async i => {
-        await pat({ kind: 'leds', leds: [i], level: lv }); await sleep(450); const s1 = await shot();
+        await pat({ kind: 'leds', leds: [i], level: lv }); await settle(120); const s1 = await shot();
         return ScanLib.singleBlob({ w, h, dark: darkL, frame: s1.data, minPeak, roi: roi2, exclude: unstable });
       }, { limit: M.searchLimit, check, progress: (u, l, i) => status(`Looking for LED ${i} on its own (${u} of at most ${l}), brightness ${lv}...`, 0.62 + 0.36 * u / l) });
       refined += stat.found;
     }
     const f2 = ScanLib.filterOutliers(pts); pts = f2.pts; dropped += f2.removed.length;
-    return { pts, w, h, n, level, det, decoded, refined, dropped, mv, snap: all1.data, colour: col, fellBack };
+    return { pts, w, h, n, level, det, decoded, refined, dropped, mv, snap: all1.data, style: st, fellBack };
   } finally {
+    if (locked) await unlockExposure();
     try { await send('api/scan/stop', {}); } catch { /* ignore */ }
   }
 }
@@ -706,15 +831,15 @@ async function runScan() {
   const dev = document.getElementById('scan-dev').value;
   SC.device = dev;
   SC.running = true; SC.cancel = false; SC.waiting = false; SC.result = null; SC.device = dev; renderScan();
-  const M = SCAN_MODES[SC.scanMode] || SCAN_MODES.flat, scanMode = SC.scanMode, nViews = M.views || 1, colour = SC.colour;
+  const M = SCAN_MODES[SC.scanMode] || SCAN_MODES.flat, scanMode = SC.scanMode, nViews = M.views || 1, style = SC.style;
   const check = () => { if (SC.cancel) throw new Error('cancelled'); };
-  const dump = SC.dump = { id: new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14), w: 0, h: 0, n: 0, mode: scanMode, colour, level: 0, device: dev, photos: [] };
+  const dump = SC.dump = { id: new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14), w: 0, h: 0, n: 0, mode: scanMode, style, level: 0, device: dev, photos: [] };
   try {
     const vs = [];
     for (let v = 0; v < nViews; v++) {
       if (v > 0) await waitForNextView(M, check);
       const status = (m, f) => scanStatus((nViews > 1 ? `View ${v + 1} of ${nViews}: ` : '') + m, f === undefined ? undefined : (v + f) / nViews);
-      vs.push(await scanView({ dev, M, scanMode, colour, check, status, v, dump }));
+      vs.push(await scanView({ dev, M, scanMode, style, check, status, v, dump }));
     }
     const r0 = vs[0], n = r0.n, w = r0.w, h = r0.h;
     const base = {
@@ -722,7 +847,7 @@ async function runScan() {
       shift: vs.some(r => r.mv) ? +Math.max(...vs.map(r => r.mv ? r.mv.shift : 0)).toFixed(1) : null,
       blobs: sumOf(vs, r => r.det.blobs), merged: sumOf(vs, r => r.det.merged), invalid: sumOf(vs, r => r.det.invalid), conflicts: sumOf(vs, r => r.det.conflicts),
       uncertain: sumOf(vs, r => r.det.uncertain), corrected: sumOf(vs, r => r.det.corrected), rejected: sumOf(vs, r => r.det.rejected), level: r0.level,
-      colour: vs.every(r => r.colour) ? 'colour' : vs.some(r => r.colour) ? 'mixed' : 'white', fellBack: vs.some(r => r.fellBack),
+      styles: [...new Set(vs.map(r => r.style))], fellBack: vs.some(r => r.fellBack),
     };
     const views = vs.map(r => ({ w: r.w, h: r.h, pts: r.pts, snap: r.snap }));
     if (nViews === 1) {
@@ -839,7 +964,8 @@ function renderScan() {
   const video = h('video', { playsinline: '', muted: '', autoplay: '', style: 'width:100%;max-width:480px;border-radius:8px;background:#000' }); video.muted = true;
   SC.video = video; if (SC.stream) { video.srcObject = SC.stream; video.play().catch(() => {}); }
   const st = SC.result && SC.result.stats, r = SC.result, canvasStyle = 'max-width:100%;background:#000;border-radius:6px';
-  const how = st && (st.colour === 'colour' ? 'colour patterns' : st.colour === 'mixed' ? 'colour and white patterns' : 'white patterns' + (st.fellBack ? ' (the colour ones were not read)' : ''));
+  const STYLE_NAME = { hue: 'hue-coded patterns (LEDs always lit)', rgb: 'colour-bit patterns', mono: 'white patterns' };
+  const how = st && st.styles.map(x => STYLE_NAME[x]).join(' + ') + (st.fellBack ? ' (the chosen style was not read)' : ''), unit = st && st.styles.includes('hue') ? ' px' : '';
   root.append(
     h('div', { class: 'card', style: 'margin-bottom:12px' },
       h('h2', {}, 'Scan LED positions with the phone camera'),
@@ -854,8 +980,9 @@ function renderScan() {
         h('label', {}, 'Garland ', h('select', { id: 'scan-dev', disabled: SC.running, onchange: e => { setPreviewDevice(e.target.value); scanLoadMode(e.target.value); renderScan(); } }, devs.map(d => h('option', { value: d, selected: d === SC.device }, d)))),
         h('label', {}, 'Scan type ', h('select', { id: 'scan-mode', disabled: SC.running, onchange: e => { SC.scanMode = e.target.value; scanSaveMode(); renderScan(); } },
           Object.entries(SCAN_MODES).map(([k, m]) => h('option', { value: k, disabled: !!m.disabled, selected: k === SC.scanMode }, m.label)))),
-        h('label', { title: 'Red, green and blue of every LED carry three bits in one photo: the scan needs about a third of the photos. If the colours are not read the scan repeats itself with white patterns.' },
-          h('input', { type: 'checkbox', checked: SC.colour, disabled: SC.running, onchange: e => { SC.colour = e.target.checked; scanSaveMode(); } }), 'Colour patterns (faster)'),
+        h('label', { title: 'How the garland codes the LEDs. Hue: every LED is lit in every photo, red = 0, blue = 1, read pixel by pixel (most robust, dense strings). Colour bits: red, green and blue switched on / off, three bits per photo (fewest photos). White: on / off, one bit per photo. If the chosen style is not read the scan repeats itself with white.' },
+          'Patterns ', h('select', { id: 'scan-style', disabled: SC.running, onchange: e => { SC.style = e.target.value; scanSaveMode(); } },
+            [['hue', 'Hue, LEDs always lit (robust)'], ['rgb', 'Colour bits (fewest photos)'], ['mono', 'White on / off']].map(([k, t]) => h('option', { value: k, selected: k === SC.style }, t)))),
         h('button', { disabled: SC.running, onclick: async () => { try { await scanOpenCamera(); toast('Camera ready.'); renderScan(); } catch (e) { toast(e.message, true, 9000); } } }, 'Open camera'),
         h('button', { class: 'primary', disabled: SC.running || !SC.stream, onclick: runScan }, 'Start scan'),
         SC.waiting ? h('button', { class: 'primary', onclick: () => SC.resume && SC.resume() }, 'Next view') : null,
@@ -868,10 +995,11 @@ function renderScan() {
     r ? h('div', { class: 'card' },
       h('h2', {}, 'Result'),
       h('div', {}, `${st.n} LEDs: ${st.decoded} recognised by code, ${st.refined} found one by one, ${st.dropped} dropped as outliers, `, h('b', { class: st.hidden && !st.mode.startsWith('tree') ? 'warn' : 'ok' }, `${st.hidden} not visible (estimated from their neighbours${st.mode.startsWith('tree') ? ', as expected for the far side of a tree' : ''})`),
-        h('span', { class: 'muted' }, `  ·  ${how}, blobs ${st.blobs}, merged ${st.merged}, invalid ${st.invalid}, ambiguous ${st.conflicts}, doubtful ${st.uncertain}, corrected ${st.corrected}, rejected by the check ${st.rejected}, brightness ${st.level}`)),
+        h('span', { class: 'muted' }, `  ·  ${how}: ${st.styles.includes('hue') ? 'LEDs with pixels' : 'blobs'} ${st.blobs}, merged ${st.merged}, invalid ${st.invalid}${unit}, ambiguous ${st.conflicts}, doubtful ${st.uncertain}${unit}, corrected ${st.corrected}${unit}, rejected by the check ${st.rejected}${unit}, brightness ${st.level}`)),
       r.is3d && r.merge ? h('div', { class: r.merge.align === 'common' ? 'muted' : 'warn' },
         r.merge.align === 'common' ? `The two views were joined by ${r.merge.used} LEDs that both saw (of ${r.merge.common}), mean mismatch ${r.merge.rms} px.`
           : `Fewer than 6 LEDs were seen in both views (${r.merge.common}), so the views were joined by their outlines only: the result is less exact. Frame the whole tree the same way in both views.`) : null,
+      SC.lockInfo ? h('div', { class: SC.lockInfo.missing.length ? 'warn' : 'muted' }, `Camera: ${SC.lockInfo.done.length ? 'locked ' + SC.lockInfo.done.join(', ') : 'nothing could be locked'}${SC.lockInfo.missing.length ? '; not lockable here: ' + SC.lockInfo.missing.join(', ') + ' (the phone may change them during the scan; Chrome on Android locks the most)' : ''}.`) : null,
       st.shift > 1.2 ? h('div', { class: 'warn' }, `The phone moved about ${st.shift} px during the scan. Use a tripod for a more accurate result.`) : null,
       h('div', { class: 'muted' }, 'Green = recognised, blue = found separately, orange = estimated. The grey line is the string in LED order and should run smoothly.'),
       h('div', { class: 'row', style: 'margin:8px 0' },

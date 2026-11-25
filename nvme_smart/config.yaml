@@ -1,0 +1,24 @@
+name: NVMe SMART
+url: "https://github.com/dimabutenko/home-assistant-addons"
+version: 0.1.0
+slug: nvme_smart
+description: "Reads the NVMe SMART health log every few minutes (read-only): sensors in Home Assistant and a log line in Loki"
+arch: ["aarch64"]
+startup: application
+boot: auto
+init: false
+homeassistant_api: true
+apparmor: false
+privileged:
+  - SYS_ADMIN
+  - SYS_RAWIO
+devices:
+  - /dev/nvme0
+options:
+  device: /dev/nvme0
+  interval_s: 300
+  loki_url: "http://71dadad1-grafana-loki:3100/loki/api/v1/push"
+schema:
+  device: str
+  interval_s: int(30,86400)
+  loki_url: str?

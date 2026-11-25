@@ -1060,15 +1060,16 @@ async function recordSequence({ steps, slotMs = VIDEO.slotMs, status, check, fra
   // 3. segments: a jump of the signature starts a new one; the first frames after a jump are skipped until the picture holds still
   const segs = [base];             // segs[0] = the dark baseline, segs[1..] = the patterns in order
   let ref = base.thumb, light = 0; // light: the full light of the garland (known after the first pattern, the all-on one)
-  let open = false, settling = false, prevThumb = null, extra = 0, candidate = false, lastChange = 0; const jumps = [];
+  let open = false, settling = false, prevThumb = null, extra = 0, candidate = false, lastChange = 0; const jumps = [], trace = []; let nFrames = 0; const tStart = performance.now();
   const deadline = performance.now() + plan.lead_ms + slotMs * (steps.length + 2) + 4000, frames = [];
   for (;;) {
-    check(); if (performance.now() > deadline) { note(`video: the recording did not end in time (${segs.length - 1} of ${steps.length} patterns seen)`); return null; }
-    f = await nextVideoFrame();
+    check(); if (performance.now() > deadline) { note(`video: the recording did not end in time (${segs.length - 1} of ${steps.length} patterns seen); ${nFrames} frames in ${Math.round(performance.now() - tStart)} ms (every ${Math.round((performance.now() - tStart) / Math.max(1, nFrames))} ms), jump threshold ${Math.round(VIDEO.change * light)} of full light ${Math.round(light)}, noise ${Math.round(baseNoise)}; changes at ${jumps.join(' ')}; frames time:change/light ${trace.join(' ')}`); return null; }
+    f = await nextVideoFrame(); nFrames++;
     const d = thumbL1(f.thumb, ref), noiseNow = Math.max(median(noise), baseNoise);
     const jump = light ? Math.max(VIDEO.change * light, 4 * noiseNow) : Math.max(4 * baseNoise, 1);
     if (!settling && !light && !candidate) { candidate = d > jump; if (candidate) continue; }  // the very first change has to be seen in two frames in a row
     else if (!settling && !light && candidate && d <= jump) { candidate = false; continue; }
+    if (trace.length < 160) trace.push(`${Math.round(f.t - t0)}:${light ? (d / light).toFixed(2) : Math.round(d)}${settling ? 's' : ''}`);
     const nextChange = (!settling && d > jump) || (settling && light && thumbL1(f.thumb, prevThumb) > Math.max(VIDEO.change * light, 4 * noiseNow) && d > jump);  // also during the settling: a slow camera gives only 2-3 frames per pattern
     if (nextChange) {
       jumps.push(`${Math.round(f.t - t0)}ms:${light ? (d / light).toFixed(2) : Math.round(d)}${settling ? 's' : ''}`);

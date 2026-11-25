@@ -1,6 +1,6 @@
 name: Part-DB
 url: "https://github.com/Part-DB/Part-DB-server"
-version: 2.20.7
+version: 2.21.2
 slug: part_db
 description: "Inventory of electronic components (Part-DB) with a built-in MCP server for AI assistants"
 arch: ["aarch64"]

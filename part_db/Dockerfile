@@ -1,4 +1,4 @@
-FROM jbtronics/part-db1:2.20.7
+FROM jbtronics/part-db1:2.21.2
 
 COPY ha-ingress.conf /etc/apache2/conf-available/ha-ingress.conf
 COPY ha-entrypoint.sh /usr/local/bin/ha-entrypoint.sh

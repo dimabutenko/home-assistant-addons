@@ -210,6 +210,7 @@ class Instance(BaseModel):
     rotation: bool = True
     weight: int = 1
     devices: list[str] = []
+    mapping: str = "plane"  # plane: as on a wall; apex: the centre of the effect on the tip of a tree
 
 
 def _check_instance(i: Instance, allow_inline: bool = False) -> None:
@@ -221,6 +222,8 @@ def _check_instance(i: Instance, allow_inline: bool = False) -> None:
         raise HTTPException(400, "duration must be 4-30 s and fps 5-15")
     if not 1 <= i.weight <= 5:
         raise HTTPException(400, "weight must be 1-5")
+    if i.mapping not in device.MAPPINGS:
+        raise HTTPException(400, f"mapping must be one of {device.MAPPINGS}")
     for ly in i.layers:
         if ly.effect == "formula" and not allow_inline:
             raise HTTPException(400, "save the formula first, then use it as an effect layer")
@@ -253,6 +256,7 @@ class FormulaIn(BaseModel):
     code: str
     params: list[dict] = []
     inputs: list[dict] = []
+    mapping: str = "plane"
 
 
 class FormulaCheck(BaseModel):
@@ -381,7 +385,7 @@ def start_live(scene_name: str, names: list, fps: float = 8.0, restart: bool = F
             if running[n] is not None and running[n].name == scene_name and not restart:
                 out.append({"device": n, "live": scene_name, "fps": fps, "kept": True})
                 continue
-            layout = device.render_layout(dev)
+            layout = device.render_layout(dev, spec.get("mapping", "plane"))
             scene = live.LiveScene(spec, layout, {})  # built first (it fetches history), while the old scene keeps playing
             stream = live.LiveStream(dev, scene, scene_name, fps)
             old = running[n]
@@ -451,7 +455,9 @@ class LiveStart(BaseModel):
 @app.post("/api/live/preview/start")
 def api_live_preview_start(req: LiveStart):
     """A live preview in the browser: frames computed on request from the current Home Assistant values."""
-    layout = device.render_layout(find_device(req.device))
+    dev = find_device(req.device)
+    layout = device.render_layout(dev, req.formula.get("mapping", "plane"))  # what the scene is computed on
+    shown = device.render_layout(dev)                                       # where the LEDs really are: the picture is drawn there
     replay = None
     try:
         if req.replay is not None:
@@ -470,7 +476,7 @@ def api_live_preview_start(req: LiveStart):
         for k in [k for k, v in _live.items() if time.time() - v["touched"] > LIVE_IDLE_S]:
             _live.pop(k, None)
         _live[sid] = {"scene": scene, "touched": time.time(), "lock": threading.Lock(), "replay": replay}
-    return {"id": sid, "layout": [[p["x"], p["y"]] for p in layout], "ha": hadata.available(),
+    return {"id": sid, "layout": [[p["x"], p["y"]] for p in shown], "ha": hadata.available(),
             "replay_missing": replay.missing if replay else []}
 
 
@@ -602,13 +608,15 @@ class PreviewReq(BaseModel):
 def api_preview(req: PreviewReq):
     """Render on the server, play in the browser against the real layout."""
     _check_instance(req.instance, allow_inline=True)
-    layout = device.render_layout(find_device(req.device))
+    dev = find_device(req.device)
+    layout = device.render_layout(dev, req.instance.mapping)  # the layout the effect is computed on
+    shown = device.render_layout(dev)                         # where the LEDs really are: the picture is drawn there
     t0 = time.time()
     try:
         r = compose.render_instance(_dump(req.instance), layout)
     except (formula.FormulaError, ValueError) as exc:
         raise HTTPException(400, str(exc))
-    return {"fps": r.fps, "layout": [[p["x"], p["y"]] for p in layout], "frames": _b64(r.frames),
+    return {"fps": r.fps, "layout": [[p["x"], p["y"]] for p in shown], "frames": _b64(r.frames),
             "render_ms": int((time.time() - t0) * 1000), "seam": _seam(r.frames)}
 
 
@@ -618,22 +626,29 @@ def api_gallery(device_name: str = ""):
     dev = find_device(device_name) if device_name else (devices() or [None])[0]
     if dev is None:
         return {"layout": [], "items": []}
-    layout = device.render_layout(dev)
+    layouts = {}
     items = []
     for inst in load_instances():
         try:
+            mp = inst.get("mapping", "plane")
+            layout = layouts.get(mp) or layouts.setdefault(mp, device.render_layout(dev, mp))
             r = compose.render_instance(inst, layout)
         except Exception as exc:
             log.warning("gallery render %s failed: %s", inst["key"], exc)
             continue
         items.append({"key": inst["key"], "fps": r.fps / GALLERY_STEP, "frames": _b64(r.frames, GALLERY_STEP),
                       "frames_total": len(r.frames)})
+    layout = layouts.get("plane") or device.render_layout(dev)
     return {"layout": [[p["x"], p["y"]] for p in layout], "items": items}
 
 
 # ---- API: devices ---------------------------------------------------------------
 
 def probe(dev: dict) -> dict:
+    return {**_probe(dev), "shape": device.device_shape(dev["name"])}
+
+
+def _probe(dev: dict) -> dict:
     info = {"name": dev["name"], "host": dev["host"], "online": False}
     if dev["host"] in device.scanning_hosts:
         return {**info, "online": True, "scanning": True, "aspect": device.device_aspect(dev["name"])}
@@ -715,6 +730,7 @@ def api_status(fresh: bool = False):
 
 class DevSettings(BaseModel):
     aspect: float | None = None  # real width / height of the area the garland covers
+    shape: str | None = None     # "wall" or "tree"
 
 
 @app.put("/api/devices/{name}/settings")
@@ -722,9 +738,16 @@ def api_device_settings(name: str, req: DevSettings):
     find_device(name)
     if req.aspect is not None and not 0.2 <= req.aspect <= 6:
         raise HTTPException(400, "width / height must be between 0.2 and 6")
-    device.save_device_aspect(name, req.aspect)
+    if req.shape is not None and req.shape not in ("wall", "tree"):
+        raise HTTPException(400, "shape must be wall or tree")
+    changes = {}
+    if "aspect" in req.model_fields_set:
+        changes["aspect"] = req.aspect
+    if req.shape is not None:
+        changes["shape"] = req.shape
+    device.save_device_settings(name, **changes)
     _drop_status_cache()
-    return {"aspect": req.aspect}
+    return {"aspect": req.aspect, "shape": device.device_shape(name)}
 
 
 @app.post("/api/devices/{name}/layout/refresh")
@@ -996,13 +1019,14 @@ def api_scan_note(req: ScanNote):
 class ScanApply(BaseModel):
     device: str
     coordinates: list[dict]
-    scan_type: str = "flat"  # flat | tree | tree-fb; only logged
+    scan_type: str = "flat"  # flat | tree | tree-fb
+    hidden: list[int] = []     # a tree seen from one side: the LEDs the camera did not see (so on the far side)
 
 
 @app.post("/api/scan/apply")
 def api_scan_apply(req: ScanApply):
     try:
-        return scan.apply_layout(find_device(req.device), req.coordinates, req.scan_type)
+        return scan.apply_layout(find_device(req.device), req.coordinates, req.scan_type, req.hidden)
     except (RuntimeError, ValueError) as exc:
         raise HTTPException(400, str(exc))
     except Exception as exc:

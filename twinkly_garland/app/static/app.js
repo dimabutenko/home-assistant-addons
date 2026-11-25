@@ -133,7 +133,7 @@ function setPreviewDevice(name) {
   try { localStorage.setItem('preview-device', name); } catch { /* no storage */ }
   const sel = document.getElementById('dev-select'); if (sel) sel.value = name;
   loadGallery();                                   // thumbnails of the library
-  if (S.tab === 'editor') schedulePreview(0);
+  if (S.tab === 'editor') { renderEditor(); schedulePreview(0); }
   if (S.tab === 'formulas' && typeof fmSchedule === 'function') { FM.previewData = null; fmSchedule(0); renderFormulas(); }
   if (S.tab === 'scan' && typeof scanLoadMode === 'function' && !SC.running) { scanLoadMode(name); renderScan(); }
 }
@@ -175,11 +175,21 @@ function deviceCard(d) {
       h('button', { class: synced ? '' : 'primary', disabled: synced || over, onclick: () => syncDevice(d.name) }, 'Sync now'),
       h('button', { onclick: () => loadStatus(true) }, 'Refresh')),
     h('div', { class: 'row', style: 'margin-top:8px' },
+      h('label', { class: 'muted', title: 'A tree (a cone): effects can be put on it with the centre on the tip. Enter the width of the tree at its base and its height as the real size.' }, 'Shape ',
+        h('select', { class: 'small', onchange: e => saveShape(d.name, e.target.value) }, [['wall', 'wall / window'], ['tree', 'tree (cone)']].map(([v, t]) => h('option', { value: v, selected: (d.shape || 'wall') === v }, t)))),
       h('span', { class: 'muted', title: 'Twinkly stretches the scan to a 2:1 box. Enter the real size of the area covered by the lights (any unit) to make circles round. Empty = as stored on the device.' }, 'Real size of the lit area, w x h:'),
       h('input', { type: 'number', min: 1, step: 'any', id: `pw-${d.name}`, style: 'width:80px', placeholder: 'width', value: d.aspect ? Math.round(d.aspect * 100) : '' }),
       h('span', {}, 'x'),
       h('input', { type: 'number', min: 1, step: 'any', id: `ph-${d.name}`, style: 'width:80px', placeholder: 'height', value: d.aspect ? 100 : '' }),
       h('button', { class: 'small', onclick: () => saveAspect(d.name) }, 'Save size')));
+}
+
+async function saveShape(name, shape) {
+  try {
+    await send(`api/devices/${encodeURIComponent(name)}/settings`, { shape }, 'PUT');
+    toast(shape === 'tree' ? 'Set as a tree: effects can use the mapping "from the tip" (choose it in the effect editor). Enter the width at the base and the height below.' : 'Set as a wall.');
+    loadGallery(); loadStatus();
+  } catch (e) { toast('Not saved: ' + e.message, true, 8000); }
 }
 
 async function saveAspect(name) {
@@ -259,7 +269,7 @@ function renderLibrary() {
 function newDraft(effect) {
   const g = Object.keys(S.gens)[0];
   return { key: '', layers: [{ effect: effect || g, params: {}, blend: 'normal', opacity: 1, mask: { type: 'none', from: 0, to: 1, invert: false } }],
-    duration: 10, fps: 10, on_device: true, rotation: true, weight: 1, devices: [] };
+    duration: 10, fps: 10, on_device: true, rotation: true, weight: 1, devices: [], mapping: 'plane' };
 }
 function openEditor(key) {
   if (key === null) { S.draft = newDraft(); S.draft.key = uniqueKey('new effect'); S.draftKey = null; }
@@ -346,7 +356,7 @@ function renderEditor() {
         h('div', { class: 'card' },
           h('h2', {}, 'Preview'), canvas, info,
           h('div', { class: 'row', style: 'margin-top:8px' },
-            h('span', { class: 'muted' }, `On the layout of ${S.previewDevice || '?'} (change it at the top of the page)`),
+            h('span', { class: 'muted' }, `On the layout of ${S.previewDevice || '?'} (change it at the top of the page)` + ((d.mapping || 'plane') === 'apex' && ((S.status.find(x => x.name === S.previewDevice) || {}).shape || 'wall') !== 'tree' ? ' - this garland is set as a wall, so the mapping "from the tip" has no effect on it (set its shape on the Library tab)' : '')),
             h('button', { onclick: () => schedulePreview(0) }, 'Re-render')),
           h('div', { class: 'muted' }, 'The preview only runs in the browser. Nothing is sent to the garland until you press Save & play.'))),
       h('div', {},
@@ -354,7 +364,9 @@ function renderEditor() {
           h('div', { class: 'field' },
             h('label', {}, 'Name', h('input', { type: 'text', maxlength: 32, size: 22, value: d.key, oninput: e => d.key = e.target.value })),
             h('label', {}, 'Loop, s', h('input', { type: 'number', min: 4, max: 30, value: d.duration, style: 'width:70px', onchange: e => { d.duration = Math.min(30, Math.max(4, Number(e.target.value))); rerender(); schedulePreview(); } })),
-            h('label', {}, 'FPS', h('input', { type: 'number', min: 5, max: 15, value: d.fps, style: 'width:70px', onchange: e => { d.fps = Math.min(15, Math.max(5, Number(e.target.value))); rerender(); schedulePreview(); } }))),
+            h('label', {}, 'FPS', h('input', { type: 'number', min: 5, max: 15, value: d.fps, style: 'width:70px', onchange: e => { d.fps = Math.min(15, Math.max(5, Number(e.target.value))); rerender(); schedulePreview(); } })),
+            h('label', { title: 'How the effect is put on a garland that is set as a tree. "As on a wall": the front view of the tree. "From the tip": the centre of the effect is the tip, rings run down to the base, spirals turn around the trunk. A wall ignores it.' }, 'On a tree ',
+              h('select', { onchange: e => { d.mapping = e.target.value; rerender(); schedulePreview(0); } }, [['plane', 'as on a wall'], ['apex', 'from the tip (rings run down from the top)']].map(([v, t]) => h('option', { value: v, selected: (d.mapping || 'plane') === v }, t))))),
           h('div', { class: 'muted' }, `Uses ${frames} frames on the garland (the device holds about 2245 in total).`)),
         d.layers.map((_, i) => layerCard(d, i, rerender)),
         h('div', { class: 'row', style: 'margin-bottom:10px' },

@@ -1430,7 +1430,7 @@ async function applyScan() {
 CAREFUL: ${est} of ${n} LEDs (${pct}%) were not seen by the camera and are only guessed along the string. A layout that is half guessed can look wrong on the garland. Check the picture first (the grey line should run smoothly).` : '';
   if (!confirm(`Write the scanned layout to ${SC.device}? The current layout is saved as a backup first and can be restored below.${warn}`)) return;
   try {
-    const res = await send('api/scan/apply', { device: SC.device, scan_type: r.stats.mode, coordinates: r.layout.map(p => r.is3d ? { x: p.x, y: p.y, z: p.z } : { x: p.x, y: p.y }) });
+    const res = await send('api/scan/apply', { device: SC.device, scan_type: r.stats.mode, hidden: r.layout.map((p, i) => p.src === 'interp' ? i : -1).filter(i => i >= 0), coordinates: r.layout.map(p => r.is3d ? { x: p.x, y: p.y, z: p.z } : { x: p.x, y: p.y }) });
     toast(`Layout written (${res.leds} LEDs). Backup: ${res.backup}`, false, 8000); scanLoadBackups();
     SC.oldLayout = await api(`api/devices/${encodeURIComponent(SC.device)}/layout`); drawResults(); loadGallery();
   } catch (e) { toast('Not applied: ' + e.message, true, 8000); }

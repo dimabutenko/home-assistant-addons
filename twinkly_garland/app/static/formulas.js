@@ -12,10 +12,10 @@ async function loadFormulas() {
   try { FM.ha = await api('api/ha/status'); } catch { FM.ha = { available: false, error: 'status failed' }; }
 }
 
-function fmCopy(src) { return { name: src.name, code: src.code, params: clone(src.params || []), inputs: clone(src.inputs || []) }; }
+function fmCopy(src) { return { name: src.name, code: src.code, params: clone(src.params || []), inputs: clone(src.inputs || []), mapping: src.mapping || 'plane' }; }
 
 function fmNew(from) {
-  const src = from || { name: '', code: 'palette("fire", y)', params: [], inputs: [] };
+  const src = from || { name: '', code: 'palette("fire", y)', params: [], inputs: [], mapping: 'plane' };
   fmLiveStop();
   FM.cur = fmCopy(src); FM.cur.name = fmUniqueName(src.name || 'my formula');
   FM.orig = null; FM.vals = {}; FM.previewData = null; FM.status = null; FM.seam = null;
@@ -63,7 +63,7 @@ async function fmPreview() {
   const tok = ++FM.tok, params = { _formula: fmSpec() };
   for (const d of fmDefs()) params[d.name] = FM.vals[d.name] !== undefined ? FM.vals[d.name] : d.default;
   try {
-    const r = await send('api/preview', { device: dev, instance: { key: 'preview', duration: 10, fps: 10, layers: [{ effect: 'formula', params }] } });
+    const r = await send('api/preview', { device: dev, instance: { key: 'preview', duration: 10, fps: 10, mapping: FM.cur.mapping || 'plane', layers: [{ effect: 'formula', params }] } });
     if (tok !== FM.tok || FM.live) return;
     FM.previewData = { layout: r.layout, frames: decode(r.frames), fps: r.fps };
     FM.status = { ok: true }; FM.seam = r.seam; FM.info = `${r.layout.length} LEDs · rendered in ${r.render_ms} ms`;
@@ -79,7 +79,7 @@ async function fmLiveStart(replay) {
   const dev = fmDevice(); if (!dev) { toast('No device configured.', true); return; }
   const params = {}; for (const d of fmDefs()) params[d.name] = FM.vals[d.name] !== undefined ? FM.vals[d.name] : d.default;
   try {
-    const r = await send('api/live/preview/start', { device: dev, formula: { name: 'live', ...fmSpec() }, params,
+    const r = await send('api/live/preview/start', { device: dev, formula: { name: 'live', ...fmSpec(), mapping: FM.cur.mapping || 'plane' }, params,
       replay: replay ? { hours: 24, seconds: FM.replaySec } : undefined });
     const canvas = document.getElementById('fm-canvas'); stopAnim(FM.anim);
     const a = makeAnim(canvas, r.layout, [new Uint8Array(3 * r.layout.length)], 10, 2.6);
@@ -196,7 +196,7 @@ function fmShowStatus() {
 async function fmSave() {
   const c = FM.cur;
   if (!/^[A-Za-z0-9 _-]{1,32}$/.test(c.name.trim())) { toast('Name: 1-32 letters, digits, space, _ or -', true); return false; }
-  const item = { name: c.name.trim(), code: c.code, params: fmDefs(), inputs: fmInputs() };
+  const item = { name: c.name.trim(), code: c.code, params: fmDefs(), inputs: fmInputs(), mapping: c.mapping || 'plane' };
   const list = clone(FM.items), idx = list.findIndex(i => i.name === FM.orig);
   if (idx >= 0) list[idx] = item; else if (list.some(i => i.name === item.name)) { toast('Another formula already has this name', true); return false; } else list.push(item);
   try { await send('api/formulas', list, 'PUT'); } catch (e) { toast('Not saved: ' + e.message, true, 9000); return false; }
@@ -425,7 +425,9 @@ function renderFormulas() {
           }))) : null)),
     h('div', {},
       h('div', { class: 'card', style: 'margin-bottom:10px' },
-        h('div', { class: 'field' }, h('label', {}, 'Name', h('input', { type: 'text', maxlength: 32, size: 22, value: c.name, oninput: e => { c.name = e.target.value; } }))),
+        h('div', { class: 'field' }, h('label', {}, 'Name', h('input', { type: 'text', maxlength: 32, size: 22, value: c.name, oninput: e => { c.name = e.target.value; } })),
+          h('label', { title: 'How the formula is put on a garland that is set as a tree. "As on a wall": the front view of the tree. "From the tip": the centre of the formula (r = 0) is the tip, r grows down to the base and a turns around the trunk. A wall ignores it.' }, 'On a tree ',
+            h('select', { onchange: e => { c.mapping = e.target.value; fmSchedule(0); } }, [['plane', 'as on a wall'], ['apex', 'from the tip (rings run down from the top)']].map(([v, t]) => h('option', { value: v, selected: (c.mapping || 'plane') === v }, t))))),
         h('div', { class: 'muted' }, 'Formula. One "name = expression" per line, the last line is the colour.'), code),
       h('div', { class: 'card', style: 'margin-bottom:10px' },
         h('h3', {}, 'Parameters (they become sliders)'),

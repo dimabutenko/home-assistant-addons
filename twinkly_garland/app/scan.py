@@ -248,7 +248,7 @@ def state() -> dict:
     return {"running": s is not None, "device": s.dev["name"] if s else None, "leds": s.n if s else None, "playing": bool(s and s.playing)}
 
 
-def apply_layout(dev: dict, coords: list, scan_type: str = "flat") -> dict:
+def apply_layout(dev: dict, coords: list, scan_type: str = "flat", hidden: list | None = None) -> dict:
     """Back up the current layout, write the new one to the device and refresh the cache.
     Coordinates with z (a tree scanned from two sides) are written as a 3d layout, the others as 2d."""
     if dev["host"] in device.scanning_hosts:
@@ -267,6 +267,8 @@ def apply_layout(dev: dict, coords: list, scan_type: str = "flat") -> dict:
         clean.append({"x": round(x, 6), "y": round(y, 6), "z": round(z, 6) if three else z})
     backup = _save_backup(dev, old)
     new = _write_layout(dev, clean, three)
+    # a tree seen from one side: which LEDs are on the far side (the camera could not see them), for the "from the tip" mapping
+    device.save_device_settings(dev["name"], back=sorted({int(i) for i in (hidden or []) if 0 <= int(i) < len(new)}) if (scan_type == "tree" and not three) else None)
     log.info("layout of %s written (%s scan, %s, %d LEDs)", dev["name"], scan_type, "3d" if three else "2d", len(new))
     return {"leds": len(new), "backup": backup.name}
 

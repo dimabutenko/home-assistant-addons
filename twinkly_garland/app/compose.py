@@ -45,6 +45,7 @@ def normalize(inst: dict) -> dict:
     inst.setdefault("rotation", True)
     inst.setdefault("weight", 1)
     inst.setdefault("devices", [])
+    inst.setdefault("mapping", "plane")
     for layer in inst["layers"]:
         base = default_layer(layer["effect"])
         for k, v in base.items():

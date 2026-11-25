@@ -615,7 +615,8 @@ def validate_item(item: dict) -> dict:
     defs = clean_params(item.get("params", []))
     inputs = clean_inputs(item.get("inputs", []), {d["name"] for d in defs})
     compile_formula(str(item.get("code", "")), all_names(defs, inputs))
-    return {"name": name, "code": str(item["code"]), "params": defs, "inputs": inputs}
+    mapping = item.get("mapping") if item.get("mapping") in ("plane", "apex") else "plane"
+    return {"name": name, "code": str(item["code"]), "params": defs, "inputs": inputs, "mapping": mapping}
 
 
 _items: list | None = None

@@ -3,6 +3,7 @@ import hashlib
 import io
 import json
 import logging
+import math
 import os
 import socket
 import threading
@@ -98,19 +99,34 @@ def load_settings() -> dict:
         return {}
 
 
+def device_settings(name: str) -> dict:
+    return load_settings().get("devices", {}).get(name, {})
+
+
 def device_aspect(name: str):
-    return load_settings().get("devices", {}).get(name, {}).get("aspect")
+    return device_settings(name).get("aspect")
+
+
+def device_shape(name: str) -> str:
+    """'wall' (a flat area: a window, a wall) or 'tree' (a cone seen from one side)."""
+    return "tree" if device_settings(name).get("shape") == "tree" else "wall"
+
+
+def save_device_settings(name: str, **changes) -> None:
+    """Keys: aspect (float or None), shape ('wall' / 'tree'), back (indexes of the LEDs on the far side of a tree, from a scan)."""
+    st = load_settings()
+    dev = st.setdefault("devices", {}).setdefault(name, {})
+    for k, v in changes.items():
+        if v is None or (k == "shape" and v == "wall") or (k == "back" and not v):
+            dev.pop(k, None)
+        else:
+            dev[k] = float(v) if k == "aspect" else v
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    _settings_path().write_text(json.dumps(st, indent=1))
 
 
 def save_device_aspect(name: str, aspect) -> None:
-    st = load_settings()
-    dev = st.setdefault("devices", {}).setdefault(name, {})
-    if aspect is None:
-        dev.pop("aspect", None)
-    else:
-        dev["aspect"] = float(aspect)
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    _settings_path().write_text(json.dumps(st, indent=1))
+    save_device_settings(name, aspect=aspect)
 
 
 def physical(layout: list, aspect=None) -> list:
@@ -126,15 +142,65 @@ def physical(layout: list, aspect=None) -> list:
     return [{"x": (p["x"] - xc) / w * a, "y": (p["y"] - y0) / h, "z": p.get("z", 0)} for p in layout]
 
 
-def render_layout(dev: dict) -> list:
-    return physical(get_layout(dev), device_aspect(dev["name"]))
+MAPPINGS = ("plane", "apex")
+
+
+def apex_layout(layout: list, back=()) -> list:
+    """A tree laid out like a round window whose centre is the tip: an effect that spreads from the centre of the window then spreads
+    from the top of the tree down to its base, and an effect that turns around the centre turns around the trunk.
+
+    The LED's distance from the centre is its distance from the tip along the cone (0 at the tip, the radius of the disk at the base);
+    its angle is the angle around the trunk. With a 3D layout (a tree scanned from two sides) the angle comes from x and z across the
+    tree at that height; with a 2D layout (one side) from where the LED stands across the tree (the width of the tree at that height is
+    taken from the LEDs around it): a LED seen from the front is on the near half, one in `back` (not seen by the scan, so on the far
+    side) on the far half."""
+    n = len(layout)
+    if n < 3:
+        return layout
+    ys = [p["y"] for p in layout]
+    y_top, y_bot = max(ys), min(ys)
+    height = (y_top - y_bot) or 1.0
+    has_z = max((abs(p.get("z", 0)) for p in layout), default=0) > 1e-6
+    top = sorted(layout, key=lambda p: -p["y"])[:max(3, n // 20)]
+    xc = sorted(p["x"] for p in top)[len(top) // 2]
+    zc = sorted(p.get("z", 0) for p in top)[len(top) // 2] if has_z else 0.0
+    xs = [p["x"] for p in layout]
+    band = 0.05 * height
+    back = set(back)
+
+    def spread(vals):
+        vals = sorted(vals)
+        return vals[int(0.9 * (len(vals) - 1))] if vals else 0.0
+
+    out = []
+    for i, p in enumerate(layout):
+        near = [q for q in layout if abs(q["y"] - p["y"]) <= band]
+        half = max(spread([abs(q["x"] - xc) for q in near]), 1e-6, 0.05 * (max(xs) - min(xs)))
+        cx = max(-1.0, min(1.0, (p["x"] - xc) / half))
+        if has_z:
+            deep = max(spread([abs(q.get("z", 0) - zc) for q in near]), 1e-6)
+            cz = max(-1.0, min(1.0, (p.get("z", 0) - zc) / deep))
+            theta = math.atan2(cx, cz)
+        else:
+            theta = math.pi - math.asin(cx) if i in back else math.asin(cx)
+        rho = 0.5 * (y_top - p["y"]) / height
+        out.append({"x": rho * math.sin(theta), "y": 0.5 + rho * math.cos(theta), "z": 0})
+    return out
+
+
+def render_layout(dev: dict, mapping: str = "plane") -> list:
+    """The layout effects are drawn on. `mapping` 'apex' only applies to a garland whose shape is 'tree'."""
+    lay = physical(get_layout(dev), device_aspect(dev["name"]))
+    if mapping == "apex" and device_shape(dev["name"]) == "tree":
+        return apex_layout(lay, device_settings(dev["name"]).get("back", []))
+    return lay
 
 
 # ---- desired state ------------------------------------------------------
 
 def build_desired(dev: dict, instances: list, render_instance) -> list:
     """Render every enabled instance targeting this device -> list of movie specs."""
-    layout = render_layout(dev)
+    layouts = {}
     out = []
     for inst in instances:
         if not inst.get("on_device", True):
@@ -142,6 +208,8 @@ def build_desired(dev: dict, instances: list, render_instance) -> list:
         targets = inst.get("devices") or []
         if targets and dev["name"] not in targets:
             continue
+        mp = inst.get("mapping", "plane")
+        layout = layouts.get(mp) or layouts.setdefault(mp, render_layout(dev, mp))
         r = render_instance(inst, layout)
         digest = hashlib.sha1(b"".join(r.frames) + str(r.fps).encode()).hexdigest()[:16]
         out.append({
@@ -153,6 +221,7 @@ def build_desired(dev: dict, instances: list, render_instance) -> list:
             "fps": r.fps,
             "frames": r.frames,
             "n_leds": len(layout),
+            "mapping": mp,
             "rotation": inst.get("rotation", True),
             "weight": inst.get("weight", 1),
         })

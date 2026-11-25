@@ -248,7 +248,7 @@ class LiveStream:
 
     def status(self) -> dict:
         return {"device": self.dev["name"], "scene": self.name, "fps": round(self.fps_actual, 1), "frames": self.frames,
-                "compute_ms": round(self.compute_ms, 1), "ping_ms": round(self.ping_ms), "ping_max_ms": round(self.ping_max_ms),
+                "engine": "numpy" if getattr(self.scene.fn, "vec", None) is not None else "scalar", "compute_ms": round(self.compute_ms, 1), "ping_ms": round(self.ping_ms), "ping_max_ms": round(self.ping_max_ms),
                 "relogins": _relogins.count - self.relogins0, "seconds": round(time.time() - (self.started or time.time())),
                 "ended": self.ended, "values": self.scene.values()}
 

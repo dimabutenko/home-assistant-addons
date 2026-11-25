@@ -7,6 +7,8 @@
   - The scalar engine got cheaper too: what is the same for every LED is computed once per frame, colour arithmetic without lambdas, noise with the hash written out, `hsv` without `colorsys` (about 2.5 times faster on its own).
   - **The default of a live scene is 8 frames a second instead of 12.**
   - New requirement: `numpy` (in `requirements.txt`; the image is rebuilt on update, a wheel for Alpine exists for amd64 and aarch64).
+- **`tnoise` and `rise` take a number of cycles that differs per LED** (e.g. `tnoise(x, y, t, 1 + i % 3)`) on numpy too: it was the only valid construct that sent a formula back to the slow engine. Same pictures as the scalar engine.
+- **The live scene status shows the engine** ("numpy" or "scalar") next to the frame time, so a formula that fell back is visible.
 - A stream already stops when someone else changes the garland's mode (turned off from Home Assistant), nothing to do there.
 
 ## 0.17.13

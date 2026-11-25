@@ -136,7 +136,7 @@ def _noise3(x, y, z, pz=0):
     iy, fy = _cell(y)
     iz, fz = _cell(z)
     fx, fy, fz = _sm(fx), _sm(fy), _sm(fz)
-    iz0, iz1 = (iz % pz, (iz + 1) % pz) if pz else (iz, iz + 1)
+    iz0, iz1 = (iz % pz, (iz + 1) % pz) if (np.ndim(pz) > 0 or pz) else (iz, iz + 1)
 
     def plane(zz):
         a, b, c, d = _h(ix, iy, zz), _h(ix + 1, iy, zz), _h(ix, iy + 1, zz), _h(ix + 1, iy + 1, zz)
@@ -146,15 +146,15 @@ def _noise3(x, y, z, pz=0):
 
 
 def _tnoise(x, y, t, k):
-    k = max(1, min(16, int(round(_scalar(C(k), "k")))))
+    k = np.clip(np.round(C(k)), 1, 16).astype(np.int64)  # one number or one per LED
     return _noise3(x, y, (C(t) % 1.0) * k, k)
 
 
 def _rise(x, y, t, k):
-    k = _scalar(C(k), "k")
-    p = max(2, min(24, abs(int(round(k)))))
+    k = C(k)
+    p = np.clip(np.abs(np.round(k)), 2, 24).astype(np.int64)
     x, y = C(x), C(y)
-    ny = y - (1 if k >= 0 else -1) * (C(t) % 1.0) * p
+    ny = y - np.where(k >= 0, 1, -1) * (C(t) % 1.0) * p
     iy, fy = _cell(ny)
     ix, fx = _cell(x)
     fx, fy = _sm(fx), _sm(fy)

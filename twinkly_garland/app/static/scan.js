@@ -1203,7 +1203,13 @@ async function scanView({ dev, M, scanMode, style: wanted, check, status, v, dum
         const sh = rec.shots, nS = sh.length; let why = null;
         if (sh[0] && !(mean(sh[0]) > 1.15 * mean(rec.dark) + 0.3)) why = 'the all-on photo is not brighter than the dark one';
         else if (sh[nS - 2] && sh[nS - 1] && !(mean(sh[nS - 1]) > 1.15 * mean(sh[nS - 2]) + 0.3)) why = 'the closing all-on photo is not brighter than the closing dark one';
-        else if (st === 'hue' && sh[1] && sh[2] && !(chanD(sh[1], 0) > 1.5 * chanD(sh[1], 2) && chanD(sh[2], 2) > 1.5 * chanD(sh[2], 0))) why = 'the red and the blue photo do not show red and blue';
+        else if (st === 'hue' && sh[1] && sh[2]) {
+          // The red and the blue photo: red against blue must be clearly higher in the first than in the second. Not an absolute ratio: a video has
+          // paler colours than a photo (compressed colour, clipped cores; a real recording gave 1.3 and 0.7), while a recording that is shifted by a pattern
+          // shows two pictures that look alike.
+          const rb1 = chanD(sh[1], 0) / chanD(sh[1], 2), rb2 = chanD(sh[2], 0) / chanD(sh[2], 2);
+          if (!(rb1 > 1.4 * rb2 && rb1 > 0.9 && rb2 < 1.1)) why = `the red and the blue photo look alike (red against blue ${rb1.toFixed(2)} and ${rb2.toFixed(2)})`;
+        }
         if (why) { note(`video: ${why}: the recording is shifted or wrong, the photos are taken one by one`); rec = null; }
       }
       if (rec) {

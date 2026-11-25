@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.17.21
+- **Tree scan: the search for single LEDs takes about a quarter of the photos.** In the last scan (video, 19 patterns in 12 s) the search that follows photographed 214 single LEDs one by one (about 4 minutes) and found 9 of them: nearly all the LEDs the code did not read are on the far side of the tree and cannot be seen at all. Now the search goes through the short runs of missing LEDs first (up to 12 in a row: LEDs that were only too close together in the photo), a long run (the far side) only gets a probe at each of its two ends and the ends are followed inward while they show. It stops after 60 photos, or after 30 when fewer than 1 in 20 found a LED. On synthetic scans that look like the real one it found every LED that can be found (7 of 7, 19 of 19, 17 of 17) with 37 to 47 photos instead of 165 to 182.
+
 ## 0.17.20
 - **Video scan: longer slots, a few thin patterns no longer end the video.** In the last scan the colour check passed and 15 of the 19 patterns were cut out well, but 4 patterns got a single frame (frames per pattern 1 1 2 3 3 2 2 3 1 2 3 3 3 1 2 3 3 2 2: the phone gives about 15 frames a second and the settled part of a 300 ms slot is only about 180 ms), and a recording with more than 2 such patterns was thrown away as a whole. The slot is now 400 ms (the settled part about 280 ms, so 3 to 5 frames), and up to 30% of the patterns may have too few frames: each of those gets one photo of its own after the recording instead of all of them being photographed one by one. A scan takes about 2 seconds longer in the video part.
 

@@ -501,10 +501,12 @@ const ScanLib = (() => {
   }
 
   // Tree seen from one side: among the LEDs nobody recognised by code some are only too close together (merged blobs) and a photo of
-  // each one alone finds them, others are really hidden and nothing will ever show. Every run of missing LEDs along the string is probed
-  // with a stride of 3; between two probes that both show nothing the LEDs are taken as hidden (the far side comes in long blocks),
-  // next to a hit the LEDs in between are searched too.
-  async function searchRuns(pts, probe, { limit = 400, stride = 3, check = () => {}, progress = () => {} } = {}) {
+  // each one alone finds them, others are really hidden and nothing will ever show. The merged ones come in short runs between recognised LEDs
+  // (a run of 25 missing LEDs is the far side of the tree), so the runs of at most `maxGap` LEDs are searched first, the shortest first; a long run
+  // only gets a probe at each of its two ends (LEDs at the edge of the tree are squeezed together in the photo) and the ends are followed inward
+  // while they show. The search stops at `limit` photos or, after `trial` photos, when fewer than `minRate` of them found a LED. A short run is
+  // probed with a stride of 3; between two probes that both show nothing the LEDs are taken as hidden, next to a hit the LEDs in between are searched too.
+  async function searchRuns(pts, probe, { limit = 60, stride = 3, maxGap = 12, trial = 30, minRate = 0.05, check = () => {}, progress = () => {} } = {}) {
     const runs = []; let a = -1;
     for (let i = 0; i <= pts.length; i++) {
       const miss = i < pts.length && !pts[i];
@@ -512,15 +514,25 @@ const ScanLib = (() => {
       if (!miss && a >= 0) { runs.push([a, i - 1]); a = -1; }
     }
     let used = 0, found = 0, skipped = 0;
+    const todo = runs.filter(r => r[1] - r[0] + 1 <= maxGap).sort((x, y) => (x[1] - x[0]) - (y[1] - y[0]));
+    const longRuns = runs.filter(r => r[1] - r[0] + 1 > maxGap);
     const tryOne = async i => { check(); used++; progress(used, limit, i); const b = await probe(i); if (b) { pts[i] = { ...b, src: 'single' }; found++; } return !!b; };
-    for (const [s0, e0] of runs) {
+    const stop = () => used >= limit || (used >= trial && found < minRate * used);
+    for (const [s0, e0] of todo) {
+      if (stop()) return { used, found, skipped, truncated: true };
       const idx = []; for (let i = s0; i <= e0; i += stride) idx.push(i); if (idx[idx.length - 1] !== e0) idx.push(e0);
-      if (used + idx.length > limit) return { used, found, skipped, truncated: true };
-      const hit = []; for (const i of idx) hit.push(await tryOne(i));
+      const hit = []; for (const i of idx) { if (used >= limit) return { used, found, skipped, truncated: true }; hit.push(await tryOne(i)); }
       for (let k = 0; k + 1 < idx.length; k++) {
         const gap = idx[k + 1] - idx[k] - 1; if (gap <= 0) continue;
         if (!hit[k] && !hit[k + 1]) { skipped += gap; continue; }
         for (let i = idx[k] + 1; i < idx[k + 1]; i++) { if (used >= limit) return { used, found, skipped, truncated: true }; await tryOne(i); }
+      }
+    }
+    for (const [s0, e0] of longRuns) {  // the far side: only the two ends, walking inward while they show
+      skipped += e0 - s0 + 1;
+      for (const [start, dir] of [[s0, 1], [e0, -1]]) {
+        if (stop()) return { used, found, skipped, truncated: true };
+        for (let i = start, c = 0; i >= s0 && i <= e0 && c < 8; i += dir, c++) { if (used >= limit || !(await tryOne(i))) break; skipped--; }
       }
     }
     return { used, found, skipped };
@@ -690,13 +702,13 @@ const ScanLib = (() => {
 // tree-fb: the same from the front and then from the back (the phone moves round the tree, or the tree is turned by 180 degrees); the
 //       two views are joined by the LEDs both of them see and the result is a 3D layout (the tree is taken as a cone).
 // tree-round (planned): four sides of a tree one after another. Not implemented yet.
-const TREE = { minShare: 0.05, minCount: 30, refineHidden: false, aloneToo: false, refineLimit: 40, arc: true, searchRuns: true, searchLimit: 400, singleFactor: 0.3 };
+const TREE = { minShare: 0.05, minCount: 30, refineHidden: false, aloneToo: false, refineLimit: 40, arc: true, searchRuns: true, searchLimit: 60, singleFactor: 0.3 };
 const SCAN_MODES = {
   flat: { label: 'Flat wall or window: every LED is visible', minShare: 0.5, minCount: 20, refineHidden: true, aloneToo: true, refineLimit: 150, arc: false,
     hint: 'Put the phone on a tripod in front of the garland so that all of it is in view.' },
   tree: { label: 'Tree, one side (profile): the LEDs on the far side are estimated', ...TREE,
     hint: 'Put the phone on a tripod straight in front of the tree, the whole tree in view (top and bottom too), as dark as you can. The LEDs on the far side and behind the branches cannot be seen: they are estimated along the string.' },
-  'tree-fb': { label: 'Tree, front and back (3D): two views are joined', ...TREE, searchLimit: 250, views: 2,
+  'tree-fb': { label: 'Tree, front and back (3D): two views are joined', ...TREE, views: 2,
     nextHint: 'Front view done. Now move the phone to the OPPOSITE side of the tree (or turn the tree by 180 degrees): same distance, same height, the whole tree in view, the top up. Press "Next view" when it stands still.',
     hint: 'Two views of the whole tree, front and back, each as for "Tree, one side". The scan asks you to move the phone to the opposite side after the first view. The views are joined by the LEDs that both can see (at the edges of the tree), so both must show the whole tree from the bottom to the top.' },
   'tree-round': { label: 'Tree, all sides (planned, not available yet)', disabled: true },

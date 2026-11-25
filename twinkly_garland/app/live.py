@@ -194,7 +194,7 @@ class LiveStream:
 
     PING_S = 0.25
 
-    def __init__(self, dev: dict, scene: LiveScene, name: str, fps: float = 12.0):
+    def __init__(self, dev: dict, scene: LiveScene, name: str, fps: float = 8.0):
         self.dev, self.scene, self.name = dev, scene, name
         self.interval = 1.0 / max(2.0, min(25.0, fps))
         self.stop_evt = threading.Event()

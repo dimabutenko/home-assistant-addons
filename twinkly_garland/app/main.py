@@ -353,7 +353,7 @@ def api_health():
     return {"ok": True}
 
 
-def start_live(scene_name: str, names: list, fps: float = 12.0, restart: bool = False) -> list:
+def start_live(scene_name: str, names: list, fps: float = 8.0, restart: bool = False) -> list:
     """Start the formula `scene_name` as a live scene on the devices. A running one on the same device is replaced,
     unless it already plays the same scene (then it just keeps running, so a periodic call does not restart it).
     `random` picks one of the saved formulas that have inputs (live scenes), preferring another one than the current."""
@@ -406,7 +406,7 @@ def start_live(scene_name: str, names: list, fps: float = 12.0, restart: bool = 
 class LivePlay(BaseModel):
     scene: str  # a saved formula name, or "random"
     devices: list[str] = []
-    fps: float = 12.0
+    fps: float = 8.0
     restart: bool = False  # start again even if this scene is already playing (e.g. after editing it)
 
 

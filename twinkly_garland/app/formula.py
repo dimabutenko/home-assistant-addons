@@ -57,22 +57,30 @@ class Vec:
     def __init__(self, r, g, b):
         self.r, self.g, self.b = r, g, b
 
-    def _bin(self, o, f):
-        if isinstance(o, Vec):
-            return Vec(f(self.r, o.r), f(self.g, o.g), f(self.b, o.b))
-        return Vec(f(self.r, o), f(self.g, o), f(self.b, o))
-
-    def __add__(self, o): return self._bin(o, lambda a, b: a + b)
+    def __add__(self, o):
+        if o.__class__ is Vec:
+            return Vec(self.r + o.r, self.g + o.g, self.b + o.b)
+        return Vec(self.r + o, self.g + o, self.b + o)
     __radd__ = __add__
-    def __sub__(self, o): return self._bin(o, lambda a, b: a - b)
-    def __rsub__(self, o): return self._bin(o, lambda a, b: b - a)
-    def __mul__(self, o): return self._bin(o, lambda a, b: a * b)
+
+    def __sub__(self, o):
+        if o.__class__ is Vec:
+            return Vec(self.r - o.r, self.g - o.g, self.b - o.b)
+        return Vec(self.r - o, self.g - o, self.b - o)
+
+    def __rsub__(self, o):
+        return Vec(o - self.r, o - self.g, o - self.b)
+
+    def __mul__(self, o):
+        if o.__class__ is Vec:
+            return Vec(self.r * o.r, self.g * o.g, self.b * o.b)
+        return Vec(self.r * o, self.g * o, self.b * o)
     __rmul__ = __mul__
     def __neg__(self): return Vec(-self.r, -self.g, -self.b)
 
 
 def _num(x):
-    if isinstance(x, Vec):
+    if x.__class__ is Vec:
         raise TypeError("a colour cannot be used here, only a number")
     return x
 
@@ -128,22 +136,32 @@ def _h3(ix, iy, iz):
     return n / 0xFFFFFFFF
 
 
+_H_INV = 1.0 / 0xFFFFFFFF
+
+
 def _sm(t): return t * t * (3 - 2 * t)
 
 
 def _clean(x):
-    x = _num(x)
+    if x.__class__ is Vec:
+        raise TypeError("a colour cannot be used here, only a number")
     if x != x:
         return 0.0
-    return max(-1e6, min(1e6, x))
+    return -1e6 if x < -1e6 else (1e6 if x > 1e6 else x)
 
 
 def _noise2(x, y):
     x, y = _clean(x), _clean(y)
-    x0, y0 = math.floor(x), math.floor(y)
-    fx, fy = _sm(x - x0), _sm(y - y0)
-    ix, iy = int(x0), int(y0)
-    a, b, c, d = _h3(ix, iy, 0), _h3(ix + 1, iy, 0), _h3(ix, iy + 1, 0), _h3(ix + 1, iy + 1, 0)
+    ix, iy = math.floor(x), math.floor(y)
+    fx, fy = x - ix, y - iy
+    fx, fy = fx * fx * (3 - 2 * fx), fy * fy * (3 - 2 * fy)
+    # the four corners of the cell, the hash written out (the same numbers as _h3(ix, iy, 0) and so on)
+    px, py = ix * 374761393, iy * 668265263
+    px1, py1 = px + 374761393, py + 668265263
+    n = (px + py) & 0xFFFFFFFF;  n = ((n ^ (n >> 13)) * 1274126177) & 0xFFFFFFFF;  a = (n ^ (n >> 16)) * _H_INV
+    n = (px1 + py) & 0xFFFFFFFF; n = ((n ^ (n >> 13)) * 1274126177) & 0xFFFFFFFF;  b = (n ^ (n >> 16)) * _H_INV
+    n = (px + py1) & 0xFFFFFFFF; n = ((n ^ (n >> 13)) * 1274126177) & 0xFFFFFFFF;  c = (n ^ (n >> 16)) * _H_INV
+    n = (px1 + py1) & 0xFFFFFFFF; n = ((n ^ (n >> 13)) * 1274126177) & 0xFFFFFFFF; d = (n ^ (n >> 16)) * _H_INV
     return (a + (b - a) * fx) * (1 - fy) + (c + (d - c) * fx) * fy
 
 
@@ -196,8 +214,19 @@ def _cpalette(name, v):
 
 
 def _hsv(h, s, v):
-    r, g, b = colorsys.hsv_to_rgb(_fract(h), _clamp(s, 0, 1), _clamp(v, 0, 1))
-    return Vec(r, g, b)
+    h = _num(h); h -= math.floor(h)
+    s = max(0, min(1, _num(s))); v = max(0, min(1, _num(v)))
+    if s == 0:
+        return Vec(v, v, v)
+    i = int(h * 6.0); f = h * 6.0 - i
+    p, q, t = v * (1.0 - s), v * (1.0 - s * f), v * (1.0 - s * (1.0 - f))
+    i %= 6
+    if i == 0: return Vec(v, t, p)
+    if i == 1: return Vec(q, v, p)
+    if i == 2: return Vec(p, v, t)
+    if i == 3: return Vec(p, q, v)
+    if i == 4: return Vec(t, p, v)
+    return Vec(v, p, q)
 
 
 def _prev_unbound(x, y):
@@ -357,6 +386,67 @@ def _check(node, scope):
 
 _compiled: dict = {}
 
+PER_LED = {"x", "y", "u", "v", "r", "a", "i", "prev"}
+
+
+def _invariant(node, inv: set) -> bool:
+    """True when the expression gives the same number for every LED (it uses only the time, the parameters and such)."""
+    if isinstance(node, ast.Name):
+        return node.id in inv
+    if isinstance(node, ast.Call):
+        return all(_invariant(a, inv) for a in node.args if not isinstance(a, ast.Constant) or not isinstance(a.value, str))
+    return all(_invariant(c, inv) for c in ast.iter_child_nodes(node) if not isinstance(c, (ast.operator, ast.unaryop, ast.cmpop, ast.boolop, ast.expr_context)))
+
+
+def _split(tree, param_names):
+    """Moves what does not depend on the LED out of the per-LED code: it is computed once per frame, not 600 times.
+    Returns (pre_lines, body_statements, outputs) or None. Only expressions that are always evaluated are moved (a branch of
+    a condition stays where it is), so the numbers are exactly the same; if the part computed in advance fails, the caller
+    falls back to the plain function."""
+    counts = {}
+    for st in tree.body[:-1]:
+        counts[st.targets[0].id] = counts.get(st.targets[0].id, 0) + 1
+    inv = (set(BASE_VARS) - PER_LED) | set(CONSTS) | set(param_names)
+    pre, outs, memo = [], [], {}
+
+    def hoist(node):
+        if isinstance(node, (ast.Constant, ast.Name)):
+            return node
+        if _invariant(node, inv):
+            key = ast.unparse(node)
+            if key not in memo:
+                memo[key] = f"_c{len(memo)}"
+                pre.append(f"{memo[key]} = {key}"); outs.append(memo[key])
+            return ast.copy_location(ast.Name(id=memo[key], ctx=ast.Load()), node)
+        if isinstance(node, ast.IfExp):
+            node.test = hoist(node.test)
+        elif isinstance(node, ast.BoolOp):
+            node.values[0] = hoist(node.values[0])
+        elif isinstance(node, ast.Compare):
+            node.left = hoist(node.left)
+            if len(node.comparators) == 1:
+                node.comparators[0] = hoist(node.comparators[0])
+        elif isinstance(node, ast.BinOp):
+            node.left, node.right = hoist(node.left), hoist(node.right)
+        elif isinstance(node, ast.UnaryOp):
+            node.operand = hoist(node.operand)
+        elif isinstance(node, ast.Call):
+            node.args = [a if isinstance(a, ast.Constant) else hoist(a) for a in node.args]
+        return node
+
+    body = []
+    for st in tree.body[:-1]:
+        name = st.targets[0].id
+        if counts[name] == 1 and _invariant(st.value, inv):
+            pre.append(f"{name} = {ast.unparse(st.value)}"); outs.append(name); inv.add(name)
+            continue
+        st.value = hoist(st.value)
+        body.append(st)
+    last = tree.body[-1]
+    last.value = hoist(last.value)
+    body.append(last)
+    return (pre, body, outs) if outs else None
+
 
 def compile_formula(src: str, param_names: tuple = ()):
     """Validate and compile; returns the function f(x, y, u, v, r, a, i, n, t, w, h, seed, *params)."""
@@ -394,17 +484,44 @@ def compile_formula(src: str, param_names: tuple = ()):
     args = BASE_VARS + ["prev"] + list(param_names)  # prev(x, y) is passed in per scene (no shared state in the code)
     # The checked and transformed tree is written out as ordinary source text and compiled the normal way
     # (hand-assembled ASTs with positions that do not fit together are an unusual input for the compiler).
-    lines, line_map = [f"def _f({', '.join(args)}):"], {}
-    for st in tree.body[:-1]:
-        lines.append("    " + ast.unparse(st))
-        line_map[len(lines)] = st.lineno
-    lines.append("    return " + ast.unparse(tree.body[-1].value))
-    line_map[len(lines)] = tree.body[-1].lineno
+    def source(name, argl, body_nodes, head=()):
+        lines, line_map = [f"def {name}({', '.join(argl)}):"] + ["    " + x for x in head], {}
+        for st in body_nodes[:-1]:
+            lines.append("    " + ast.unparse(st))
+            line_map[len(lines)] = st.lineno
+        lines.append("    return " + ast.unparse(body_nodes[-1].value))
+        line_map[len(lines)] = body_nodes[-1].lineno
+        return lines, line_map
+
+    lines, line_map = source("_f", args, list(tree.body))
     ns = dict(GLOBALS)
     exec(compile("\n".join(lines) + "\n", "<formula>", "exec"), ns)
+    fn = ns["_f"]
+    # the fastest way: all LEDs at once with numpy (vformula.py); None when numpy is missing or the formula does not fit
+    fn.vec = None
+    try:
+        from . import vformula
+        fn.vec = vformula.build(tree, args)
+    except Exception:
+        fn.vec = None
+    # the faster way without numpy: what is the same for every LED is computed once per frame (see _split)
+    fn.split = None
+    try:
+        sp = _split(tree, param_names)  # after the plain function was written out: the tree is changed here
+        if sp:
+            pre, body, outs = sp
+            pargs = [v for v in BASE_VARS if v not in PER_LED] + list(param_names)
+            ptxt = "\n".join([f"def _pre({', '.join(pargs)}):"] + ["    " + x for x in pre] + [f"    return ({', '.join(outs)},)"]) + "\n"
+            blines, bmap = source("_b", args + ["_k"], body, head=[f"({', '.join(outs)},) = _k"])
+            ns2 = dict(GLOBALS)
+            exec(compile(ptxt, "<pre>", "exec"), ns2)
+            exec(compile("\n".join(blines) + "\n", "<formula>", "exec"), ns2)
+            ns2["_b"].line_map = bmap
+            fn.split = (ns2["_pre"], ns2["_b"])
+    except Exception:  # whatever goes wrong here, the plain function still works
+        fn.split = None
     if len(_compiled) > 60:
         _compiled.pop(next(iter(_compiled)))
-    fn = ns["_f"]
     fn.uses_prev = re.search(r"\bprev\s*\(", src) is not None
     fn.line_map = line_map  # line of the generated function -> line the user wrote
     _compiled[key] = fn
@@ -601,6 +718,14 @@ class Prepared:
         self.x0, self.y0 = x0, y0
         self._pts = [(p["x"], p["y"]) for p in layout]
         self._grid = None
+        self._arr = None
+
+    def arrays(self):
+        """x, y, u, v, r, a, i of all LEDs as numpy arrays (for vformula)."""
+        if self._arr is None:
+            import numpy as np
+            self._arr = tuple(np.array([row[j] for row in self.per], dtype=np.float64) for j in range(7))
+        return self._arr
 
     GRID = 32
     KNN = 4
@@ -642,21 +767,52 @@ def make_prev(prep: "Prepared", k: float):
             b += fr[3 * j + 2] * w
         return Vec(min(1.0, r * inv), min(1.0, g * inv), min(1.0, b * inv))
 
+    holder = []
+
+    def vec(x, y):  # the array version for vformula, built when first used
+        if not holder:
+            from . import vformula
+            holder.append(vformula.make_prev_vec(prep, k, state))
+        return holder[0](x, y)
+
+    prev.vec = vec
     return prev, state
+
+
+def _prev_unbound_vec(x, y):
+    return Vec(0.0, 0.0, 0.0)
 
 
 def eval_frame(fn, prep: Prepared, t: float, now: float, seed: float, vals: list, k: float, prevfn=None) -> bytes:
     """One frame: the formula for every LED. Raises FormulaError for mistakes in the formula."""
     buf = bytearray()
     n, w, h = prep.n, prep.w, prep.h
+    vec = getattr(fn, "vec", None)
+    if vec is not None:  # all LEDs at once; anything unusual falls back to the plain function below
+        try:
+            from . import vformula
+            pv = getattr(prevfn, "vec", None) if prevfn else _prev_unbound_vec
+            if pv is None:
+                raise TypeError("no array version of prev")
+            with vformula.np.errstate(all="ignore"):
+                return vformula.frame_bytes(vec(*prep.arrays(), n, t, w, h, seed, now, pv, *vals), n, k)
+        except Exception:
+            fn.vec = None
     prevfn = prevfn or _prev_unbound
+    call, tail = fn, vals
+    if fn.split is not None:  # what is the same for every LED is computed once; if that fails the plain function reports it
+        try:
+            tail = list(vals) + [fn.split[0](n, t, w, h, seed, now, *vals)]
+            call = fn.split[1]
+        except Exception:
+            pass
     for x, y, u, v, r, a, i in prep.per:
         try:
-            res = fn(x, y, u, v, r, a, i, n, t, w, h, seed, now, prevfn, *vals)
+            res = call(x, y, u, v, r, a, i, n, t, w, h, seed, now, prevfn, *tail)
         except (ZeroDivisionError, OverflowError, ValueError):
             res = 0.0
         except Exception as exc:  # a mistake in the formula (e.g. a colour used as a number)
-            raise FormulaError(f"{type(exc).__name__}: {exc}", _line_of(exc, fn)) from None
+            raise FormulaError(f"{type(exc).__name__}: {exc}", _line_of(exc, call)) from None
         try:
             buf += _rgb(res, k)
         except TypeError as exc:

@@ -51,6 +51,7 @@ class Session:
         self.sent = 0  # number of the last frame that went out
         self.stop_evt = threading.Event()
         self.touched = time.time()
+        self.cancel_play = threading.Event()  # set to stop a sequence that is being played
         self.playing = False  # a sequence is being played by play(): single patterns are refused meanwhile
         self.thread = threading.Thread(target=self._run, daemon=True)
         self.ping_thread = threading.Thread(target=self._ping_loop, daemon=True)
@@ -180,8 +181,14 @@ def pattern(kind: str, bit: int = 0, leds: list = (), level: int = 200, channels
     s = _sess
     if s is None:
         raise RuntimeError("no scan is running")
-    if s.playing:
-        raise RuntimeError("a sequence is playing")
+    if s.playing:  # the page gave up on filming it (and takes the photos one by one): stop the sequence
+        s.cancel_play.set()
+        for _ in range(100):
+            if not s.playing:
+                break
+            time.sleep(0.01)
+        if s.playing:
+            raise RuntimeError("a sequence is playing")
     frame, lit = _frame(s, kind, bit, leds, level, channels)
     _show(s, frame)
     return {"ok": True, "lit": lit}
@@ -200,6 +207,7 @@ def play(steps: list, slot_ms: int = 240, lead_ms: int = 700) -> dict:
         raise ValueError("a sequence has 1 to 80 steps")
     slot_ms, lead_ms = int(min(2000, max(60, slot_ms))), int(min(5000, max(0, lead_ms)))
     frames = [_frame(s, st.get("kind", "dark"), st.get("bit", 0), st.get("leds", ()), st.get("level", 200), st.get("channels", ()))[0] for st in steps]
+    s.cancel_play.clear()
     s.playing = True
     s.touched = time.time()
 
@@ -208,15 +216,15 @@ def play(steps: list, slot_ms: int = 240, lead_ms: int = 700) -> dict:
             t0 = time.perf_counter() + lead_ms / 1000.0
             for k, fr in enumerate(frames):
                 target = t0 + k * slot_ms / 1000.0
-                while not s.stop_evt.is_set():
+                while not s.stop_evt.is_set() and not s.cancel_play.is_set():
                     d = target - time.perf_counter()
                     if d <= 0:
                         break
                     time.sleep(min(d, 0.005))
-                if s.stop_evt.is_set():
+                if s.stop_evt.is_set() or s.cancel_play.is_set():
                     return
                 s.set_frame(fr)
-            time.sleep(slot_ms / 1000.0)  # the last pattern gets its slot too
+            s.cancel_play.wait(slot_ms / 1000.0)  # the last pattern gets its slot too
         finally:
             s.playing = False
 

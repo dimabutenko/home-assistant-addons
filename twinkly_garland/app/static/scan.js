@@ -1060,7 +1060,7 @@ async function recordSequence({ steps, slotMs = VIDEO.slotMs, status, check, fra
   // 3. segments: a jump of the signature starts a new one; the first frames after a jump are skipped until the picture holds still
   const segs = [base];             // segs[0] = the dark baseline, segs[1..] = the patterns in order
   let ref = base.thumb, light = 0; // light: the full light of the garland (known after the first pattern, the all-on one)
-  let open = false, settling = false, prevThumb = null, extra = 0, candidate = false, lastChange = 0;
+  let open = false, settling = false, prevThumb = null, extra = 0, candidate = false, lastChange = 0; const jumps = [];
   const deadline = performance.now() + plan.lead_ms + slotMs * (steps.length + 2) + 4000, frames = [];
   for (;;) {
     check(); if (performance.now() > deadline) { note(`video: the recording did not end in time (${segs.length - 1} of ${steps.length} patterns seen)`); return null; }
@@ -1071,10 +1071,13 @@ async function recordSequence({ steps, slotMs = VIDEO.slotMs, status, check, fra
     else if (!settling && !light && candidate && d <= jump) { candidate = false; continue; }
     const nextChange = (!settling && d > jump) || (settling && light && thumbL1(f.thumb, prevThumb) > Math.max(VIDEO.change * light, 4 * noiseNow) && d > jump);  // also during the settling: a slow camera gives only 2-3 frames per pattern
     if (nextChange) {
+      jumps.push(`${Math.round(f.t - t0)}ms:${light ? (d / light).toFixed(2) : Math.round(d)}${settling ? 's' : ''}`);
+      // two changes closer than half a slot are one transition (a camera that adapts, a frame of the encoder): the frames gathered since the first one are dropped
+      if (open && lastChange && f.t - lastChange < slotMs * 0.5) { finish(); lastChange = f.t; settling = true; prevThumb = f.thumb; ref = f.thumb; noise = []; continue; }
       lastChange = f.t;
       if (open) { const sg = finish(); frames.push(sg ? sg.n : 0); segs.push(sg); }
       if (segs.length > steps.length) extra++;      // more changes than patterns: noise or a flicker
-      if (extra) { note(`video: more picture changes than patterns (${segs.length} segments for ${steps.length} patterns), the photos are taken one by one`); return null; }
+      if (extra) { note(`video: more picture changes than patterns (${segs.length} segments for ${steps.length} patterns; changes at ${jumps.join(' ')}), the photos are taken one by one`); return null; }
       open = true; settling = true; prevThumb = f.thumb; ref = f.thumb; noise = [];
       status(`Recording the sequence: pattern ${Math.min(segs.length, steps.length)} of ${steps.length}...`, frac0 + (frac1 - frac0) * Math.min(1, (segs.length - 1) / steps.length));
       continue;
@@ -1093,7 +1096,7 @@ async function recordSequence({ steps, slotMs = VIDEO.slotMs, status, check, fra
   }
   const last = finish(); frames.push(last ? last.n : 0); segs.push(last);
   // 4. the segments must be exactly the patterns that were sent
-  if (segs.length !== steps.length + 1) { note(`video: ${segs.length - 1} segments for ${steps.length} patterns, the photos are taken one by one`); return null; }
+  if (segs.length !== steps.length + 1) { note(`video: ${segs.length - 1} segments for ${steps.length} patterns (changes at ${jumps.join(' ')}), the photos are taken one by one`); return null; }
   const bad = []; segs.slice(1).forEach((sg, k) => { if (!sg || sg.n < 2) bad.push(k); });
   if (bad.length > Math.max(2, Math.floor(steps.length * 0.1))) { note(`video: too few frames in ${bad.length} of ${steps.length} patterns (${bad.join(',')}), the photos are taken one by one`); return null; }
   note(`video: ${steps.length} patterns recorded, frames per pattern ${frames.join(' ')}, unusable ${bad.length ? bad.join(',') : 'none'}, jump threshold ${Math.round(VIDEO.change * light)} (full light ${Math.round(light)}), noise ${Math.round(baseNoise)}`);

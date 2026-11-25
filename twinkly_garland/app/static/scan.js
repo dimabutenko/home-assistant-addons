@@ -1001,7 +1001,7 @@ function peakOf(a, dk, colour) {
 // of that pattern. The size of a jump is measured against the "full light" of the garland (the difference between the first all-on frame and the dark
 // one) and against the noise of the still frames; on real scans a change from one code pattern to the next is 0.05 to 0.17 of the full light and the noise
 // of a still picture 0.001 to 0.03. The segments found must be exactly the patterns that were sent, otherwise the photos are taken one by one.
-const VIDEO = { slotMs: 300, leadMs: 700, baselineMs: 350, change: 0.025, settle: 0.012 };
+const VIDEO = { slotMs: 400, leadMs: 700, baselineMs: 350, change: 0.025, settle: 0.012 };
 
 // Colour sums of a coarse grid (40 x 22 cells, every third pixel): the signature of a frame, to find the start and to check the slots.
 function thumbOfPlanes(rgb, w, h) {
@@ -1106,7 +1106,8 @@ async function recordSequence({ steps, slotMs = VIDEO.slotMs, status, check, fra
   closeCur();
   // 5. which patterns can be used
   const bad = []; shots.forEach((sh, k) => { if (!sh || counts[k] < 2) bad.push(k); });
-  if (bad.length > Math.max(2, Math.floor(steps.length * 0.1))) { note(`video: too few frames in ${bad.length} of ${steps.length} patterns (${bad.join(',')}; frames per pattern ${counts.join(' ')}), the photos are taken one by one`); return null; }
+  // A pattern with too few frames gets one photo of its own afterwards (the caller does it), so a few of them are fine; most of them are not.
+  if (bad.length > Math.max(2, Math.floor(steps.length * 0.3))) { note(`video: too few frames in ${bad.length} of ${steps.length} patterns (${bad.join(',')}; frames per pattern ${counts.join(' ')}), the photos are taken one by one`); return null; }
   note(`video: ${steps.length} patterns recorded, frames per pattern ${counts.join(' ')}, unusable ${bad.length ? bad.join(',') : 'none'}; the garland changes within ${Math.round(learned.W)} ms of each ${slotMs} ms slot (${learned.n} flashes seen), settled part ${Math.round(learned.lo)} to ${learned.hi} ms; ${nFrames} frames in ${Math.round(performance.now() - tStart)} ms`);
   return { dark: base.shot, shots: shots.map((sh, k) => bad.includes(k) ? null : sh), info: { bad } };
 }

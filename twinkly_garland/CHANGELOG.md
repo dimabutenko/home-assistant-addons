@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.17.20
+- **Video scan: longer slots, a few thin patterns no longer end the video.** In the last scan the colour check passed and 15 of the 19 patterns were cut out well, but 4 patterns got a single frame (frames per pattern 1 1 2 3 3 2 2 3 1 2 3 3 3 1 2 3 3 2 2: the phone gives about 15 frames a second and the settled part of a 300 ms slot is only about 180 ms), and a recording with more than 2 such patterns was thrown away as a whole. The slot is now 400 ms (the settled part about 280 ms, so 3 to 5 frames), and up to 30% of the patterns may have too few frames: each of those gets one photo of its own after the recording instead of all of them being photographed one by one. A scan takes about 2 seconds longer in the video part.
+
 ## 0.17.19
 - **Video scan: the check "does the recording show red and blue" no longer throws a good recording away.** The log of the last scan of the tree showed that the video itself worked (19 patterns cut out of 141 frames in 9 s, the garland's changes within 53 ms of each 300 ms slot, 8 flashes seen) and was rejected only by a check that the red photo has at least 1.5 times more red than blue and the blue photo the other way round. A video has paler colours than a photo (compressed colour, the clipped cores of the LEDs; the brightest pixels of the red photo were 229 / 162 / 173), so the absolute ratio failed. The check now compares the two photos with each other: red against blue has to be clearly higher in the red photo than in the blue one (at least 1.4 times). A recording that is shifted by a pattern still fails it (the two pictures look alike) and the note says the two numbers.
 

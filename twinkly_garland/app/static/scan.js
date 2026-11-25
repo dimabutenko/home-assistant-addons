@@ -1001,7 +1001,7 @@ function peakOf(a, dk, colour) {
 // of that pattern. The size of a jump is measured against the "full light" of the garland (the difference between the first all-on frame and the dark
 // one) and against the noise of the still frames; on real scans a change from one code pattern to the next is 0.05 to 0.17 of the full light and the noise
 // of a still picture 0.001 to 0.03. The segments found must be exactly the patterns that were sent, otherwise the photos are taken one by one.
-const VIDEO = { slotMs: 240, leadMs: 700, baselineMs: 350, change: 0.025, settle: 0.012 };
+const VIDEO = { slotMs: 300, leadMs: 700, baselineMs: 350, change: 0.025, settle: 0.012 };
 
 // Colour sums of a coarse grid (40 x 22 cells, every third pixel): the signature of a frame, to find the start and to check the slots.
 function thumbOfPlanes(rgb, w, h) {
@@ -1036,72 +1036,79 @@ function nextVideoFrame() {
 // { dark, shots: [one photo per step, null where a segment had too few frames], info } or null when the recording failed (the caller then takes the
 // photos one by one). A photo is { w, h, rgb: [R, G, B], data: luma }.
 const thumbL1 = (a, b) => { let d = 0; for (let i = 0; i < a.length; i++) d += Math.abs(a[i] - b[i]); return d; };
+// How the sequence is cut into photos (learned on a real garland: it shows a new frame only about every 100 ms, so a change appears 0 to 100 ms late and
+// differently for every pattern; cutting by the jumps of the picture lost most of the code patterns, 12 segments of 19). The sequence starts with PRE flashes
+// all on / all dark: their changes are big and unmistakable. From their times the page learns when, inside a slot of the add-on's timer, the changes of the
+// garland happen (the spread W) and so which part of every slot shows a settled picture: from W + 45 ms after the start of the slot to 25 ms before the next
+// one. Only the frames of that part are averaged into the photo of the pattern.
 async function recordSequence({ steps, slotMs = VIDEO.slotMs, status, check, frac0 = 0.18, frac1 = 0.58 }) {
+  const PRE = 8, sumOf = t => { let s = 0; for (let i = 0; i < t.length; i++) s += t[i]; return s; };
   let f = await nextVideoFrame();
   const w = f.w, h = f.h, N = w * h, acc = [new Uint16Array(N), new Uint16Array(N), new Uint16Array(N)];
-  let nAcc = 0, thumbs = [], noise = [];
-  const add = fr => { const p = fr.rgb; for (let c = 0; c < 3; c++) { const a = acc[c], q = p[c]; for (let i = 0; i < N; i++) a[i] += q[i]; } if (thumbs.length) noise.push(thumbL1(fr.thumb, thumbs[thumbs.length - 1])); nAcc++; thumbs.push(fr.thumb); };
+  let nAcc = 0;
+  const add = fr => { const p = fr.rgb; for (let c = 0; c < 3; c++) { const a = acc[c], q = p[c]; for (let i = 0; i < N; i++) a[i] += q[i]; } nAcc++; };
   const finish = () => {
-    if (!nAcc) { thumbs = []; return null; }
+    if (!nAcc) return null;
     const rgb = acc.map(a => { const o = new Uint8Array(N); for (let i = 0; i < N; i++) o[i] = Math.round(a[i] / nAcc); return o; }), data = new Uint8Array(N);
     for (let i = 0; i < N; i++) data[i] = Math.round(0.299 * rgb[0][i] + 0.587 * rgb[1][i] + 0.114 * rgb[2][i]);
-    const mean = new Float32Array(thumbs[0].length); for (const t of thumbs) for (let i = 0; i < mean.length; i++) mean[i] += t[i] / thumbs.length;
-    const r = { shot: { w, h, rgb, data }, thumb: mean, n: nAcc };
-    acc.forEach(a => a.fill(0)); nAcc = 0; thumbs = []; return r;
+    const r = { shot: { w, h, rgb, data }, n: nAcc };
+    acc.forEach(a => a.fill(0)); nAcc = 0; return r;
   };
-  const median = a => { if (!a.length) return 0; const x = [...a].sort((u, v) => u - v); return x[x.length >> 1]; };
+  const quant = (a, q) => { const x = [...a].sort((u, v) => u - v); return x[Math.min(x.length - 1, Math.floor(q * x.length))]; };
   // 1. the dark baseline (the garland is dark)
-  const t0 = f.t;
-  while (f.t - t0 < VIDEO.baselineMs) { check(); add(f); f = await nextVideoFrame(); }
-  const baseNoise = median(noise); noise = [];
+  const t0 = f.t, baseS = [];
+  while (f.t - t0 < VIDEO.baselineMs) { check(); add(f); baseS.push(sumOf(f.thumb)); f = await nextVideoFrame(); }
   const base = finish(); if (!base || base.n < 2) { note(`video: only ${base ? base.n : 0} frames of the dark baseline, the camera gives too few frames`); return null; }
-  // 2. the add-on starts the sequence
-  const plan = await send('api/scan/sequence', { steps, slot_ms: slotMs, lead_ms: VIDEO.leadMs });
-  // 3. segments: a jump of the signature starts a new one; the first frames after a jump are skipped until the picture holds still
-  const segs = [base];             // segs[0] = the dark baseline, segs[1..] = the patterns in order
-  let ref = base.thumb, light = 0; // light: the full light of the garland (known after the first pattern, the all-on one)
-  let open = false, settling = false, prevThumb = null, extra = 0, candidate = false, lastChange = 0; const jumps = [], trace = []; let nFrames = 0; const tStart = performance.now();
-  const deadline = performance.now() + plan.lead_ms + slotMs * (steps.length + 2) + 4000, frames = [];
+  const bMean = baseS.reduce((a, b) => a + b, 0) / baseS.length, bSd = Math.sqrt(baseS.reduce((a, b) => a + (b - bMean) ** 2, 0) / baseS.length);
+  // 2. the add-on starts the sequence: PRE flashes first, then the patterns
+  const lightLevel = steps[0] && steps[0].level ? steps[0].level : 255;
+  const pre = []; for (let i = 0; i < PRE; i++) pre.push(i % 2 ? { kind: 'dark' } : { kind: 'all', level: lightLevel });
+  const plan = await send('api/scan/sequence', { steps: pre.concat(steps), slot_ms: slotMs, lead_ms: VIDEO.leadMs });
+  const deadline = performance.now() + plan.lead_ms + slotMs * (PRE + steps.length + 2) + 4000;
+  // 3. the flashes: when does the garland change inside the slots of the timer?
+  const series = []; let tFirst = null, learned = null, nFrames = 0; const tStart = performance.now();
+  const litLevel = bMean + Math.max(10 * bSd, 0.01 * bMean);
+  const learn = () => {
+    const vals = series.map(x => x[1]), Sd = quant(vals, 0.1), Sl = quant(vals, 0.9), mid = (Sd + Sl) / 2;
+    if (!(Sl - Sd > Math.max(12 * bSd, 0.02 * bMean))) return { err: `the flashes are too weak (levels ${Math.round(Sd)} and ${Math.round(Sl)}, noise ${Math.round(bSd)})` };
+    const cr = []; let state = series[0][1] > mid;
+    for (let i = 1; i < series.length; i++) {
+      const s = series[i][1] > mid;
+      if (s !== state) { const [ta, sa] = series[i - 1], [tb, sb] = series[i]; cr.push(ta + (mid - sa) / (sb - sa) * (tb - ta)); state = s; }
+    }
+    if (cr.length < PRE - 2) return { err: `only ${cr.length} of the ${PRE} changes of the flashes were seen` };
+    const ph = cr.map(c => { const k = Math.round((c - cr[0]) / slotMs); return c - cr[0] - k * slotMs; });
+    const lo = Math.min(...ph), hi = Math.max(...ph), W = hi - lo;
+    return { G0: cr[0] + lo, W, lo: W + 45, hi: slotMs - 25, ph, n: cr.length };
+  };
   for (;;) {
-    check(); if (performance.now() > deadline) { note(`video: the recording did not end in time (${segs.length - 1} of ${steps.length} patterns seen); ${nFrames} frames in ${Math.round(performance.now() - tStart)} ms (every ${Math.round((performance.now() - tStart) / Math.max(1, nFrames))} ms), jump threshold ${Math.round(VIDEO.change * light)} of full light ${Math.round(light)}, noise ${Math.round(baseNoise)}; changes at ${jumps.join(' ')}; frames time:change/light ${trace.join(' ')}`); return null; }
+    check(); if (performance.now() > deadline) { note(`video: the flashes were not seen in time (${nFrames} frames, level to cross ${Math.round(litLevel)}, last ${series.length ? Math.round(series[series.length - 1][1]) : 0})`); return null; }
     f = await nextVideoFrame(); nFrames++;
-    const d = thumbL1(f.thumb, ref), noiseNow = Math.max(median(noise), baseNoise);
-    const jump = light ? Math.max(VIDEO.change * light, 4 * noiseNow) : Math.max(4 * baseNoise, 1);
-    if (!settling && !light && !candidate) { candidate = d > jump; if (candidate) continue; }  // the very first change has to be seen in two frames in a row
-    else if (!settling && !light && candidate && d <= jump) { candidate = false; continue; }
-    if (trace.length < 160) trace.push(`${Math.round(f.t - t0)}:${light ? (d / light).toFixed(2) : Math.round(d)}${settling ? 's' : ''}`);
-    const nextChange = (!settling && d > jump) || (settling && light && thumbL1(f.thumb, prevThumb) > Math.max(VIDEO.change * light, 4 * noiseNow) && d > jump);  // also during the settling: a slow camera gives only 2-3 frames per pattern
-    if (nextChange) {
-      jumps.push(`${Math.round(f.t - t0)}ms:${light ? (d / light).toFixed(2) : Math.round(d)}${settling ? 's' : ''}`);
-      // two changes closer than half a slot are one transition (a camera that adapts, a frame of the encoder): the frames gathered since the first one are dropped
-      if (open && lastChange && f.t - lastChange < slotMs * 0.5) { finish(); lastChange = f.t; settling = true; prevThumb = f.thumb; ref = f.thumb; noise = []; continue; }
-      lastChange = f.t;
-      if (open) { const sg = finish(); frames.push(sg ? sg.n : 0); segs.push(sg); }
-      if (segs.length > steps.length) extra++;      // more changes than patterns: noise or a flicker
-      if (extra) { note(`video: more picture changes than patterns (${segs.length} segments for ${steps.length} patterns; changes at ${jumps.join(' ')}), the photos are taken one by one`); return null; }
-      open = true; settling = true; prevThumb = f.thumb; ref = f.thumb; noise = [];
-      status(`Recording the sequence: pattern ${Math.min(segs.length, steps.length)} of ${steps.length}...`, frac0 + (frac1 - frac0) * Math.min(1, (segs.length - 1) / steps.length));
-      continue;
-    }
-    if (settling) {
-      if (thumbL1(f.thumb, prevThumb) < Math.max((light ? VIDEO.settle * light : jump / 3), 4 * noiseNow)) {
-        settling = false; ref = f.thumb; add(f);
-        if (!light) { light = thumbL1(f.thumb, base.thumb); }   // the first pattern is the all-on one: this is the full light
-      } else { prevThumb = f.thumb; ref = f.thumb; }
-      continue;
-    }
-    if (!open) continue;   // the sequence has not started yet: the frames of the dark picture are not wanted
-    if (f.t - lastChange > slotMs * 3 + 400) break;   // nothing has changed for three slots: the sequence is over (or patterns were lost)
-    add(f);
-    if (segs.length === steps.length && nAcc >= 3) break;   // the last pattern has been seen steadily
+    const S = sumOf(f.thumb); series.push([f.t, S]);
+    if (tFirst === null && S > litLevel) tFirst = f.t;
+    if (tFirst !== null && f.t >= tFirst + (PRE - 0.15) * slotMs) { learned = learn(); break; }
   }
-  const last = finish(); frames.push(last ? last.n : 0); segs.push(last);
-  // 4. the segments must be exactly the patterns that were sent
-  if (segs.length !== steps.length + 1) { note(`video: ${segs.length - 1} segments for ${steps.length} patterns (changes at ${jumps.join(' ')}), the photos are taken one by one`); return null; }
-  const bad = []; segs.slice(1).forEach((sg, k) => { if (!sg || sg.n < 2) bad.push(k); });
-  if (bad.length > Math.max(2, Math.floor(steps.length * 0.1))) { note(`video: too few frames in ${bad.length} of ${steps.length} patterns (${bad.join(',')}), the photos are taken one by one`); return null; }
-  note(`video: ${steps.length} patterns recorded, frames per pattern ${frames.join(' ')}, unusable ${bad.length ? bad.join(',') : 'none'}, jump threshold ${Math.round(VIDEO.change * light)} (full light ${Math.round(light)}), noise ${Math.round(baseNoise)}`);
-  return { dark: base.shot, shots: segs.slice(1).map((sg, k) => bad.includes(k) ? null : sg.shot), info: { bad } };
+  if (learned.err) { note(`video: ${learned.err}, the photos are taken one by one`); return null; }
+  if (learned.hi - learned.lo < 60) { note(`video: the garland shows its changes spread over ${Math.round(learned.W)} ms of a ${slotMs} ms slot, no settled part is left, the photos are taken one by one`); return null; }
+  // 4. the patterns: the settled part of every slot
+  const shots = new Array(steps.length).fill(null), counts = new Array(steps.length).fill(0); let cur = -1;
+  const closeCur = () => { if (cur >= 0 && cur < steps.length) { const sg = finish(); if (sg) { shots[cur] = sg.shot; counts[cur] = sg.n; } } };
+  for (;;) {
+    check(); if (performance.now() > deadline) { note(`video: the recording did not end in time (slot ${cur + 1} of ${steps.length}); ${nFrames} frames in ${Math.round(performance.now() - tStart)} ms`); return null; }
+    const rel = f.t - learned.G0, j = Math.floor(rel / slotMs), q = rel - j * slotMs, jj = j - PRE;
+    if (jj >= steps.length) break;
+    if (jj >= 0 && q >= learned.lo && q <= learned.hi) {
+      if (cur !== jj) { closeCur(); cur = jj; status(`Recording the sequence: pattern ${jj + 1} of ${steps.length}...`, frac0 + (frac1 - frac0) * (jj + 1) / steps.length); }
+      add(f);
+    }
+    f = await nextVideoFrame(); nFrames++;
+  }
+  closeCur();
+  // 5. which patterns can be used
+  const bad = []; shots.forEach((sh, k) => { if (!sh || counts[k] < 2) bad.push(k); });
+  if (bad.length > Math.max(2, Math.floor(steps.length * 0.1))) { note(`video: too few frames in ${bad.length} of ${steps.length} patterns (${bad.join(',')}; frames per pattern ${counts.join(' ')}), the photos are taken one by one`); return null; }
+  note(`video: ${steps.length} patterns recorded, frames per pattern ${counts.join(' ')}, unusable ${bad.length ? bad.join(',') : 'none'}; the garland changes within ${Math.round(learned.W)} ms of each ${slotMs} ms slot (${learned.n} flashes seen), settled part ${Math.round(learned.lo)} to ${learned.hi} ms; ${nFrames} frames in ${Math.round(performance.now() - tStart)} ms`);
+  return { dark: base.shot, shots: shots.map((sh, k) => bad.includes(k) ? null : sh), info: { bad } };
 }
 
 // A shaking phone (a hand, a tripod that sags): every photo of the scan is moved back onto the first all-on photo. The shift of a photo is found by
@@ -1192,10 +1199,11 @@ async function scanView({ dev, M, scanMode, style: wanted, check, status, v, dum
       if (rec) {  // do the photos look like the patterns? (a recording that started on a picture that was not dark would be shifted by one pattern)
         const mean = x => { let t = 0, c = 0; for (let i = 0; i < x.data.length; i += 7) { t += x.data[i]; c++; } return t / c; };
         const chan = (x, c) => { let t = 0; for (let i = 0; i < x.rgb[c].length; i += 7) t += x.rgb[c][i]; return t; };
+        const chanD = (x, c) => Math.max(1, chan(x, c) - chan(rec.dark, c));  // what the LEDs add to the dark picture
         const sh = rec.shots, nS = sh.length; let why = null;
-        if (sh[0] && !(mean(sh[0]) > 2 * mean(rec.dark) + 0.5)) why = 'the all-on photo is not brighter than the dark one';
-        else if (sh[nS - 2] && sh[nS - 1] && !(mean(sh[nS - 1]) > 2 * mean(sh[nS - 2]) + 0.5)) why = 'the closing all-on photo is not brighter than the closing dark one';
-        else if (st === 'hue' && sh[1] && sh[2] && !(chan(sh[1], 0) > 1.5 * chan(sh[1], 2) && chan(sh[2], 2) > 1.5 * chan(sh[2], 0))) why = 'the red and the blue photo do not show red and blue';
+        if (sh[0] && !(mean(sh[0]) > 1.15 * mean(rec.dark) + 0.3)) why = 'the all-on photo is not brighter than the dark one';
+        else if (sh[nS - 2] && sh[nS - 1] && !(mean(sh[nS - 1]) > 1.15 * mean(sh[nS - 2]) + 0.3)) why = 'the closing all-on photo is not brighter than the closing dark one';
+        else if (st === 'hue' && sh[1] && sh[2] && !(chanD(sh[1], 0) > 1.5 * chanD(sh[1], 2) && chanD(sh[2], 2) > 1.5 * chanD(sh[2], 0))) why = 'the red and the blue photo do not show red and blue';
         if (why) { note(`video: ${why}: the recording is shifted or wrong, the photos are taken one by one`); rec = null; }
       }
       if (rec) {

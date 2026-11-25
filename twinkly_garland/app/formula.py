@@ -615,7 +615,7 @@ def validate_item(item: dict) -> dict:
     defs = clean_params(item.get("params", []))
     inputs = clean_inputs(item.get("inputs", []), {d["name"] for d in defs})
     compile_formula(str(item.get("code", "")), all_names(defs, inputs))
-    mapping = item.get("mapping") if item.get("mapping") in ("plane", "apex") else "plane"
+    mapping = item.get("mapping") if item.get("mapping") in ("plane", "apex", "cone", "wrap") else "plane"
     return {"name": name, "code": str(item["code"]), "params": defs, "inputs": inputs, "mapping": mapping}
 
 
@@ -710,7 +710,7 @@ class Prepared:
     """Per-LED constants of a layout, computed once."""
     def __init__(self, layout: list):
         xs, ys = [p["x"] for p in layout], [p["y"] for p in layout]
-        x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
+        x0, x1, y0, y1 = getattr(layout, "box", None) or (min(xs), max(xs), min(ys), max(ys))
         self.w, self.h = (x1 - x0) or 1.0, (y1 - y0) or 1.0
         cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
         self.n = len(layout)
@@ -885,4 +885,6 @@ palette("ocean", k)""", "params": [_p("speed", "Speed (whole numbers loop)", 1, 
 from .examples_live import LIVE_EXAMPLES  # noqa: E402  (data only, no import cycle)
 
 EXAMPLES.extend(LIVE_EXAMPLES)
+from .examples_tree import TREE_EXAMPLES  # noqa: E402
+EXAMPLES.extend(TREE_EXAMPLES)
 

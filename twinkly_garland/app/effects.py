@@ -78,6 +78,8 @@ def _PAL(default):
 
 
 def _bounds(layout):
+    if getattr(layout, "box", None):  # a layout with its own frame (the disk of the tip mapping)
+        return layout.box
     xs = [p["x"] for p in layout]
     ys = [p["y"] for p in layout]
     return min(xs), max(xs), min(ys), max(ys)

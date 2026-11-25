@@ -69,7 +69,7 @@ def mask_values(layout: list, mask: dict) -> list:
         return [1.0] * len(layout)
     xs = [p["x"] for p in layout]
     ys = [p["y"] for p in layout]
-    x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
+    x0, x1, y0, y1 = getattr(layout, "box", None) or (min(xs), max(xs), min(ys), max(ys))
     cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
     dmax = math.hypot(x1 - cx, y1 - cy) or 1.0
     out = []

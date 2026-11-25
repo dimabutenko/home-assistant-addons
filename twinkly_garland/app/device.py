@@ -142,21 +142,24 @@ def physical(layout: list, aspect=None) -> list:
     return [{"x": (p["x"] - xc) / w * a, "y": (p["y"] - y0) / h, "z": p.get("z", 0)} for p in layout]
 
 
-MAPPINGS = ("plane", "apex")
+MAPPINGS = ("plane", "apex", "cone", "wrap")
 
 
-def apex_layout(layout: list, back=()) -> list:
-    """A tree laid out like a round window whose centre is the tip: an effect that spreads from the centre of the window then spreads
-    from the top of the tree down to its base, and an effect that turns around the centre turns around the trunk.
+class Layout(list):
+    """A layout (a list of {x, y, z}) that also knows the frame it is measured in. The effects and the formulas take the centre of the lit
+    area for the middle of the picture (r, a, u, v): that is the centre of the bounding box of the LEDs unless `box` = (x0, x1, y0, y1) says
+    otherwise. The disk the tip mapping lays a tree on has its centre (the tip) at (0, 0.5) whatever the LEDs fill of it."""
+    box = None
 
-    The LED's distance from the centre is its distance from the tip along the cone (0 at the tip, the radius of the disk at the base);
-    its angle is the angle around the trunk. With a 3D layout (a tree scanned from two sides) the angle comes from x and z across the
-    tree at that height; with a 2D layout (one side) from where the LED stands across the tree (the width of the tree at that height is
-    taken from the LEDs around it): a LED seen from the front is on the near half, one in `back` (not seen by the scan, so on the far
-    side) on the far half."""
+
+def tree_polar(layout: list, back=()) -> list:
+    """For every LED of a tree: (s, theta) - s = its distance from the tip along the cone, 0 at the tip and 1 at the base (that is the
+    height below the tip), theta = its angle around the trunk in radians, 0 at the front (the side the camera saw), -pi..pi, the back at +-pi.
+
+    With a 3D layout (a tree scanned from two sides) the angle comes from x and z across the tree at that height; with a 2D layout (one side)
+    from where the LED stands across the tree (the width of the tree at that height is taken from the LEDs around it): a LED seen from the
+    front is on the near half, one in `back` (not seen by the scan, so on the far side) on the far half."""
     n = len(layout)
-    if n < 3:
-        return layout
     ys = [p["y"] for p in layout]
     y_top, y_bot = max(ys), min(ys)
     height = (y_top - y_bot) or 1.0
@@ -183,16 +186,64 @@ def apex_layout(layout: list, back=()) -> list:
             theta = math.atan2(cx, cz)
         else:
             theta = math.pi - math.asin(cx) if i in back else math.asin(cx)
-        rho = 0.5 * (y_top - p["y"]) / height
-        out.append({"x": rho * math.sin(theta), "y": 0.5 + rho * math.cos(theta), "z": 0})
+        theta = (theta + math.pi) % (2 * math.pi) - math.pi
+        out.append(((y_top - p["y"]) / height, theta))
     return out
 
 
+def _tree_width(layout: list) -> float:
+    """Width of the tree at its base divided by its height (the layout is in height units)."""
+    xs = [p["x"] for p in layout]
+    return (max(xs) - min(xs)) or 0.5
+
+
+def apex_layout(layout: list, back=()) -> list:
+    """A tree laid out like a round window whose centre is the tip: an effect that spreads from the centre of the window then spreads
+    from the top of the tree down to its base, and an effect that turns around the centre turns around the trunk. The distance from the
+    centre is the distance from the tip along the cone (0 at the tip, the radius 0.5 of the disk at the base), the angle is the angle
+    around the trunk (all of it, 360 degrees)."""
+    if len(layout) < 3:
+        return layout
+    out = [{"x": 0.5 * s * math.sin(th), "y": 0.5 + 0.5 * s * math.cos(th), "z": 0} for s, th in tree_polar(layout, back)]
+    disk = Layout(out)
+    disk.box = (-0.5, 0.5, 0.0, 1.0)  # the tip is the centre of the picture, the base circle its edge
+    return disk
+
+
+def cone_layout(layout: list, back=()) -> list:
+    """The cone surface (without the base) rolled out flat: a sector of a circle with the tip at the top. Distances along the surface are
+    kept, so an effect keeps its true shapes (a circle stays a circle, a diagonal stripe becomes a spiral round the tree). The sector is
+    narrower than the full circle: 2*pi*R/L, about 109 degrees for a tree 180 cm high and 115 cm wide at the base. The seam is at the back."""
+    if len(layout) < 3:
+        return layout
+    radius = _tree_width(layout) / 2           # of the base, in heights
+    slant = math.hypot(1.0, radius)            # the length of the side of the cone
+    k = radius / slant                         # the sector angle is 2*pi*k
+    out = []
+    for s, th in tree_polar(layout, back):
+        d, psi = s * slant, th * k
+        out.append({"x": d * math.sin(psi), "y": 1.0 - d * math.cos(psi), "z": 0})
+    return Layout(out)
+
+
+def wrap_layout(layout: list, back=()) -> list:
+    """The surface of the tree as a strip: x = the way round the trunk (one turn is the length of the circle at the middle of the tree), y = the
+    height. An effect that repeats along x (stripes, waves) closes round the tree without a seam; the seam is at the back."""
+    if len(layout) < 3:
+        return layout
+    turn = math.pi * _tree_width(layout) / 2   # the circle at half the height: 2*pi*(R/2) with R = width/2
+    out = [{"x": (th / (2 * math.pi)) * turn, "y": 1.0 - s, "z": 0} for s, th in tree_polar(layout, back)]
+    strip = Layout(out)
+    strip.box = (-turn / 2, turn / 2, 0.0, 1.0)
+    return strip
+
+
 def render_layout(dev: dict, mapping: str = "plane") -> list:
-    """The layout effects are drawn on. `mapping` 'apex' only applies to a garland whose shape is 'tree'."""
+    """The layout effects are computed on. `mapping` (apex, cone, wrap) only applies to a garland whose shape is 'tree'."""
     lay = physical(get_layout(dev), device_aspect(dev["name"]))
-    if mapping == "apex" and device_shape(dev["name"]) == "tree":
-        return apex_layout(lay, device_settings(dev["name"]).get("back", []))
+    if mapping in MAPPINGS and mapping != "plane" and device_shape(dev["name"]) == "tree":
+        back = device_settings(dev["name"]).get("back", [])
+        return {"apex": apex_layout, "cone": cone_layout, "wrap": wrap_layout}[mapping](lay, back)
     return lay
 
 

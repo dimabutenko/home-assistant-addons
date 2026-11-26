@@ -249,4 +249,147 @@ stars + hsv(q5 * 0.6, 1 - 0.55 * q5, 1) * s5 + hsv(q6 * 0.6, 1 - 0.55 * q6, 1) *
      "inputs": [_slow("living", WIFI_LIVING, -95, -40, 3, 0.7), _slow("bed", WIFI_BED, -95, -40, 3, 0.5), _slow("dpc", WIFI_DPC, -95, -40, 3, 0.5),
                 _slow("vpc", WIFI_VPC, -95, -40, 3, 0.5), _slow("meters", WIFI_METERS, -95, -40, 3, 0.3), _slow("door", WIFI_DOOR, -95, -40, 3, 0.2),
                 _slow("water", WIFI_WATER, -95, -40, 3, 0.7), _slow("plant", BLE_PLANT, -95, -40, 3, 0.5)]},
+    # ---- in the manner of the stored effects that look good on the tree: every LED on its own (Twinkle, Slow stars, Glitter) or stripes / streaks /
+    # strands drawn on the front view (Candy stripes, Rain, Double helix). Nothing turns round a centre, so they suit a wall and a tree alike.
+    {"name": "Live twinkle", "code": """# Twinkle with a pulse from the home: every LED blinks on its own (warm white). The house power sets how fast they blink and how many LEDs take part,
+# the sun cools the colour by day (warm at night), a jump of the load of Dima's PC makes a burst of quick blinks over the whole tree.
+ph = hash(i, 1)
+fr = 1 + floor(hash(i, 2) * 3)
+tt = now * 0.12 + house_phase * 0.4
+alive = step(hash(i, 4), 0.45 + 0.55 * house)
+s = (0.5 + 0.5 * sin(tau * (fr * tt + ph))) ** 5
+c = hash(i, 3)
+base = mix(palette("warm white", c), palette("ice", c), sun * 0.7)
+burst = dcpu_kick * hash(i, floor(now * 7)) ** 2
+base * (s * alive + burst)""", "params": [],
+     "inputs": [_in("house", HOUSE, 300, 2300, 0.6), _slow("sun", "sun.sun", -8, 40, 5, 0.2, "elevation"), _in("dcpu", DCPU, 0, 30, 0.4, 0.3, kick=0.12)]},
+    {"name": "Live stars", "code": """# Slow stars: a few LEDs pulse softly in starlight colours, more of them the more power the house draws. A jump of the load of Dima's PC sends
+# a shooting star along the string of lights (it runs along the numbers of the LEDs, so it follows the wire round the tree).
+ph = hash(i, 22)
+fr = 1 + floor(hash(i, 24) * 2)
+tt = now * 0.07 + house_phase * 0.15
+star = step(hash(i, 21), 0.1 + 0.45 * house)
+b = (0.5 + 0.5 * sin(tau * (fr * tt + ph))) ** 3
+field = palette("starlight", hash(i, 23)) * b * star
+d = hash(dcpu_count, 3) * n * 0.4 + dcpu_age * 120 - i
+comet = exp(-d / 16) * step(0, d) * step(dcpu_age, 3.5)
+field + rgb(0.75, 0.9, 1) * comet""", "params": [],
+     "inputs": [_in("house", HOUSE, 300, 2300, 0.6), _in("dcpu", DCPU, 0, 30, 0.4, 0.3, kick=0.12)]},
+    {"name": "Live glitter", "code": """# Glitter: LEDs flash sharply in neon colours, driven by the network. The more data comes down, the faster they flash; the upload decides how
+# many LEDs take part. A jump of the house power flashes the whole tree for a moment.
+on = step(hash(i, 41), 0.35 + 0.6 * up)
+uu = fract(down_phase * 0.8 + now * 0.45 + hash(i, 42))
+b = max(0, 1 - uu / 0.22) ** 2
+c = cpalette("neon", hash(i, 43))
+c * 2.6 * (on * b + house_kick * 0.6 * step(0.55, hash(i, floor(now * 9))))""", "params": [],
+     "inputs": [_in("down", DOWN, 0, 60, 0.5), _in("up", UP, 0, 40, 0.5), _in("house", HOUSE, 300, 2300, 0.5, 0.4, kick=0.1)]},
+    {"name": "Live candy", "code": """# Candy stripes that follow the wind: the stripes lie across the wind (the bearing of the wind from the weather), run with its speed and are
+# narrower when the house draws more power; a jump of the power makes them flash. Two colours of the candy palette.
+ang = wb * tau
+k = 3 + 9 * house
+s = fract((x * cos(ang) + y * sin(ang)) * k * 0.5 + ws_phase * 1.2 + now * 0.04)
+w2 = smoothstep(0.42, 0.5, s) - smoothstep(0.92, 1, s)
+mix(palette("candy", 0), palette("candy", 1), w2) * (0.85 + 0.35 * house_kick)""", "params": [],
+     "inputs": [_slow("wb", "weather.forecast_home_2", 0, 360, 4, 0.18, "wind_bearing"), _slow("ws", "weather.forecast_home_2", 0, 30, 3, 0.15, "wind_speed"),
+                _in("house", HOUSE, 300, 2300, 0.6, 0.4, kick=0.1)]},
+    {"name": "Live rain", "code": """# Rain made of network traffic: the more data comes down, the denser the rain; the faster the upload, the faster it falls. Streaks in ice colours
+# fall in columns across the tree; a jump of the house power is a flash of lightning.
+lane = floor(u * 20)
+dens = 1 + 2 * down
+fall = now * 0.5 + up_phase * 1.5
+uu = fract(y * dens + fall + hash(lane, 61))
+b = max(0, 1 - uu / 0.5) ** 1.5
+palette("ice", 0.55 + 0.45 * b) * b * (1.4 + 0.8 * down) + rgb(0.45, 0.6, 1) * house_kick * 0.5""", "params": [],
+     "inputs": [_in("down", DOWN, 0, 60, 0.5), _in("up", UP, 0, 40, 0.5), _in("house", HOUSE, 300, 2300, 0.5, 0.4, kick=0.1)]},
+    {"name": "Live helix", "code": """# A double helix: two strands twist round each other up the tree. The house power sets how many turns it has, the load of Dima's PC spins it,
+# a jump of that load makes the strands fatter for a moment.
+turns = 1 + 1.5 * house
+ph = tau * (y * turns - dcpu_phase * 0.25 - now * 0.08)
+xs = 0.5 + 0.38 * sin(ph)
+wd = 0.1 + 0.1 * dcpu_kick
+depth = cos(ph)
+ba = exp(-((u - xs) ** 2) / (2 * wd * wd)) * (0.55 + 0.45 * depth)
+bb = exp(-((u - (1 - xs)) ** 2) / (2 * wd * wd)) * (0.55 - 0.45 * depth)
+palette("neon", 0.15) * ba if ba >= bb else palette("neon", 0.85) * bb""", "params": [],
+     "inputs": [_in("house", HOUSE, 300, 2300, 0.6), _in("dcpu", DCPU, 0, 30, 0.4, 0.3, kick=0.12)]},
+    # ---- round two: spirals, ribbons and candy; the whole tree is lit (no dark gaps). The far side of a tree is dimmed by the garland itself.
+    {"name": 'Live triple helix', "mapping": 'plane', "code": """# Three strands braided round each other, the strand in front the brightest, on a soft colour that fills the whole tree.
+# The house power sets the number of turns, the load of Dima's PC the spin.
+turns = 0.8 + 1.4 * house
+ph = tau * (y * turns - dcpu_phase * 0.2 - now * 0.06)
+wd = 0.1 + 0.07 * dcpu_kick
+x0 = 0.5 + 0.36 * sin(ph)
+x1 = 0.5 + 0.36 * sin(ph + 2.0944)
+x2 = 0.5 + 0.36 * sin(ph + 4.1888)
+g0 = exp(-((u - x0) ** 2) / (2 * wd * wd)) * (0.55 + 0.45 * cos(ph))
+g1 = exp(-((u - x1) ** 2) / (2 * wd * wd)) * (0.55 + 0.45 * cos(ph + 2.0944))
+g2 = exp(-((u - x2) ** 2) / (2 * wd * wd)) * (0.55 + 0.45 * cos(ph + 4.1888))
+w0 = step(g1, g0) * step(g2, g0)
+w1 = (1 - w0) * step(g2, g1)
+w2 = 1 - w0 - w1
+gm = max(g0, max(g1, g2))
+bg = palette("aurora", 0.55 + 0.3 * sin(tau * (v * 0.7 + now * 0.01))) * 0.3
+rgb(1, 0.15, 0.3) * g0 * w0 + rgb(0.1, 0.9, 0.4) * g1 * w1 + rgb(0.2, 0.4, 1) * g2 * w2 + bg * (1 - min(gm * 1.5, 1))""", "params": [],
+     "inputs": [{"name": "house", "entity": "sensor.main_energy_sensor_power", "attribute": "", "min": 300, "max": 2300, "smooth": 0.6, "default": 0.4, "auto": True, "kick": 0.1}, {"name": "dcpu", "entity": "sensor.dima_pc_satelite_cpuload", "attribute": "", "min": 0, "max": 30, "smooth": 0.4, "default": 0.3, "auto": True, "kick": 0.12}]},
+    {"name": 'Live DNA ladder', "mapping": 'plane', "code": """# A double helix with rungs between the strands, on a soft two-colour glow that fills the tree. House power: turns, PC load: spin.
+turns = 1 + 1.2 * house
+ph = tau * (y * turns - dcpu_phase * 0.2 - now * 0.06)
+xs = 0.5 + 0.36 * sin(ph)
+wd = 0.09
+ba = exp(-((u - xs) ** 2) / (2 * wd * wd)) * (0.55 + 0.45 * cos(ph))
+bb = exp(-((u - (1 - xs)) ** 2) / (2 * wd * wd)) * (0.55 - 0.45 * cos(ph))
+rung = smoothstep(0.3, 0.0, abs(cos(ph))) * step(abs(u - 0.5), 0.4 * abs(sin(ph)))
+strand = palette("neon", 0.15) * ba if ba >= bb else palette("neon", 0.85) * bb
+bg = mix(palette("neon", 0.1), palette("neon", 0.9), v) * 0.32
+strand + rgb(1, 1, 1) * rung * 0.8 + bg * (1 - min(max(ba, bb) * 1.5 + rung, 1))""", "params": [],
+     "inputs": [{"name": "house", "entity": "sensor.main_energy_sensor_power", "attribute": "", "min": 300, "max": 2300, "smooth": 0.6, "default": 0.4, "auto": True, "kick": 0.1}, {"name": "dcpu", "entity": "sensor.dima_pc_satelite_cpuload", "attribute": "", "min": 0, "max": 30, "smooth": 0.4, "default": 0.3, "auto": True, "kick": 0.12}]},
+    {"name": 'Live ribbons', "mapping": 'plane', "code": """# Three ribbons of light sway up the tree and cross each other, where they meet the colours mix, on a deep colour that fills the tree.
+# The speed follows the download.
+a1 = 0.5 + 0.34 * sin(tau * (y * 0.9 - now * 0.05 - down_phase * 0.1))
+a2 = 0.5 + 0.34 * sin(tau * (y * 1.3 - now * 0.07 - down_phase * 0.12) + 2)
+a3 = 0.5 + 0.34 * sin(tau * (y * 1.7 + now * 0.04 + down_phase * 0.08) + 4)
+wd = 0.1 + 0.05 * up
+bg = palette("aurora", 0.3 + 0.25 * sin(tau * (v + now * 0.02))) * 0.3
+palette("aurora", 0.1) * exp(-((u - a1) ** 2) / (2 * wd * wd)) + palette("aurora", 0.5) * exp(-((u - a2) ** 2) / (2 * wd * wd)) + palette("aurora", 0.9) * exp(-((u - a3) ** 2) / (2 * wd * wd)) + bg""", "params": [],
+     "inputs": [{"name": "down", "entity": "sensor.keenetic_titan_wifistation_internal_downlink_speed", "attribute": "", "min": 0, "max": 60, "smooth": 0.5, "default": 0.4, "auto": True, "kick": 0.12}, {"name": "up", "entity": "sensor.keenetic_titan_wifistation_internal_uplink_speed", "attribute": "", "min": 0, "max": 40, "smooth": 0.5, "default": 0.4, "auto": True, "kick": 0.12}]},
+    {"name": 'Live wavy candy', "mapping": 'plane', "code": """# Candy stripes that wave like a flag: the wind speed sets how strongly they sway, the wind bearing which way they lean.
+ang = wb * tau
+sway = 0.04 + 0.2 * ws
+c = (x * cos(ang) + y * sin(ang)) * 4 + sway * 4 * sin(tau * (y * 2 + now * 0.1)) + ws_phase * 1.2 + now * 0.05
+s = fract(c)
+w2 = smoothstep(0.42, 0.5, s) - smoothstep(0.92, 1, s)
+mix(palette("candy", 0), palette("candy", 1), w2)""", "params": [],
+     "inputs": [{"name": "wb", "entity": "weather.forecast_home_2", "attribute": "wind_bearing", "min": 0, "max": 360, "smooth": 4, "default": 0.18, "auto": False, "kick": 0.12}, {"name": "ws", "entity": "weather.forecast_home_2", "attribute": "wind_speed", "min": 0, "max": 30, "smooth": 3, "default": 0.15, "auto": False, "kick": 0.12}]},
+    {"name": 'Live frosted candy', "mapping": 'plane', "code": """# Candy stripes in white and ice blue with glitter sparkling in the stripes. The wind turns the stripes and drives them.
+ang = wb * tau
+s = fract((x * cos(ang) + y * sin(ang)) * 4 + ws_phase * 1.2 + now * 0.04)
+w2 = smoothstep(0.42, 0.5, s) - smoothstep(0.92, 1, s)
+sparkle = step(0.9, hash(i, floor(now * 6)))
+mix(rgb(0.05, 0.2, 0.55), rgb(0.85, 0.95, 1), w2) * (0.85 + 0.15 * hash(i, 5)) + rgb(1, 1, 1) * sparkle * (0.4 + 0.6 * w2)""", "params": [],
+     "inputs": [{"name": "wb", "entity": "weather.forecast_home_2", "attribute": "wind_bearing", "min": 0, "max": 360, "smooth": 4, "default": 0.18, "auto": False, "kick": 0.12}, {"name": "ws", "entity": "weather.forecast_home_2", "attribute": "wind_speed", "min": 0, "max": 30, "smooth": 3, "default": 0.15, "auto": False, "kick": 0.12}]},
+    {"name": 'Live spiral candy', "mapping": 'wrap', "code": """# Candy stripes that wind round the tree like a ribbon round a candy cane (on a wall they are just slanted stripes). The house power sets
+# how steep the spiral is, the wind drives it.
+s = fract(u * 2 + v * (1.5 + 2 * house) - now * 0.05 - ws_phase * 1.0)
+w2 = smoothstep(0.42, 0.5, s) - smoothstep(0.92, 1, s)
+mix(palette("candy", 0), palette("candy", 1), w2)""", "params": [],
+     "inputs": [{"name": "house", "entity": "sensor.main_energy_sensor_power", "attribute": "", "min": 300, "max": 2300, "smooth": 0.6, "default": 0.4, "auto": True, "kick": 0.1}, {"name": "ws", "entity": "weather.forecast_home_2", "attribute": "wind_speed", "min": 0, "max": 30, "smooth": 3, "default": 0.15, "auto": False, "kick": 0.12}]},
+    {"name": 'Live christmas spiral', "mapping": 'wrap', "code": """# Three wide spirals, red, green and white, wind up the tree side by side and cover all of it. The load of Dima's PC drives them.
+s = fract(u * 3 + v * 2.2 - now * 0.05 - dcpu_phase * 0.3)
+f = fract(s * 3)
+edge = smoothstep(0, 0.12, f) * smoothstep(1, 0.88, f)
+i0 = 1 - step(0.3333, s)
+i2 = step(0.6667, s)
+i1 = 1 - i0 - i2
+(rgb(0.95, 0.04, 0.06) * i0 + rgb(0.04, 0.8, 0.2) * i1 + rgb(1, 0.95, 0.85) * i2) * (0.35 + 0.65 * edge)""", "params": [],
+     "inputs": [{"name": "dcpu", "entity": "sensor.dima_pc_satelite_cpuload", "attribute": "", "min": 0, "max": 30, "smooth": 0.4, "default": 0.3, "auto": True, "kick": 0.12}]},
+    {"name": 'Live rainbow spiral', "mapping": 'wrap', "code": """# A rainbow that winds round the tree. The speed follows the network.
+hue = fract(u * 2 + v * 1.5 - now * 0.04 - down_phase * 0.1)
+hsv(hue, 0.95, 1)""", "params": [],
+     "inputs": [{"name": "down", "entity": "sensor.keenetic_titan_wifistation_internal_downlink_speed", "attribute": "", "min": 0, "max": 60, "smooth": 0.5, "default": 0.4, "auto": True, "kick": 0.12}]},
+    {"name": 'Live twisted candy', "mapping": 'wrap', "code": """# Candy stripes that twist: the stripes round the tree wobble up and down as they go round, and the wobble grows with the wind.
+c = v * 4 + 0.4 * (0.4 + ws) * sin(tau * (u * 2 + now * 0.06)) + now * 0.06 + ws_phase * 0.8
+s = fract(c)
+w2 = smoothstep(0.42, 0.5, s) - smoothstep(0.92, 1, s)
+mix(palette("candy", 0), palette("candy", 1), w2)""", "params": [],
+     "inputs": [{"name": "ws", "entity": "weather.forecast_home_2", "attribute": "wind_speed", "min": 0, "max": 30, "smooth": 3, "default": 0.15, "auto": False, "kick": 0.12}]},
 ]

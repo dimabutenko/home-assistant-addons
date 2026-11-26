@@ -112,15 +112,22 @@ def device_shape(name: str) -> str:
     return "tree" if device_settings(name).get("shape") == "tree" else "wall"
 
 
+def device_shade(name: str) -> float:
+    """How much the far side of a tree is dimmed (0 = not at all, 1 = the back is dark); a wall has none."""
+    if device_shape(name) != "tree":
+        return 0.0
+    return max(0.0, min(1.0, float(device_settings(name).get("shade", 0.5))))
+
+
 def save_device_settings(name: str, **changes) -> None:
-    """Keys: aspect (float or None), shape ('wall' / 'tree'), back (indexes of the LEDs on the far side of a tree, from a scan)."""
+    """Keys: aspect (float or None), shape ('wall' / 'tree'), shade (0..1, dimming of the far side of a tree), back (indexes of the LEDs on the far side of a tree, from a scan)."""
     st = load_settings()
     dev = st.setdefault("devices", {}).setdefault(name, {})
     for k, v in changes.items():
         if v is None or (k == "shape" and v == "wall") or (k == "back" and not v):
             dev.pop(k, None)
         else:
-            dev[k] = float(v) if k == "aspect" else v
+            dev[k] = float(v) if k in ("aspect", "shade") else v
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     _settings_path().write_text(json.dumps(st, indent=1))
 
@@ -150,6 +157,7 @@ class Layout(list):
     area for the middle of the picture (r, a, u, v): that is the centre of the bounding box of the LEDs unless `box` = (x0, x1, y0, y1) says
     otherwise. The disk the tip mapping lays a tree on has its centre (the tip) at (0, 0.5) whatever the LEDs fill of it."""
     box = None
+    shade = None   # one brightness factor (0..1) per LED, applied to every picture drawn on this layout (the far side of a tree is dimmer)
 
 
 def tree_polar(layout: list, back=()) -> list:
@@ -197,6 +205,12 @@ def _tree_width(layout: list) -> float:
     return (max(xs) - min(xs)) or 0.5
 
 
+def tree_shade(layout: list, back=(), strength: float = 0.5) -> list:
+    """A brightness factor for every LED of a tree: 1 at the front, 1 - strength at the back, smooth round the sides. It gives the picture
+    a body (the LEDs on the far side shine through the tree, but dimmer)."""
+    return [1.0 - strength * (0.5 - 0.5 * math.cos(th)) for _s, th in tree_polar(layout, back)]
+
+
 def apex_layout(layout: list, back=()) -> list:
     """A tree laid out like a round window whose centre is the tip: an effect that spreads from the centre of the window then spreads
     from the top of the tree down to its base, and an effect that turns around the centre turns around the trunk. The distance from the
@@ -241,10 +255,14 @@ def wrap_layout(layout: list, back=()) -> list:
 def render_layout(dev: dict, mapping: str = "plane") -> list:
     """The layout effects are computed on. `mapping` (apex, cone, wrap) only applies to a garland whose shape is 'tree'."""
     lay = physical(get_layout(dev), device_aspect(dev["name"]))
-    if mapping in MAPPINGS and mapping != "plane" and device_shape(dev["name"]) == "tree":
-        back = device_settings(dev["name"]).get("back", [])
-        return {"apex": apex_layout, "cone": cone_layout, "wrap": wrap_layout}[mapping](lay, back)
-    return lay
+    if device_shape(dev["name"]) != "tree" or len(lay) < 3:
+        return lay
+    back = device_settings(dev["name"]).get("back", [])
+    out = {"apex": apex_layout, "cone": cone_layout, "wrap": wrap_layout}[mapping](lay, back) if mapping in MAPPINGS and mapping != "plane" else Layout(lay)
+    strength = device_shade(dev["name"])
+    if strength > 0:
+        out.shade = tree_shade(lay, back, strength)
+    return out
 
 
 # ---- desired state ------------------------------------------------------

@@ -113,6 +113,7 @@ class LiveScene:
         defs, self.inputs = self.spec["params"], self.spec["inputs"]
         self.fn = formula.compile_formula(self.spec["code"], formula.all_names(defs, self.inputs))
         self.prep = formula.Prepared(layout)
+        self.shade = getattr(layout, "shade", None)  # the far side of a tree dimmer
         self.pvals = [float(self.params.get(d["name"], d["default"])) for d in defs]
         self.k = float(self.params.get("intensity", 0.9))
         self.seed = float(self.params.get("seed", 1))
@@ -163,8 +164,8 @@ class LiveScene:
             lim = max(1, int(MAX_SLEW * dt))
             out = bytes(p + max(-lim, min(lim, c - p)) for p, c in zip(self.prev, out))
         self.prev = out
-        self.fb["frame"] = out
-        return out
+        self.fb["frame"] = out  # the feedback of prev() and the limit of the change use the picture before the dimming
+        return formula.apply_shade(out, self.shade) if self.shade else out
 
 
 class _Relogins(logging.Handler):

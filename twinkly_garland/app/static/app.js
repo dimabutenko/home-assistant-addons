@@ -177,11 +177,21 @@ function deviceCard(d) {
     h('div', { class: 'row', style: 'margin-top:8px' },
       h('label', { class: 'muted', title: 'A tree (a cone): effects can be put on it with the centre on the tip. Enter the width of the tree at its base and its height as the real size.' }, 'Shape ',
         h('select', { class: 'small', onchange: e => saveShape(d.name, e.target.value) }, [['wall', 'wall / window'], ['tree', 'tree (cone)']].map(([v, t]) => h('option', { value: v, selected: (d.shape || 'wall') === v }, t)))),
+      (d.shape === 'tree' ? h('label', { class: 'muted', title: 'The LEDs on the far side of the tree shine through it: this much dimmer (0 = as bright as the front, 100 = dark). It gives the picture a body.' }, 'Back dimming % ',
+        h('input', { type: 'number', min: 0, max: 100, step: 5, style: 'width:64px', value: Math.round((d.shade === undefined ? 0.5 : d.shade) * 100), onchange: e => saveShade(d.name, Number(e.target.value)) })) : null),
       h('span', { class: 'muted', title: 'Twinkly stretches the scan to a 2:1 box. Enter the real size of the area covered by the lights (any unit) to make circles round. Empty = as stored on the device.' }, 'Real size of the lit area, w x h:'),
       h('input', { type: 'number', min: 1, step: 'any', id: `pw-${d.name}`, style: 'width:80px', placeholder: 'width', value: d.aspect ? Math.round(d.aspect * 100) : '' }),
       h('span', {}, 'x'),
       h('input', { type: 'number', min: 1, step: 'any', id: `ph-${d.name}`, style: 'width:80px', placeholder: 'height', value: d.aspect ? 100 : '' }),
       h('button', { class: 'small', onclick: () => saveAspect(d.name) }, 'Save size')));
+}
+
+async function saveShade(name, pct) {
+  try {
+    await send(`api/devices/${encodeURIComponent(name)}/settings`, { shade: Math.max(0, Math.min(100, pct)) / 100 }, 'PUT');
+    toast('Back dimming saved. Effects are redrawn; press Sync now to upload the stored ones.');
+    loadGallery(); loadStatus();
+  } catch (e) { toast('Not saved: ' + e.message, true, 8000); }
 }
 
 async function saveShape(name, shape) {

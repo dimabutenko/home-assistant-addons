@@ -100,10 +100,18 @@ def _blend(mode: str, b: int, s: int) -> float:
 _cache: dict = {}
 
 
+def _shaded(r: effects.Rendered, weights: list) -> effects.Rendered:
+    """The pictures with every LED multiplied by its factor (the far side of a tree dimmer)."""
+    from .formula import apply_shade
+    return effects.Rendered(fps=r.fps, frames=[apply_shade(f, weights) for f in r.frames])
+
+
 def render_instance(inst: dict, layout: list) -> effects.Rendered:
     inst = normalize(inst)
+    shade = getattr(layout, "shade", None)
     sig = hashlib.md5(json.dumps([inst["layers"], inst["duration"], inst["fps"], palettes.VERSION,
-                                  [(round(p["x"], 5), round(p["y"], 5)) for p in layout]]).encode()).hexdigest()
+                                  [(round(p["x"], 5), round(p["y"], 5)) for p in layout],
+                                  [round(w, 3) for w in shade] if shade else None]).encode()).hexdigest()
     if sig in _cache:
         return _cache[sig]
     parts = []
@@ -133,6 +141,8 @@ def render_instance(inst: dict, layout: list) -> effects.Rendered:
                         buf[c] = b + (_blend(mode, b, src[c]) - b) * a
             frames.append(bytes(min(255, max(0, int(v))) for v in buf))
         out = effects.Rendered(fps=r0.fps, frames=frames)
+    if shade:
+        out = _shaded(out, shade)
     if len(_cache) >= 60:
         _cache.pop(next(iter(_cache)))
     _cache[sig] = out

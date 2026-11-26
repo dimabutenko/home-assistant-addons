@@ -12,10 +12,10 @@ async function loadFormulas() {
   try { FM.ha = await api('api/ha/status'); } catch { FM.ha = { available: false, error: 'status failed' }; }
 }
 
-function fmCopy(src) { return { name: src.name, code: src.code, params: clone(src.params || []), inputs: clone(src.inputs || []), mapping: src.mapping || 'plane' }; }
+function fmCopy(src) { return { name: src.name, code: src.code, params: clone(src.params || []), inputs: clone(src.inputs || []), mapping: src.mapping || 'plane', shape: src.shape || 'any' }; }
 
 function fmNew(from) {
-  const src = from || { name: '', code: 'palette("fire", y)', params: [], inputs: [], mapping: 'plane' };
+  const src = from || { name: '', code: 'palette("fire", y)', params: [], inputs: [], mapping: 'plane', shape: 'any' };
   fmLiveStop();
   FM.cur = fmCopy(src); FM.cur.name = fmUniqueName(src.name || 'my formula');
   FM.orig = null; FM.vals = {}; FM.previewData = null; FM.status = null; FM.seam = null;
@@ -196,7 +196,7 @@ function fmShowStatus() {
 async function fmSave() {
   const c = FM.cur;
   if (!/^[A-Za-z0-9 _-]{1,32}$/.test(c.name.trim())) { toast('Name: 1-32 letters, digits, space, _ or -', true); return false; }
-  const item = { name: c.name.trim(), code: c.code, params: fmDefs(), inputs: fmInputs(), mapping: c.mapping || 'plane' };
+  const item = { name: c.name.trim(), code: c.code, params: fmDefs(), inputs: fmInputs(), mapping: c.mapping || 'plane', shape: c.shape || 'any' };
   const list = clone(FM.items), idx = list.findIndex(i => i.name === FM.orig);
   if (idx >= 0) list[idx] = item; else if (list.some(i => i.name === item.name)) { toast('Another formula already has this name', true); return false; } else list.push(item);
   try { await send('api/formulas', list, 'PUT'); } catch (e) { toast('Not saved: ' + e.message, true, 9000); return false; }
@@ -426,6 +426,8 @@ function renderFormulas() {
     h('div', {},
       h('div', { class: 'card', style: 'margin-bottom:10px' },
         h('div', { class: 'field' }, h('label', {}, 'Name', h('input', { type: 'text', maxlength: 32, size: 22, value: c.name, oninput: e => { c.name = e.target.value; } })),
+          h('label', { title: 'Which garlands "live:random" (the automation) puts this scene on: any, only a wall / window or only a tree. A scene you start by hand plays on any garland.' }, 'Meant for ',
+            h('select', { onchange: e => { c.shape = e.target.value; } }, [['any', 'any garland'], ['wall', 'a wall / window'], ['tree', 'a tree']].map(([v, t]) => h('option', { value: v, selected: (c.shape || 'any') === v }, t)))),
           h('label', { title: 'How the formula is put on a garland that is set as a tree. "As on a wall": the front view of the tree. "From the tip": the centre of the formula (r = 0) is the tip, r grows down to the base and a turns around the trunk. "Cone surface": the surface of the cone rolled out flat (a fan), shapes keep their true form. "Wrapped around": u is the way round the trunk (0 to 1, the front in the middle, the seam at the back), v the height. A wall ignores it.' }, 'On a tree ',
             h('select', { onchange: e => { c.mapping = e.target.value; fmSchedule(0); } }, [['plane', 'as on a wall'], ['apex', 'from the tip (rings run down from the top)'], ['cone', 'cone surface (the effect rolled onto the cone, true shapes)'], ['wrap', 'wrapped around (round the trunk and up, no seam)']].map(([v, t]) => h('option', { value: v, selected: (c.mapping || 'plane') === v }, t))))),
         h('div', { class: 'muted' }, 'Formula. One "name = expression" per line, the last line is the colour.'), code),

@@ -257,6 +257,7 @@ class FormulaIn(BaseModel):
     params: list[dict] = []
     inputs: list[dict] = []
     mapping: str = "plane"
+    shape: str = "any"  # any / wall / tree: which garlands live:random may put the scene on
 
 
 class FormulaCheck(BaseModel):
@@ -363,15 +364,26 @@ def start_live(scene_name: str, names: list, fps: float = 8.0, restart: bool = F
     `random` picks one of the saved formulas that have inputs (live scenes), preferring another one than the current."""
     running = {n: device.live_hosts.get(find_device(n)["host"]) for n in names}
     if scene_name == "random":
-        pool = [f["name"] for f in formula.load() if f.get("inputs")]
-        if not pool:
+        # one scene per kind of garland: a tree gets the scenes marked "tree" or "any", a wall those marked "wall" or "any"
+        live_scenes = [f for f in formula.load() if f.get("inputs")]
+        if not live_scenes:
             raise HTTPException(404, "no live scene is saved yet: save a formula with inputs in the Formulas tab")
-        current = {st.name for st in running.values() if st}
-        fresh = [p for p in pool if p not in current]
-        if not fresh:  # nothing else to switch to
-            return [{"device": n, "live": running[n].name, "fps": fps, "kept": True} for n in names if running[n]] or \
-                start_live(pool[0], names, fps, restart)
-        scene_name = random.choice(fresh)
+        groups: dict = {}
+        for n in names:
+            groups.setdefault(device.device_shape(n), []).append(n)
+        out = []
+        for shape, group in groups.items():
+            pool = [f["name"] for f in live_scenes if f.get("shape", "any") in ("any", shape)]
+            if not pool:
+                out += [{"device": n, "error": f"no live scene is meant for a {shape}"} for n in group]
+                continue
+            current = {running[n].name for n in group if running[n]}
+            fresh = [p for p in pool if p not in current]
+            if not fresh:  # nothing else to switch to
+                out += [{"device": n, "live": running[n].name, "fps": fps, "kept": True} for n in group if running[n]] or start_live(pool[0], group, fps, restart)
+            else:
+                out += start_live(random.choice(fresh), group, fps, restart)
+        return out
     spec = formula.get(scene_name)
     if spec is None:
         raise HTTPException(404, f"unknown formula {scene_name!r}: save it in the Formulas tab first")
@@ -645,7 +657,7 @@ def api_gallery(device_name: str = ""):
 # ---- API: devices ---------------------------------------------------------------
 
 def probe(dev: dict) -> dict:
-    return {**_probe(dev), "shape": device.device_shape(dev["name"])}
+    return {**_probe(dev), "shape": device.device_shape(dev["name"]), "shade": device.device_shade(dev["name"])}
 
 
 def _probe(dev: dict) -> dict:
@@ -731,6 +743,7 @@ def api_status(fresh: bool = False):
 class DevSettings(BaseModel):
     aspect: float | None = None  # real width / height of the area the garland covers
     shape: str | None = None     # "wall" or "tree"
+    shade: float | None = None   # tree: how much the far side is dimmed, 0..1
 
 
 @app.put("/api/devices/{name}/settings")
@@ -745,6 +758,10 @@ def api_device_settings(name: str, req: DevSettings):
         changes["aspect"] = req.aspect
     if req.shape is not None:
         changes["shape"] = req.shape
+    if req.shade is not None:
+        if not 0 <= req.shade <= 1:
+            raise HTTPException(400, "shade must be between 0 and 1")
+        changes["shade"] = req.shade
     device.save_device_settings(name, **changes)
     _drop_status_cache()
     return {"aspect": req.aspect, "shape": device.device_shape(name)}

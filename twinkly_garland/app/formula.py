@@ -616,7 +616,8 @@ def validate_item(item: dict) -> dict:
     inputs = clean_inputs(item.get("inputs", []), {d["name"] for d in defs})
     compile_formula(str(item.get("code", "")), all_names(defs, inputs))
     mapping = item.get("mapping") if item.get("mapping") in ("plane", "apex", "cone", "wrap") else "plane"
-    return {"name": name, "code": str(item["code"]), "params": defs, "inputs": inputs, "mapping": mapping}
+    shape = item.get("shape") if item.get("shape") in ("any", "wall", "tree") else "any"
+    return {"name": name, "code": str(item["code"]), "params": defs, "inputs": inputs, "mapping": mapping, "shape": shape}
 
 
 _items: list | None = None
@@ -784,6 +785,23 @@ def _prev_unbound_vec(x, y):
     return Vec(0.0, 0.0, 0.0)
 
 
+def apply_shade(buf: bytes, weights: list) -> bytes:
+    """A picture (r, g, b of every LED) with every LED multiplied by its own factor."""
+    try:
+        from . import vformula
+        np = vformula.np
+        if np is not None:
+            a = np.frombuffer(buf, dtype=np.uint8).astype(np.float64).reshape(-1, 3)
+            return (a * np.asarray(weights, dtype=np.float64)[:, None]).astype(np.uint8).tobytes()
+    except Exception:
+        pass
+    out = bytearray(len(buf))
+    for i, w in enumerate(weights):
+        for c in range(3):
+            out[3 * i + c] = int(buf[3 * i + c] * w)
+    return bytes(out)
+
+
 def eval_frame(fn, prep: Prepared, t: float, now: float, seed: float, vals: list, k: float, prevfn=None) -> bytes:
     """One frame: the formula for every LED. Raises FormulaError for mistakes in the formula."""
     buf = bytearray()
@@ -885,6 +903,4 @@ palette("ocean", k)""", "params": [_p("speed", "Speed (whole numbers loop)", 1, 
 from .examples_live import LIVE_EXAMPLES  # noqa: E402  (data only, no import cycle)
 
 EXAMPLES.extend(LIVE_EXAMPLES)
-from .examples_tree import TREE_EXAMPLES  # noqa: E402
-EXAMPLES.extend(TREE_EXAMPLES)
 

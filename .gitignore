@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+target/
+node_modules/
+.env
+*.secret
+.claude/settings.local.json

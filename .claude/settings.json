@@ -1,0 +1,25 @@
+{
+  "model": "sonnet",
+  "permissions": {
+    "allow": [
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(python tests/*)",
+      "Bash(python -I -m py_compile:*)",
+      "Bash(cargo check:*)",
+      "Bash(cargo test:*)"
+    ],
+    "ask": [
+      "Bash(git push:*)"
+    ],
+    "deny": [
+      "Read(./**/.env)",
+      "Read(./**/*.secret)",
+      "Bash(git push --force:*)",
+      "Bash(git reset --hard:*)"
+    ]
+  }
+}

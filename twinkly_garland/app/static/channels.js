@@ -91,7 +91,7 @@ function chField(c, k, label, props = {}) {  // one input bound to the draft of 
   const cur = chValue(c, k);
   const el = props.type === 'checkbox' ? h('input', { type: 'checkbox', checked: !!cur, onchange: set })
     : h('input', { type: props.type || 'text', step: 'any', value: cur === undefined || cur === null ? '' : cur, list: props.list, title: props.title, oninput: e => { set(e); if (props.suggest) chSuggest(e.target.value); } });
-  return h('label', { class: props.wide ? 'wide' : '', title: props.title }, label, el);
+  return h('label', { class: props.wider ? 'wider' : props.wide ? 'wide' : '', title: props.title }, label, el);
 }
 
 function chCard(c) {
@@ -103,9 +103,9 @@ function chCard(c) {
     h('div', { class: 'row', style: 'margin-bottom:6px' },
       h('input', { type: 'text', value: chValue(c, 'name'), maxlength: 48, size: 28, title: 'the name of the channel (you can rename it)', oninput: e => { (CH.draft[c.id] || (CH.draft[c.id] = {})).name = e.target.value; const b = document.getElementById('chs-' + c.id); if (b) b.disabled = false; } }),
       c.personal ? h('span', { class: 'badge', title: 'only one scene uses this channel' }, 'personal') : null,
-      h('span', { class: c.count ? 'muted' : 'warn' }, c.count ? `used in ${c.count} scene${c.count === 1 ? '' : 's'} and effects` : 'not used')),
+      h('span', { class: c.count ? 'muted' : 'warn' }, c.count ? `used in ${c.count} (scenes and effects)` : 'not used')),
     h('div', { class: 'ch-grid' },
-      chField(c, 'entity', 'entity', { wide: true, list: 'ch-ents', suggest: true, title: 'sensor.power_total; empty = not bound (the default value is used)' }),
+      chField(c, 'entity', 'entity', { wider: true, list: 'ch-ents', suggest: true, title: 'sensor.power_total; empty = not bound (the default value is used)' }),
       chField(c, 'attribute', 'attribute', { wide: true, title: 'optional, e.g. elevation of sun.sun' }),
       chField(c, 'min', '→ 0', { type: 'number', title: 'the value that maps to 0' }), chField(c, 'max', '→ 1', { type: 'number', title: 'the value that maps to 1' }),
       chField(c, 'smooth', 'smooth s', { type: 'number', title: 'smoothing in seconds (0.3 to 0.5 for fast signals)' }),
@@ -197,7 +197,7 @@ function renderChannels(keepScroll) {
     h('datalist', { id: 'ch-ents' })));
   if (CH.creating) root.append(chNewForm());
   root.append(h('h3', {}, 'Theme of a live round'), ...sys.map(chSystemCard), h('h3', {}, 'Signals'),
-    shown.length ? shown.map(chCard) : h('div', { class: 'card muted' }, vals.length ? 'No channel matches the filter.' : 'No channels yet: they are made when you take an example on the Formulas tab, or with "+ New channel".'));
+    ...(shown.length ? shown.map(chCard) : [h('div', { class: 'card muted' }, vals.length ? 'No channel matches the filter.' : 'No channels yet: they are made when you take an example on the Formulas tab, or with "+ New channel".')]));
   if (CH.focus) { const el = document.getElementById('ch-' + CH.focus); if (el) { el.scrollIntoView({ block: 'center' }); el.style.outline = '2px solid var(--acc)'; } CH.focus = null; }
   else if (keepScroll) window.scrollTo(0, y);
 }

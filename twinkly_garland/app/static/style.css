@@ -92,10 +92,11 @@ button.small, select.small { padding: 2px 8px; font-size: .85rem; }
 .devpick { display: flex; gap: 6px; align-items: center; font-size: .9rem; color: var(--muted); }
 
 /* channels */
-.ch-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(70px, 1fr)); gap: 6px; align-items: end; }
+.ch-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(80px, 1fr)); gap: 6px; align-items: end; }
 .ch-grid label { display: flex; flex-direction: column; gap: 2px; font-size: .78rem; color: var(--muted); }
 .ch-grid input, .ch-grid select { min-width: 0; width: 100%; padding: 3px 6px; }
 .ch-grid .wide { grid-column: span 2; }
+.ch-grid .wider { grid-column: span 4; }
 .ch-card { margin-bottom: 10px; }
 .ch-card.dirty { border-color: var(--acc); }
 .ch-merge { border: 1px dashed var(--line); border-radius: 8px; padding: 8px; margin-top: 8px; }

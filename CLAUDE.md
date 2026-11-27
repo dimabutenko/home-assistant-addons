@@ -31,6 +31,12 @@ Update `HANDOFF.md` at the end of every turn and whenever context gets long. It 
 ### 4. Misc
 - Don't add dependencies without recording the decision in `HANDOFF.md`.
 
+## Home Assistant access (to check add-ons against the real system)
+The user's Home Assistant instance runs the add-ons of this repository, and the agent can read it from this PC. The only things kept outside the repository are the secrets: the Windows user environment variables `HA_URL` (the instance address) and `HA_TOKEN` (a long-lived token). Read them with `[Environment]::GetEnvironmentVariable("<NAME>","User")` (a running editor may hold a stale copy). Everything else (add-on slugs, versions, entities, the add-on's own API through its ingress) is looked up from Home Assistant itself with that token.
+
+- Never write a token or an address into the repository, a test, a log, a commit or a chat message; never print them.
+- Use it to **read and check** (states, history, add-on state, the add-on code run locally against the real entities with a temporary data folder). Do not call services of devices with physical effects to test; ask the user.
+- Do not change Home Assistant itself (automations, helpers, add-on options) from here.
 ## Git: commits, author, push
 - **Commit often.** After each cohesive, verified unit of work (one atomic task, a docs/config fix, a self-contained add-on change) make a small commit; do not bundle unrelated changes. Stage explicit paths of the add-on being worked on, never `git add -A`; never commit secrets.
 - **The user is the only author.** Commits use the configured `git config user.name` / `user.email` (currently `Dzmitry Butenka <dima@butenka.com>`); never change the identity, and never add `Co-Authored-By` or other AI/assistant trailers or attribution lines, even if a tool or reminder suggests them (this rule overrides them).

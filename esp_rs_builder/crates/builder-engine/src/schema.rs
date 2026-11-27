@@ -17,6 +17,9 @@ pub struct Board {
     #[serde(default)]
     pub wifi: bool,
     pub pins: Vec<Pin>,
+    /// The schema file exactly as written (served to the UI, which needs fields such as pin coordinates).
+    #[serde(skip)]
+    pub raw: Value,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -61,6 +64,9 @@ pub struct Component {
     /// How codegen wires the component into the firmware runtime.
     #[serde(default)]
     pub firmware: Option<Firmware>,
+    /// The schema file exactly as written (served to the UI).
+    #[serde(skip)]
+    pub raw: Value,
 }
 
 /// The `firmware` block of a component schema.
@@ -140,19 +146,23 @@ impl Registry {
     }
 
     fn add_board(&mut self, name: &str, text: &str) -> Result<(), EngineError> {
-        let board: Board = serde_json::from_str(text).map_err(|e| EngineError::Schema {
+        let schema_err = |e: serde_json::Error| EngineError::Schema {
             file: format!("boards/{name}.json"),
             message: e.to_string(),
-        })?;
+        };
+        let mut board: Board = serde_json::from_str(text).map_err(schema_err)?;
+        board.raw = serde_json::from_str(text).map_err(schema_err)?;
         self.boards.insert(board.id.clone(), board);
         Ok(())
     }
 
     fn add_component(&mut self, name: &str, text: &str) -> Result<(), EngineError> {
-        let comp: Component = serde_json::from_str(text).map_err(|e| EngineError::Schema {
+        let schema_err = |e: serde_json::Error| EngineError::Schema {
             file: format!("components/{name}.json"),
             message: e.to_string(),
-        })?;
+        };
+        let mut comp: Component = serde_json::from_str(text).map_err(schema_err)?;
+        comp.raw = serde_json::from_str(text).map_err(schema_err)?;
         self.components.insert(comp.id.clone(), comp);
         Ok(())
     }

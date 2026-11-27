@@ -9,5 +9,5 @@ Statuses: `TODO`, `IN_PROGRESS`, `DONE`, `BLOCKED`.
 | 03 | [Builder codegen](03-builder-codegen.md) | DONE |
 | 04 | [Firmware runtime: bus and HAL](04-firmware-runtime-bus-and-hal.md) | DONE |
 | 05 | [Firmware: Wi-Fi, MQTT and HA discovery](05-firmware-net-and-ha.md) | DONE |
-| 06 | [Builder server: REST + `/ws`](06-builder-server-ws.md) | TODO (spec written) |
-| 07 | web-ui-schemas-and-serial (`07-…md`) | TODO (spec not written) |
+| 06 | [Builder server: REST + `/ws`](06-builder-server-ws.md) | DONE |
+| 07 | [Web UI: schema forms, pinout, flasher](07-web-ui-schemas-and-serial.md) | TODO (spec written) |

@@ -1,6 +1,7 @@
 //! builder-engine: YAML parsing, schema/pin validation, codegen, build driver.
 //! Implemented incrementally; see docs/tasks/.
 
+pub mod build;
 pub mod codegen;
 pub mod error;
 pub mod model;

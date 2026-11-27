@@ -5,5 +5,22 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "builder-server"
+path = "src/main.rs"
+
 [dependencies]
 builder-engine = { path = "../builder-engine" }
+axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio", "ws", "json", "query"] }
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "process", "sync", "io-util", "net", "time", "fs"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+
+[dev-dependencies]
+tower = { version = "0.5.3", features = ["util"] }
+http-body-util = "0.1.5"
+tokio-tungstenite = "0.29.0"
+futures-util = "0.3.34"

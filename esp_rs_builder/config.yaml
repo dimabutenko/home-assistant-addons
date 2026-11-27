@@ -1,9 +1,9 @@
 name: ESP-RS Builder
 url: "https://github.com/dimabutenko/home-assistant-addons"
-version: 0.1.0
+version: 0.1.1
 slug: esp_rs_builder
 description: "Visual builder for ESP32-C6/S3 smart-home firmware in Rust + Embassy: YAML/schemas to generated Rust, build and flash"
-arch: ["aarch64", "amd64"]
+arch: ["aarch64"]
 image: "ghcr.io/dimabutenko/ha-addon-esp-rs-builder"
 startup: application
 boot: auto

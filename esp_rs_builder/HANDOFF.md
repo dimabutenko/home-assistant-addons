@@ -8,11 +8,11 @@
 - Review: `addon-reviewer` run; fixes applied (see below). Not committed yet.
 
 ## Completed artifacts (task 08)
-- `Dockerfile` (3 stages), `run.sh`, `.dockerignore`, `.gitattributes` (LF for sh/Dockerfile), `config.yaml` (0.1.0, `image:`, watchdog `/api/boards`, `backup_exclude`), `CHANGELOG.md`, `README.md`, `.gitignore` (`work/`), `.github/workflows/build-esp-rs-builder.yml` (amd64+arm64 to ghcr, gha cache, concurrency), `.claude/skills/addon-check/reference.md` row updated.
+- `Dockerfile` (3 stages), `run.sh`, `.dockerignore`, `.gitattributes` (LF for sh/Dockerfile), `config.yaml` (0.1.0, `image:`, watchdog `/api/boards`, `backup_exclude`), `CHANGELOG.md`, `README.md`, `.gitignore` (`work/`), `.github/workflows/build-esp-rs-builder.yml` (arm64 native runner to ghcr, gha cache, concurrency), `.claude/skills/addon-check/reference.md` row updated.
 
 ## Decisions (task 08)
 - **Base image `rust:1.100.0-slim-bookworm`** (Debian/glibc): rustup, espflash and firmware build scripts are tested on glibc; musl unverified. Toolchain = that stable version (the firmware has no `rust-toolchain` file; 1.100.0 is what it was verified with). Target `riscv32imac-unknown-none-elf` added with `rustup`.
-- **espflash 4.7.0 built from source** (`cargo install --locked --no-default-features --features cli`; no `update-check`, so no runtime network use) rather than a release binary: works for both arches from one Dockerfile. Needs `libudev1` at runtime.
+- **aarch64 only** (Raspberry Pi 5); CI uses the native `ubuntu-24.04-arm` runner (the first QEMU build ran 50+ min and was cancelled). **espflash 4.7.0 = official release binary** `espflash-aarch64-unknown-linux-gnu.zip`, SHA256-pinned in the Dockerfile (no compile, no update-check at runtime). Needs `libudev1` at runtime. Version 0.1.1.
 - **Env:** `RUSTUP_HOME` in the image, `CARGO_HOME=/data/cargo`, `BUILDER_WORK_DIR=/data/work`, `CARGO_BUILD_JOBS=2` (fat-LTO memory). No extra privileges; `init` left at default (tini, signals/zombie reaping, per review).
 - **Image published to ghcr** (`ghcr.io/dimabutenko/ha-addon-esp-rs-builder`) like the other add-ons: installs fail until CI has pushed the first image.
 - No new Rust dependencies.

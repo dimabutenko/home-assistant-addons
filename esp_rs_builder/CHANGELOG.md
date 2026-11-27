@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.1.1
+- aarch64 only; CI builds natively on an ARM runner (no QEMU); espflash 4.7.0 is the official release binary (SHA256-pinned) instead of a source build.
+
 ## 0.1.0
 - Add-on packaging: multi-stage image (Debian bookworm) with `builder-server`, the web UI, schemas, firmware sources, a Rust toolchain with the `riscv32imac-unknown-none-elf` target and `espflash` 4.7.0.
 - Ingress panel; build cache and cargo registry persist under `/data`; no extra privileges.

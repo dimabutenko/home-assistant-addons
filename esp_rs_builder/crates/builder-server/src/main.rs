@@ -27,7 +27,7 @@ async fn main() {
         target_dir: work.join("target"),
         espflash: env_path("BUILDER_ESPFLASH", "espflash"),
     };
-    let state = AppState::new(registry, work.join("jobs"), Arc::new(runner));
+    let state = AppState::new(registry, work.join("jobs"), Arc::new(runner)).with_ui_dir(env_path("BUILDER_UI_DIR", "ui"));
     let bind = std::env::var("BUILDER_BIND").unwrap_or_else(|_| "0.0.0.0:8099".to_owned());
     let listener = match tokio::net::TcpListener::bind(&bind).await {
         Ok(l) => l,

@@ -7,6 +7,7 @@
 
 pub mod jobs;
 pub mod runner;
+pub mod static_files;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -37,6 +38,7 @@ pub struct AppState {
     registry: Arc<Registry>,
     jobs: Arc<Jobs>,
     runner: Arc<dyn Runner>,
+    ui_dir: Arc<PathBuf>,
 }
 
 impl AppState {
@@ -45,7 +47,15 @@ impl AppState {
             registry: Arc::new(registry),
             jobs: Arc::new(Jobs::new(jobs_dir)),
             runner,
+            ui_dir: Arc::new(PathBuf::from("ui")),
         }
+    }
+
+    /// Folder the web UI is served from (default `ui`).
+    #[must_use]
+    pub fn with_ui_dir(mut self, dir: PathBuf) -> Self {
+        self.ui_dir = Arc::new(dir);
+        self
     }
 }
 
@@ -59,6 +69,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/jobs/{id}", get(job_status))
         .route("/api/jobs/{id}/firmware.bin", get(job_firmware))
         .route("/ws", get(ws))
+        .fallback(get(static_files::serve))
         .layer(DefaultBodyLimit::max(MAX_YAML_BYTES))
         .with_state(state)
 }

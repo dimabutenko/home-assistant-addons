@@ -261,3 +261,21 @@ async fn step_output_is_streamed_and_secrets_redacted() {
     };
     assert!(run_steps(&[missing], &job, &[]).await.is_err());
 }
+
+#[tokio::test]
+async fn serves_ui_files_and_hides_everything_else() {
+    let dir = temp_dir("ui");
+    std::fs::create_dir_all(dir.join("lib")).unwrap();
+    std::fs::write(dir.join("index.html"), "<h1>ui</h1>").unwrap();
+    std::fs::write(dir.join("lib").join("a.js"), "export {}").unwrap();
+    let state = AppState::new(Registry::embedded().unwrap(), temp_dir("ui-jobs"), Arc::new(FakeRunner { started: Arc::new(Notify::new()), gate: None }))
+        .with_ui_dir(dir);
+    let app = router(state);
+    let (st, body) = call(&app, Method::GET, "/", "").await;
+    assert_eq!((st, body.as_slice()), (StatusCode::OK, &b"<h1>ui</h1>"[..]));
+    let (st, _) = call(&app, Method::GET, "/lib/a.js", "").await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(call(&app, Method::GET, "/lib/missing.js", "").await.0, StatusCode::NOT_FOUND);
+    assert_eq!(call(&app, Method::GET, "/..%2f..%2fCargo.toml", "").await.0, StatusCode::NOT_FOUND);
+    assert_eq!(call(&app, Method::GET, "/api/boards", "").await.0, StatusCode::OK);
+}

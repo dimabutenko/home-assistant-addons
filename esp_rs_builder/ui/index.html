@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ESP RS Builder</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>ESP RS Builder</h1>
+  <label>Board <select id="board"></select></label>
+  <label>Device name <input id="name" value="my-device" autocomplete="off"></label>
+</header>
+<main>
+  <section id="config" aria-label="Components">
+    <div class="toolbar">
+      <label>Add component <select id="add"></select></label>
+      <button id="add-btn" type="button">Add</button>
+    </div>
+    <div id="cards"></div>
+  </section>
+  <aside>
+    <section>
+      <h2>Pinout</h2>
+      <div id="pinout" aria-label="Board pinout"></div>
+      <p class="hint" id="pin-hint">Focus a pin field, then click a pin to assign it.</p>
+    </section>
+    <section>
+      <h2>Diagnostics</h2>
+      <ul id="diags"></ul>
+    </section>
+    <section>
+      <h2>Build</h2>
+      <div class="actions">
+        <button id="build" type="button">Build</button>
+        <button id="flash" type="button" disabled>Flash</button>
+        <a id="download" href="#" hidden download="firmware.bin">Download .bin</a>
+      </div>
+      <p id="status" role="status"></p>
+      <progress id="progress" max="100" value="0" hidden></progress>
+      <pre id="log" aria-label="Build log"></pre>
+    </section>
+    <section>
+      <h2>YAML preview</h2>
+      <p class="hint">Secrets are masked here; the real values are sent to the builder only.</p>
+      <pre id="yaml"></pre>
+    </section>
+  </aside>
+</main>
+<script type="module" src="app.js"></script>
+</body>
+</html>

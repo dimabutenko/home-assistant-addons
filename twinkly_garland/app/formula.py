@@ -16,6 +16,7 @@ w h (width and height of the area), seed, the user's own parameters and names as
 Use whole numbers of cycles of t (sin(tau*2*t)) or the looping helpers (tnoise, rise) and the loop is seamless.
 """
 import ast
+import hashlib
 import json
 import math
 import os
@@ -36,7 +37,7 @@ MAX_SRC, MAX_NODES, MAX_LINES, MAX_PARAMS = 4000, 900, 60, 8
 TIME_BUDGET = 40.0  # s per render
 NAME_RE = re.compile(r"^[A-Za-z0-9 _-]{1,32}$")
 PARAM_RE = re.compile(r"^[a-z][a-z0-9_]{0,15}$")
-BASE_VARS = ["x", "y", "u", "v", "r", "a", "i", "n", "t", "w", "h", "seed", "now"]
+BASE_VARS = ["x", "y", "u", "v", "r", "a", "i", "n", "t", "w", "h", "seed", "now", "pace"]
 CONSTS = ["tau", "pi"]
 
 
@@ -74,8 +75,8 @@ FUNCS = {
     'tnoise': (4, 4, 'tnoise(x, y, t, k): noise that evolves over the loop and repeats exactly (k = whole cycles, 1..16)'),
     'rise': (4, 4, 'rise(x, y, t, k): noise drifting upward |k| cells per loop (negative k: down), exactly looping'),
     'hash': (1, 2, 'hash(a, b): fixed random number 0..1 for the pair, e.g. hash(i, seed) per LED'),
-    'palette': (2, 2, 'palette("name", v): colour at v (0..1) of a palette, clamped'),
-    'cpalette': (2, 2, 'cpalette("name", v): the same but v wraps around (for cycling colours)'),
+    'palette': (2, 2, 'palette("name", v): colour at v (0..1) of a palette, clamped; palette("theme", v) takes the palette of the round'),
+    'cpalette': (2, 2, 'cpalette("name", v): the same but v wraps around (for cycling colours); cpalette("theme", v) takes the palette of the round'),
     'hsv': (3, 3, 'hsv(h, s, v): colour from hue, saturation, value (0..1)'),
     'rgb': (3, 3, 'rgb(r, g, b): colour, 0..1 each'),
     'gray': (1, 1, 'gray(a): grey colour'),
@@ -96,6 +97,8 @@ REFERENCE = {
         "i, n: number of this LED along the string and how many LEDs there are",
         "t: loop phase 0..1. Use whole cycles (sin(tau*2*t)) so the loop is seamless",
         "now: seconds since the effect started (live mode) or t * loop length (stored effect). Do not make loops with it",
+        "pace: the speed multiplier of the round (0.6..1.6 in a live:random round, 1 otherwise): multiply the speeds by it, e.g. tm = now * pace, and use <input>_phase * pace",
+        'palette("theme", v), cpalette("theme", v): the palette of the round (picked at random by live:random for every scene of the round; a scene started by hand or a stored effect gets the default one, rainbow)',
         "<input>_phase: for every input its running total over time (value * seconds): use it as a speed that follows data without jumps, e.g. cos(tau * (a + wind_phase * 0.1))",
         "<input>_kick: 1 at the moment the input jumps (a kettle is switched on, a CPU spike) and fading to 0 in about 1.5 s; <input>_age: seconds since the last jump; <input>_count: number of jumps so far (a seed for random places: hash(power_count, 1)); <input>_dir: +1 / -1 for a rise / fall; <input>_delta: how fast it is changing",
         "an input with auto = on maps the range of the last 30 minutes to 0..1 (so any sensor uses its whole range); the jump threshold is set per input",
@@ -115,7 +118,15 @@ REFERENCE = {
 # ---- compile -----------------------------------------------------------------------------------------
 
 class _Ops(ast.NodeTransformer):
-    """/, % and ** go through safe helpers (no division by zero, no huge numbers)."""
+    """/, % and ** go through safe helpers (no division by zero, no huge numbers); the palette "theme" becomes the
+    hidden argument _theme (the palette name of the scene's round)."""
+    def visit_Call(self, node):
+        self.generic_visit(node)
+        if (isinstance(node.func, ast.Name) and node.func.id in PALETTE_FUNCS and node.args
+                and isinstance(node.args[0], ast.Constant) and node.args[0].value == "theme"):
+            node.args[0] = ast.copy_location(ast.Name(id="_theme", ctx=ast.Load()), node.args[0])
+        return node
+
     def visit_BinOp(self, node):
         self.generic_visit(node)
         name = {ast.Div: "_div", ast.Mod: "_mod", ast.Pow: "_pow"}.get(type(node.op))
@@ -169,7 +180,7 @@ def _check(node, scope):
             first = args[0]
             if not (isinstance(first, ast.Constant) and isinstance(first.value, str)):
                 raise _err(f'{name}() needs a palette name in quotes first: {name}("fire", v)', node)
-            if first.value not in {p["name"] for p in palettes.listing()}:
+            if first.value != "theme" and first.value not in {p["name"] for p in palettes.listing()}:
                 raise _err(f"unknown palette '{first.value}'", node)
             args = args[1:]
         for a in args:
@@ -181,7 +192,7 @@ def _check(node, scope):
 _compiled: dict = {}
 
 def compile_formula(src: str, param_names: tuple = ()):
-    """Validate and compile; returns the array function f(x, y, u, v, r, a, i, n, t, w, h, seed, now, prev, *params)."""
+    """Validate and compile; returns the array function f(x, y, u, v, r, a, i, n, t, w, h, seed, now, pace, prev, _theme, *params)."""
     key = (src, param_names, palettes.VERSION)
     if key in _compiled:
         return _compiled[key]
@@ -213,7 +224,7 @@ def compile_formula(src: str, param_names: tuple = ()):
     _check(last.value, scope)
 
     tree = _Ops().visit(tree)
-    args = BASE_VARS + ["prev"] + list(param_names)  # prev(x, y) is passed in per scene (no shared state in the code)
+    args = BASE_VARS + ["prev", "_theme"] + list(param_names)  # prev(x, y) and the theme palette are passed in per scene (no shared state in the code)
     try:
         fn, line_map = vformula.build(tree, args)
     except TypeError as exc:  # the last line is a yes/no
@@ -332,7 +343,37 @@ def load() -> list:
             _items = json.loads(_path().read_text())
         except (OSError, ValueError):
             _items = []
+        migrate_saved(_items)
     return _items
+
+
+def migrate_saved(items: list) -> int:
+    """0.21.0: a saved formula that is still exactly one of the example scenes as shipped before (same name, same code, found by a
+    hash) takes the new code of that example (theme and pace). An edited one is left alone. The old file is kept as formulas.json.bak-0.20.
+    Returns how many formulas were replaced; once replaced, a formula no longer matches, so nothing is done twice."""
+    new = {e["name"]: e["code"] for e in EXAMPLES}
+    global VERSION
+    changed = 0
+    for it in items:
+        legacy = LEGACY_CODE.get(it.get("name"))
+        if legacy is None or hashlib.sha1(str(it.get("code", "")).encode()).hexdigest()[:16] != legacy:
+            continue
+        try:  # the new code needs the inputs and parameters this formula has (it only adds the names theme / pace)
+            compile_formula(new[it["name"]], all_names(it.get("params", []), it.get("inputs", [])))
+        except FormulaError:
+            continue
+        it["code"] = new[it["name"]]
+        changed += 1
+    if changed:
+        try:
+            bak = _path().with_name("formulas.json.bak-0.20")
+            if not bak.exists():
+                bak.write_bytes(_path().read_bytes())
+            _path().write_text(json.dumps(items, indent=1))
+        except OSError:
+            pass  # the new code works in memory; it is saved with the next save
+        VERSION += 1
+    return changed
 
 
 def save(items: list) -> None:
@@ -344,6 +385,14 @@ def save(items: list) -> None:
     VERSION += 1
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     _path().write_text(json.dumps(clean, indent=1))
+
+
+THEME_USE = re.compile(r'"theme"|(?<![A-Za-z0-9_])pace(?![A-Za-z0-9_])')
+
+
+def uses_theme(spec: dict) -> bool:
+    """Does the scene follow the theme of the round (the palette "theme" or `pace`)?"""
+    return THEME_USE.search(spec.get("code", "")) is not None
 
 
 def get(name: str):
@@ -422,13 +471,14 @@ def apply_shade(buf: bytes, weights: list) -> bytes:
     return (a * np.asarray(weights, dtype=np.float64)[:, None]).astype(np.uint8).tobytes()
 
 
-def eval_frame(fn, prep: Prepared, t: float, now: float, seed: float, vals: list, k: float, prevfn=None) -> bytes:
+def eval_frame(fn, prep: Prepared, t: float, now: float, seed: float, vals: list, k: float, prevfn=None,
+               pace: float = 1.0, theme: str | None = None) -> bytes:
     """One frame: the formula for all LEDs at once. Raises FormulaError for mistakes in the formula
     (with the line the user wrote when the error comes from a line of the formula)."""
     n, w, h = prep.n, prep.w, prep.h
     try:
         with np.errstate(all="ignore"):
-            res = fn(*prep.arrays, n, t, w, h, seed, now, prevfn or vformula.prev_unbound, *vals)
+            res = fn(*prep.arrays, n, t, w, h, seed, now, pace, prevfn or vformula.prev_unbound, theme or palettes.DEFAULT_THEME["palette"], *vals)
             return vformula.frame_bytes(res, n, k)
     except FormulaError:
         raise
@@ -499,7 +549,7 @@ k = 0.5 + 0.5 * sin(tau * (x * 1.5 + y * 2 - t * speed))
 palette("ocean", k)""", "params": [_p("speed", "Speed (whole numbers loop)", 1, 3, 1, 1)]},
 ]
 
-from .examples_live import LIVE_EXAMPLES  # noqa: E402  (data only, no import cycle)
+from .examples_live import LEGACY_CODE, LIVE_EXAMPLES  # noqa: E402  (data only, no import cycle)
 
 EXAMPLES.extend(LIVE_EXAMPLES)
 

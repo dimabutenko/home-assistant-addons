@@ -1,4 +1,4 @@
-"""Frames of every example and edge construct against the golden frames made by the scalar engine before it was removed.
+"""Frames of every example (as shipped in 0.20.1, golden/examples_0_20_1.json) and edge construct against the golden frames made by the scalar engine before it was removed.
 A rounding step of a colour channel (or two for prev() with fixed coordinates) is allowed, nothing more. Run: python tests/test_golden.py"""
 import json
 import sys
@@ -11,7 +11,8 @@ from app import formula, vformula
 TOL = 2
 gold = np.load(Path(__file__).parent / "golden" / "frames.npz")
 lays = layouts()
-specs = [(e["name"], e) for e in formula.EXAMPLES] + [("edge: " + k, {"code": v, "params": [], "inputs": []}) for k, v in EDGE.items()]
+examples = json.loads((Path(__file__).parent / "golden" / "examples_0_20_1.json").read_text())  # the examples as shipped in 0.20.1: the frames were taken from them
+specs = [(e["name"], e) for e in examples] + [("edge: " + k, {"code": v, "params": [], "inputs": []}) for k, v in EDGE.items()]
 bad, worst, exact, total = [], 0, 0, 0
 for name, ex in specs:
     for kind, lay in lays.items():

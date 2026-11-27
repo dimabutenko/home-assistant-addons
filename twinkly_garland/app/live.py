@@ -5,7 +5,7 @@ import math
 import threading
 import time
 
-from . import device, formula, hadata
+from . import device, formula, hadata, palettes
 
 log = logging.getLogger("twinkly.live")
 
@@ -107,7 +107,8 @@ class InputTracker:
 
 
 class LiveScene:
-    def __init__(self, spec: dict, layout: list, params: dict | None = None, source=None, history=None):
+    def __init__(self, spec: dict, layout: list, params: dict | None = None, source=None, history=None, theme: dict | None = None):
+        self.theme = {**palettes.DEFAULT_THEME, **(theme or {})}  # palette("theme", v) and `pace`: the round this scene belongs to
         self.spec = formula.validate_item({"name": "live", **spec})
         self.params = dict(params or {})
         defs, self.inputs = self.spec["params"], self.spec["inputs"]
@@ -159,7 +160,8 @@ class LiveScene:
         T = [self.trk[i["name"]] for i in self.inputs]
         vals = (self.pvals + [t.value for t in T] + [t.phase for t in T] + [t.kick for t in T] + [t.age for t in T]
                 + [float(t.count) for t in T] + [float(t.dir) for t in T] + [max(-3.0, min(3.0, t.delta)) for t in T])
-        out = formula.eval_frame(self.fn, self.prep, (el / self.loop) % 1.0, el, self.seed, vals, self.k, self.prevfn)
+        out = formula.eval_frame(self.fn, self.prep, (el / self.loop) % 1.0, el, self.seed, vals, self.k, self.prevfn,
+                                 self.theme["pace"], self.theme["palette"])
         if self.prev is not None:
             lim = max(1, int(MAX_SLEW * dt))
             out = bytes(p + max(-lim, min(lim, c - p)) for p, c in zip(self.prev, out))
@@ -195,8 +197,9 @@ class LiveStream:
 
     PING_S = 0.25
 
-    def __init__(self, dev: dict, scene: LiveScene, name: str, fps: float = 8.0):
+    def __init__(self, dev: dict, scene: LiveScene, name: str, fps: float = 8.0, in_round: bool = False):
         self.dev, self.scene, self.name = dev, scene, name
+        self.in_round = in_round   # started by live:random (other garlands that ask soon after join its round)
         self.set_fps(fps)
         self.stop_evt = threading.Event()
         self.thread = threading.Thread(target=self._run, daemon=True)
@@ -255,7 +258,7 @@ class LiveStream:
         return {"device": self.dev["name"], "scene": self.name, "fps": round(self.fps_actual, 1), "frames": self.frames,
                 "compute_ms": round(self.compute_ms, 1), "ping_ms": round(self.ping_ms), "ping_max_ms": round(self.ping_max_ms),
                 "relogins": _relogins.count - self.relogins0, "seconds": round(time.time() - (self.started or time.time())),
-                "ended": self.ended, "values": self.scene.values()}
+                "ended": self.ended, "theme": self.scene.theme, "round": self.in_round, "values": self.scene.values()}
 
     # -- the frame loop: UDP only -----------------------------------------------------------------------------------
     def _run(self):

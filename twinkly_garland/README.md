@@ -40,8 +40,11 @@ every LED and every frame, so it is a function of the position and the loop time
     palette("fire", heat)
 
 - Variables: `x y` (y = 0 bottom .. 1 top, x in the real proportions), `u v` (0..1 across the area), `r a` (distance and angle
-  from the centre), `i n` (LED index and count), `t` (0..1 loop phase), `w h`, `seed`, `tau pi`, your own parameters (they become
-  sliders) and any name you assign.
+  from the centre), `i n` (LED index and count), `t` (0..1 loop phase), `w h`, `seed`, `now` (seconds, live), `pace` (the speed multiplier of the live round, 1 elsewhere), `tau pi`, your own parameters
+  (they become sliders) and any name you assign.
+- **Theme of a round:** `palette("theme", v)` / `cpalette("theme", v)` take the palette that `live:random` picked for the round, `pace`
+  is its speed multiplier (0.6 to 1.6): write `tm = now * pace` and `x_phase * pace` and the scene runs slower or faster from round to
+  round with its colours changed. A scene started by name, a stored effect and the previews get the default theme (palette rainbow, pace 1).
 - Functions: `sin cos atan2 abs sqrt exp floor fract sign min max clamp step smoothstep mix tri dist noise noise3 tnoise rise
   hash palette cpalette hsv rgb gray` (the editor lists them with descriptions). Colours (`palette`, `hsv`, `rgb`, `gray`) can be
   added and multiplied. Use whole numbers of cycles of `t` or `tnoise` / `rise` and the loop is seamless; the editor shows a warning
@@ -97,8 +100,11 @@ A saved formula (typically with inputs from Home Assistant) can be played **live
 values and streams them to the garland in real-time mode, instead of storing a movie. Start it with the button "Play live on the
 garland" in the Formulas tab, `POST api/live/play {"scene": "<formula name>"}` or, through the existing `rest_command`, `effect: "live:<name>"`.
 
-- **From the automation:** `effect: "live:<name>"` plays a saved formula; `effect: "live:random"` picks one of the saved formulas that have
-  inputs (every live scene you save joins the rotation), preferring another one than the current, the same one on all the garlands (see "Live frames/s" in the device card for the speed); the same scene called again is kept
+- **From the automation:** `effect: "live:<name>"` plays a saved formula; `effect: "live:random"` starts a **round**: every garland gets one of the saved formulas that have
+  inputs (every live scene you save joins the rotation) meant for its shape (a wall: "wall" or "any", a tree: "tree" or "any", set in "Meant for" of the
+  editor), preferring another one than the current and the scenes that use the theme; where the pools overlap the garlands share the scene. **All the garlands of a
+  round share one theme** (a palette and a pace, picked at random, shown in the device card). A garland that asks within 2 minutes after another one
+  started a round joins its theme (and its scene, if it may play it). The same scene called again is kept
   (not restarted), so it is safe to call every few minutes. `POST api/live/play` has a `restart` flag (used after editing).
 - It never loops (no seam), the inputs are smoothed and every colour channel is limited in how fast it may change (no strobing).
 - **Stop:** the Stop button, `POST api/live/stop`, or any explicit `play` of a stored effect / a Sync. The garland returns to what it

@@ -1,0 +1,1420 @@
+[
+{
+"name": "Rising fire",
+"code": "# Tongues of flame rising from the bottom.\n# rise(x, y, t, k): noise that drifts upward by k cells per loop (loops exactly).\nq = 0.65 * rise(x*5, y*3, t, cells) + 0.35 * rise(x*10 + 9, y*6, t, cells*2)\nbase = max(1 - y/height, 0) ** 1.5\nheat = (q - (1 - base) * 0.85) * contrast\npalette(\"fire\", heat)",
+"params": [
+{
+"name": "cells",
+"label": "Rise speed (cells per loop)",
+"min": 2,
+"max": 12,
+"default": 6,
+"step": 1
+},
+{
+"name": "height",
+"label": "Flame height",
+"min": 0.5,
+"max": 2.5,
+"default": 1.8,
+"step": 0.05
+},
+{
+"name": "contrast",
+"label": "Contrast",
+"min": 1,
+"max": 5,
+"default": 2.8,
+"step": 0.1
+}
+]
+},
+{
+"name": "Rainbow rings",
+"code": "# Colour rings spreading from the middle of the window.\nd = dist(x, y, 0, 0.45)\ncpalette(\"rainbow\", d * rings - t * speed) * (0.55 + 0.45 * sin(tau * (d * rings * 2 - t * speed)))",
+"params": [
+{
+"name": "rings",
+"label": "Rings",
+"min": 1,
+"max": 6,
+"default": 2.5,
+"step": 0.1
+},
+{
+"name": "speed",
+"label": "Speed (whole numbers loop)",
+"min": 1,
+"max": 3,
+"default": 1,
+"step": 1
+}
+]
+},
+{
+"name": "Lava blobs",
+"code": "# Slow blobs of light that grow and fade (tnoise loops exactly).\nq = tnoise(x * scale, y * scale, t, 3)\nglow = smoothstep(0.35, 0.75, q)\npalette(\"lava\", q) * glow",
+"params": [
+{
+"name": "scale",
+"label": "Blob size",
+"min": 1,
+"max": 5,
+"default": 2.5,
+"step": 0.1
+}
+]
+},
+{
+"name": "Sparkles",
+"code": "# Every LED flashes once per cycle at its own random moment.\ns = hash(i, seed)\non = step(hash(i, seed + 1), density)\nflash = max(1 - fract(t * rate + s) * 5, 0) ** 2\nhsv(fract(s * 3), 0.6, flash * on)",
+"params": [
+{
+"name": "rate",
+"label": "Flashes per loop",
+"min": 1,
+"max": 6,
+"default": 3,
+"step": 1
+},
+{
+"name": "density",
+"label": "Share of LEDs",
+"min": 0.1,
+"max": 1,
+"default": 0.5,
+"step": 0.05
+}
+]
+},
+{
+"name": "Heartbeat",
+"code": "# A double beat that spreads outward from the centre.\ntt = fract(t * beats - dist(x, y, 0, 0.4) * spread * 0.5)\ng = min(exp(-((tt - 0.1) / 0.09) ** 2) + 0.7 * exp(-((tt - 0.3) / 0.1) ** 2), 1)\npalette(\"lava\", g) * (0.08 + 0.92 * g)",
+"params": [
+{
+"name": "beats",
+"label": "Beats per loop",
+"min": 1,
+"max": 4,
+"default": 2,
+"step": 1
+},
+{
+"name": "spread",
+"label": "Wave spread",
+"min": 0,
+"max": 2,
+"default": 0.6,
+"step": 0.1
+}
+]
+},
+{
+"name": "Diagonal waves",
+"code": "# Soft diagonal bands of colour moving across the window.\nk = 0.5 + 0.5 * sin(tau * (x * 1.5 + y * 2 - t * speed))\npalette(\"ocean\", k)",
+"params": [
+{
+"name": "speed",
+"label": "Speed (whole numbers loop)",
+"min": 1,
+"max": 3,
+"default": 1,
+"step": 1
+}
+]
+},
+{
+"name": "Spectrum live",
+"code": "# Eight bars like a music spectrum analyser, but the \"music\" is the home:\n# CPU and power of Dima's PC, CPU / GPU / power of Veron's PC, network down and up, house power.\n# Each input uses its own last-30-minutes range; the root lifts small values so idle bars still show.\n# The caps fall slowly because prev() drags the previous picture down a little.\ncol = min(floor(u * 8), 7)\nxf = fract(u * 8)\nlvl = (dcpu if col == 0 else (dpow if col == 1 else (vcpu if col == 2 else (vgpu if col == 3 else (vpow if col == 4 else (down if col == 5 else (up if col == 6 else house)))))))\ntop = 0.1 + 0.85 * sqrt(lvl)\ninside = step(0.1, xf) * step(xf, 0.9)\nfill = step(y, top) * inside\nbody = hsv(col * 0.11 + 0.02, 0.9, 0.3 + 0.7 * min(y / max(top, 0.1), 1)) * fill\ncap = smoothstep(top - 0.07, top, y) * step(y, top + 0.02) * inside\nghost = prev(x, y + 0.035) * 0.9 * inside\nbody + ghost * (1 - fill) + gray(1) * cap",
+"params": [],
+"inputs": [
+{
+"name": "dcpu",
+"entity": "sensor.dima_pc_satelite_cpuload",
+"attribute": "",
+"min": 0,
+"max": 30,
+"smooth": 0.3,
+"default": 0.4,
+"auto": true,
+"kick": 0.12
+},
+{
+"name": "dpow",
+"entity": "sensor.cabinet_dima_pc_power",
+"attribute": "",
+"min": 100,
+"max": 450,
+"smooth": 0.3,
+"default": 0.4,
+"auto": true,
+"kick": 0.12
+},
+{
+"name": "vcpu",
+"entity": "sensor.veron_pc_satelite_cpuload",
+"attribute": "",
+"min": 0,
+"max": 100,
+"smooth": 0.3,
+"default": 0.4,
+"auto": true,
+"kick": 0.12
+},
+{
+"name": "vgpu",
+"entity": "sensor.veron_pc_satelite_gpuload",
+"attribute": "",
+"min": 0,
+"max": 80,
+"smooth": 0.3,
+"default": 0.4,
+"auto": true,
+"kick": 0.12
+},
+{
+"name": "vpow",
+"entity": "sensor.cabinet_veron_pc_power",
+"attribute": "",
+"min": 50,
+"max": 300,
+"smooth": 0.3,
+"default": 0.4,
+"auto": true,
+"kick": 0.12
+},
+{
+"name": "down",
+"entity": "sensor.keenetic_titan_wifistation_internal_downlink_speed",
+"attribute": "",
+"min": 0,
+"max": 60,
+"smooth": 0.3,
+"default": 0.4,
+"auto": true,
+"kick": 0.12
+},
+{
+"name": "up",
+"entity": "sensor.keenetic_titan_wifistation_internal_uplink_speed",
+"attribute": "",
+"min": 0,
+"max": 40,
+"smooth": 0.3,
+"default": 0.4,
+"auto": true,
+"kick": 0.12
+},
+{
+"name": "house",
+"entity": "sensor.main_energy_sensor_power",
+"attribute": "",
+"min": 300,
+"max": 2300,
+"smooth": 0.4,
+"default": 0.4,
+"auto": true,
+"kick": 0.12
+}
+]
+},
+{
+"name": "Pulse rings live",
+"code": "# Every time one of five signals JUMPS, a ring is born at a random place of the window and spreads out.\n# house power = orange, phase B (kettle, oven) = red, Veron's CPU = cyan, network = green, Dima's PC = violet.\n# <input>_count seeds the random place, <input>_age is the ring's age in seconds, <input>_dir is +1 for a rise and -1 for a fall.\na1 = smoothstep(0.1, 0, abs(dist(x, y, (hash(house_count, 1) - 0.5) * w, hash(house_count, 2)) - house_age * 0.45)) * max(1 - house_age / 5, 0) * (0.6 + 0.4 * step(0, house_dir))\na2 = smoothstep(0.1, 0, abs(dist(x, y, (hash(phb_count, 3) - 0.5) * w, hash(phb_count, 4)) - phb_age * 0.45)) * max(1 - phb_age / 5, 0) * (0.6 + 0.4 * step(0, phb_dir))\na3 = smoothstep(0.1, 0, abs(dist(x, y, (hash(vcpu_count, 5) - 0.5) * w, hash(vcpu_count, 6)) - vcpu_age * 0.45)) * max(1 - vcpu_age / 5, 0) * (0.6 + 0.4 * step(0, vcpu_dir))\na4 = smoothstep(0.1, 0, abs(dist(x, y, (hash(down_count, 7) - 0.5) * w, hash(down_count, 8)) - down_age * 0.45)) * max(1 - down_age / 5, 0) * (0.6 + 0.4 * step(0, down_dir))\na5 = smoothstep(0.1, 0, abs(dist(x, y, (hash(dpow_count, 9) - 0.5) * w, hash(dpow_count, 10)) - dpow_age * 0.45)) * max(1 - dpow_age / 5, 0) * (0.6 + 0.4 * step(0, dpow_dir))\nidle = hsv(0.6 + 0.1 * sin(tau * (now * 0.03 + u)), 0.7, 0.07 + 0.05 * sin(tau * (y * 1.5 - now * 0.15)))\nidle + 1.7 * (hsv(0.08 + hash(house_count, 11) * 0.25, 0.9, 1) * a1 + hsv(hash(phb_count, 12) * 0.2, 0.95, 1) * a2 + hsv(0.45 + hash(vcpu_count, 13) * 0.25, 0.8, 1) * a3 + hsv(0.25 + hash(down_count, 14) * 0.25, 0.8, 1) * a4 + hsv(0.72 + hash(dpow_count, 15) * 0.25, 0.8, 1) * a5)",
+"params": [],
+"inputs": [
+{
+"name": "house",
+"entity": "sensor.main_energy_sensor_power",
+"attribute": "",
+"min": 300,
+"max": 2300,
+"smooth": 0.4,
+"default": 0.4,
+"auto": true,
+"kick": 0.1
+},
+{
+"name": "phb",
+"entity": "sensor.main_energy_sensor_power_b",
+"attribute": "",
+"min": 200,
+"max": 2200,
+"smooth": 0.4,
+"default": 0.4,
+"auto": true,
+"kick": 0.1
+},
+{
+"name": "vcpu",
+"entity": "sensor.veron_pc_satelite_cpuload",
+"attribute": "",
+"min": 0,
+"max": 100,
+"smooth": 0.4,
+"default": 0.4,
+"auto": true,
+"kick": 0.15
+},
+{
+"name": "down",
+"entity": "sensor.keenetic_titan_wifistation_internal_downlink_speed",
+"attribute": "",
+"min": 0,
+"max": 60,
+"smooth": 0.4,
+"default": 0.4,
+"auto": true,
+"kick": 0.18
+},
+{
+"name": "dpow",
+"entity": "sensor.cabinet_dima_pc_power",
+"attribute": "",
+"min": 100,
+"max": 450,
+"smooth": 0.4,
+"default": 0.4,
+"auto": true,
+"kick": 0.12
+}
+]
+},
+{
+"name": "Network comets live",
+"code": "# Comets fly along the window: they fall with the download and rise with the upload, every lane in its own colour\n# (the upload comets in the opposite colour of their lane), on a dark background.\n# The faster the traffic, the faster and brighter they are; a burst of traffic makes them flash.\nlane = floor(u * 14)\npar = lane % 2\noff = hash(lane, 5)\nyd = 1 - fract(down_phase * 0.5 + now * 0.05 + off)\ndd = y - yd\ntail_d = max(1 - dd / 0.4, 0) * step(0, dd)\nyu = fract(up_phase * 0.5 + now * 0.05 + off)\ndu = yu - y\ntail_u = max(1 - du / 0.4, 0) * step(0, du)\nhsv(hash(lane, 6), 1, 1) * tail_d ** 2 * (1 - par) * (0.2 + 0.8 * down + 0.6 * down_kick) + hsv(fract(hash(lane, 6) + 0.5), 1, 1) * tail_u ** 2 * par * (0.2 + 0.8 * up + 0.6 * up_kick) + gray(0.02)",
+"params": [],
+"inputs": [
+{
+"name": "down",
+"entity": "sensor.keenetic_titan_wifistation_internal_downlink_speed",
+"attribute": "",
+"min": 0,
+"max": 60,
+"smooth": 0.4,
+"default": 0.4,
+"auto": true,
+"kick": 0.15
+},
+{
+"name": "up",
+"entity": "sensor.keenetic_titan_wifistation_internal_uplink_speed",
+"attribute": "",
+"min": 0,
+"max": 40,
+"smooth": 0.4,
+"default": 0.4,
+"auto": true,
+"kick": 0.15
+}
+]
+},
+{
+"name": "Heartbeat live",
+"code": "# The window has a pulse: it beats faster the busier the two work PCs are (CPU of both), the beat spreads out from the middle.\n# Every beat has its own colour (far from the previous one) and a spike of Veron's GPU adds a flash in the opposite colour;\n# the house power warms the whole picture.\nbeat = vcpu_phase * 1.4 + dcpu_phase * 0.6 + now * 0.3\nwave = beat - dist(x, y, 0, 0.45) * 1.7\ntt = fract(wave)\ng = min(exp(-((tt - 0.08) / 0.07) ** 2) + 0.75 * exp(-((tt - 0.3) / 0.09) ** 2), 1)\ncycle = floor(wave)\npulse = hsv(fract(cycle * 0.382 + vcpu * 0.5), 1, 1) * (0.04 + 0.96 * g ** 1.15)\nflash = hsv(fract(cycle * 0.382 + vcpu * 0.5 + 0.5), 0.7, vgpu_kick * 0.7 * smoothstep(0.6, 0, r))\n(pulse + flash) * 1.7 * mix(rgb(0.9, 0.95, 1.1), rgb(1.15, 0.9, 0.8), house)",
+"params": [],
+"inputs": [
+{
+"name": "vcpu",
+"entity": "sensor.veron_pc_satelite_cpuload",
+"attribute": "",
+"min": 0,
+"max": 100,
+"smooth": 0.5,
+"default": 0.4,
+"auto": true,
+"kick": 0.12
+},
+{
+"name": "dcpu",
+"entity": "sensor.dima_pc_satelite_cpuload",
+"attribute": "",
+"min": 0,
+"max": 30,
+"smooth": 0.5,
+"default": 0.4,
+"auto": true,
+"kick": 0.12
+},
+{
+"name": "vgpu",
+"entity": "sensor.veron_pc_satelite_gpuload",
+"attribute": "",
+"min": 0,
+"max": 80,
+"smooth": 0.4,
+"default": 0.3,
+"auto": true,
+"kick": 0.15
+},
+{
+"name": "house",
+"entity": "sensor.main_energy_sensor_power",
+"attribute": "",
+"min": 300,
+"max": 2300,
+"smooth": 1.0,
+"default": 0.4,
+"auto": true,
+"kick": 0.12
+}
+]
+},
+{
+"name": "House live",
+"code": "# The home as a living picture. Sky follows the sun (night blue, orange dusk, blue day); clouds thicken with cloud cover\n# and drift faster with network traffic; a warm glow rises from the bottom as far as the radiator valve is open and\n# flares when the house power jumps; the left half twinkles with Dima's CPU, the right half with Veron's (more load, more\n# sparkles, faster); the whole picture warms up with the power draw of the house.\nnight = palette(\"ocean\", 0.3) * 0.3\ndusk = palette(\"sunset\", 0.6)\nday = palette(\"ocean\", 0.6)\nsky = mix(mix(night, dusk, smoothstep(0.05, 0.3, sun)), day, smoothstep(0.3, 0.6, sun))\ndrift = noise(x * 2.2 + now * 0.05 + down_phase * 0.5, y * 2.5 - now * 0.03)\ncover = smoothstep(0.75 - clouds * 0.5, 0.95 - clouds * 0.5, drift)\nbase = mix(sky, gray(0.35 + 0.5 * sun), cover * (0.3 + 0.5 * clouds))\nglow = min(smoothstep(valve * 0.9 + house_kick * 0.5, 0, y) * (valve + house_kick * 0.8), 1)\nwarm = palette(\"fire\", 0.35 + 0.5 * glow) * glow\nside = step(0, x)\nload = mix(dcpu, vcpu, side)\ns = hash(i, seed)\nlit = step(hash(i, seed + 1), 0.08 + load * 0.8)\ntw = max(1 - fract(now * (1.5 + load * 3) + s) * 3.5, 0) ** 2\nspark = hsv(0.55 + side * 0.25, 0.5, tw * lit * 1.8)\n(base + warm + spark) * mix(rgb(0.85, 1.0, 1.2), rgb(1.2, 1.0, 0.8), house)",
+"params": [],
+"inputs": [
+{
+"name": "sun",
+"entity": "sun.sun",
+"attribute": "elevation",
+"min": -8,
+"max": 40,
+"smooth": 5,
+"default": 0.4,
+"auto": false,
+"kick": 0.12
+},
+{
+"name": "clouds",
+"entity": "weather.forecast_home_2",
+"attribute": "cloud_coverage",
+"min": 0,
+"max": 100,
+"smooth": 10,
+"default": 0.5,
+"auto": false,
+"kick": 0.12
+},
+{
+"name": "valve",
+"entity": "sensor.living_room_radiator_position",
+"attribute": "",
+"min": 0,
+"max": 100,
+"smooth": 8,
+"default": 0.25,
+"auto": false,
+"kick": 0.12
+},
+{
+"name": "house",
+"entity": "sensor.main_energy_sensor_power",
+"attribute": "",
+"min": 300,
+"max": 2300,
+"smooth": 0.5,
+"default": 0.4,
+"auto": true,
+"kick": 0.1
+},
+{
+"name": "dcpu",
+"entity": "sensor.dima_pc_satelite_cpuload",
+"attribute": "",
+"min": 0,
+"max": 30,
+"smooth": 0.4,
+"default": 0.4,
+"auto": true,
+"kick": 0.12
+},
+{
+"name": "vcpu",
+"entity": "sensor.veron_pc_satelite_cpuload",
+"attribute": "",
+"min": 0,
+"max": 100,
+"smooth": 0.4,
+"default": 0.4,
+"auto": true,
+"kick": 0.12
+},
+{
+"name": "down",
+"entity": "sensor.keenetic_titan_wifistation_internal_downlink_speed",
+"attribute": "",
+"min": 0,
+"max": 60,
+"smooth": 1.0,
+"default": 0.4,
+"auto": true,
+"kick": 0.12
+}
+]
+},
+{
+"name": "Rings live",
+"code": "# Rings spreading from the centre, every ring in a different colour (neighbouring rings are far apart on the colour wheel) with\n# dark gaps between them. More rings when the house draws more power, they spread faster with the network traffic,\n# a spike of Veron's CPU flashes them and the sun shifts all the hues.\nrings = 2 + house * 5\nph = down_phase * 1.2 + now * 0.12\nz = r * rings - ph\nrid = floor(z)\nf = fract(z)\nbody = smoothstep(0, 0.2, f) * smoothstep(1, 0.5, f)\nhsv(fract(rid * 0.382 + sun * 0.9 + vcpu_kick * 0.3), 1, 1) * body * (0.5 + 0.5 * house + vcpu_kick * 0.6)",
+"params": [],
+"inputs": [
+{
+"name": "house",
+"entity": "sensor.main_energy_sensor_power",
+"attribute": "",
+"min": 300,
+"max": 2300,
+"smooth": 0.5,
+"default": 0.4,
+"auto": true,
+"kick": 0.1
+},
+{
+"name": "down",
+"entity": "sensor.keenetic_titan_wifistation_internal_downlink_speed",
+"attribute": "",
+"min": 0,
+"max": 60,
+"smooth": 0.6,
+"default": 0.4,
+"auto": true,
+"kick": 0.12
+},
+{
+"name": "sun",
+"entity": "sun.sun",
+"attribute": "elevation",
+"min": -8,
+"max": 40,
+"smooth": 5,
+"default": 0.4,
+"auto": false,
+"kick": 0.12
+},
+{
+"name": "vcpu",
+"entity": "sensor.veron_pc_satelite_cpuload",
+"attribute": "",
+"min": 0,
+"max": 100,
+"smooth": 0.3,
+"default": 0.3,
+"auto": true,
+"kick": 0.15
+}
+]
+},
+{
+"name": "Kaleidoscope live",
+"code": "# A six-fold mirror of \"stained glass\": the picture is cut into regions and every region gets a hue far away from its\n# neighbours (about 137 degrees round the colour wheel), with dark seams between them. Contrast: full saturation, dark seams.\n# It turns with the GPU of Veron's PC, gets finer with the house power, the sun and the CPU of Dima's PC shift all the hues,\n# and a spike of Dima's CPU makes the picture flare.\nspin = a + vgpu_phase * 0.06 + now * 0.01\nm = mirror(spin, 6)\npx = r * cos(m * tau)\npy = r * sin(m * tau)\nzoom = 3 + house * 5\nq = noise(px * zoom + now * 0.25 + dcpu_phase * 0.5, py * zoom - now * 0.2)\nz = q * 4 + r * 3 + m * 10\nregion = floor(z)\nf = fract(z)\nseam = smoothstep(0, 0.14, f) * smoothstep(1, 0.86, f)\nhue = fract(region * 0.382 + sun * 0.6 + dcpu * 0.5 + now * 0.02)\nhsv(hue, 1, 1) * seam * (0.55 + 0.45 * smoothstep(0.2, 0.8, q)) * (0.85 + dcpu_kick * 0.5)",
+"params": [],
+"inputs": [
+{
+"name": "vgpu",
+"entity": "sensor.veron_pc_satelite_gpuload",
+"attribute": "",
+"min": 0,
+"max": 80,
+"smooth": 0.4,
+"default": 0.4,
+"auto": true,
+"kick": 0.12
+},
+{
+"name": "house",
+"entity": "sensor.main_energy_sensor_power",
+"attribute": "",
+"min": 300,
+"max": 2300,
+"smooth": 0.6,
+"default": 0.4,
+"auto": true,
+"kick": 0.12
+},
+{
+"name": "sun",
+"entity": "sun.sun",
+"attribute": "elevation",
+"min": -8,
+"max": 40,
+"smooth": 5,
+"default": 0.4,
+"auto": false,
+"kick": 0.12
+},
+{
+"name": "dcpu",
+"entity": "sensor.dima_pc_satelite_cpuload",
+"attribute": "",
+"min": 0,
+"max": 30,
+"smooth": 0.3,
+"default": 0.3,
+"auto": true,
+"kick": 0.15
+}
+]
+},
+{
+"name": "Spiral live",
+"code": "# A three-armed spiral: every arm (and every turn of it) has its own colour, 120 degrees apart on the colour wheel, with dark gaps.\n# It winds tighter with the house power, turns with the network traffic, the colours drift with the power of Dima's PC and the sun,\n# and it flares when the house power jumps.\narms = 3\ntwist = 1 + house * 4\nz = a * arms + r * twist - down_phase * 0.8 - now * 0.08\narm = floor(z)\nf = fract(z)\nband = smoothstep(0, 0.25, f) * smoothstep(1, 0.7, f)\nhsv(fract(arm * 0.3333 + dpow * 0.8 + sun * 0.4 + now * 0.02), 1, 1) * band * (0.35 + 0.65 * (1 - r * 0.6)) * (0.8 + house_kick * 0.6)",
+"params": [],
+"inputs": [
+{
+"name": "house",
+"entity": "sensor.main_energy_sensor_power",
+"attribute": "",
+"min": 300,
+"max": 2300,
+"smooth": 0.6,
+"default": 0.4,
+"auto": true,
+"kick": 0.1
+},
+{
+"name": "down",
+"entity": "sensor.keenetic_titan_wifistation_internal_downlink_speed",
+"attribute": "",
+"min": 0,
+"max": 60,
+"smooth": 0.6,
+"default": 0.4,
+"auto": true,
+"kick": 0.12
+},
+{
+"name": "dpow",
+"entity": "sensor.cabinet_dima_pc_power",
+"attribute": "",
+"min": 100,
+"max": 450,
+"smooth": 0.5,
+"default": 0.4,
+"auto": true,
+"kick": 0.12
+},
+{
+"name": "sun",
+"entity": "sun.sun",
+"attribute": "elevation",
+"min": -8,
+"max": 40,
+"smooth": 5,
+"default": 0.4,
+"auto": false,
+"kick": 0.12
+}
+]
+},
+{
+"name": "Tunnel live",
+"code": "# Feedback, like MilkDrop: the previous picture is pulled outward and faded, and a fresh ring is born in the middle in rhythm with\n# the network traffic. Every ring gets a hue far away from the previous one, so rings of very different colours fly outward.\n# When phase B (kettle, oven) jumps, a bright burst flies out of the centre. Needs live mode (stored it runs one warm-up loop).\nzoom = 0.97 - down * 0.025\nold = prev(x * zoom, (y - 0.5) * zoom + 0.5) * 0.93\nbeatn = now * 0.6 + down_phase * 0.4\nbeat = max(sin(tau * beatn), 0) ** 2\nring = smoothstep(0.07, 0, abs(r - 0.1)) * beat\nburst = smoothstep(0.35, 0, abs(r - 0.1)) * phb_kick\nhue = fract(floor(beatn) * 0.382 + sun + house * 0.3)\nold + hsv(hue, 1, 1) * (ring * (1.8 + house * 0.7) + burst)",
+"params": [],
+"inputs": [
+{
+"name": "down",
+"entity": "sensor.keenetic_titan_wifistation_internal_downlink_speed",
+"attribute": "",
+"min": 0,
+"max": 60,
+"smooth": 0.5,
+"default": 0.4,
+"auto": true,
+"kick": 0.12
+},
+{
+"name": "house",
+"entity": "sensor.main_energy_sensor_power",
+"attribute": "",
+"min": 300,
+"max": 2300,
+"smooth": 0.6,
+"default": 0.4,
+"auto": true,
+"kick": 0.12
+},
+{
+"name": "sun",
+"entity": "sun.sun",
+"attribute": "elevation",
+"min": -8,
+"max": 40,
+"smooth": 5,
+"default": 0.4,
+"auto": false,
+"kick": 0.12
+},
+{
+"name": "phb",
+"entity": "sensor.main_energy_sensor_power_b",
+"attribute": "",
+"min": 200,
+"max": 2200,
+"smooth": 0.3,
+"default": 0.3,
+"auto": true,
+"kick": 0.1
+}
+]
+},
+{
+"name": "Mandala live",
+"code": "# Two seven-petal flowers turning in opposite directions (outer: the CPU of Dima's PC, inner: the CPU of Veron's) plus a thin outer ring.\n# The three parts use opposite colours (complementary and a third one), so the picture is contrasty. The sun and the loads\n# move all the hues together, the inner flower glows with the house power, a spike of Veron's GPU makes the flowers breathe out.\npetals = 7\nbreathe = 1 + 0.2 * vgpu_kick\nbig = (0.32 + 0.1 * cos(tau * (a * petals + dcpu_phase * 0.15))) * breathe\nsmall = (0.16 + 0.06 * cos(tau * (a * petals - vcpu_phase * 0.2))) * breathe\ng1 = smoothstep(0.1, 0, abs(r - big))\ng2 = smoothstep(0.08, 0, abs(r - small))\ng3 = smoothstep(0.05, 0, abs(r - 0.46 - 0.04 * sin(tau * now * 0.2))) * 0.8\nh1 = fract(a * 0.5 + sun * 0.6 + dcpu * 0.5 + now * 0.03)\nhsv(h1, 1, 1) * g1 + hsv(fract(h1 + 0.5), 1, 1) * g2 * (0.4 + 0.6 * house) + hsv(fract(h1 + 0.25), 1, 1) * g3",
+"params": [],
+"inputs": [
+{
+"name": "dcpu",
+"entity": "sensor.dima_pc_satelite_cpuload",
+"attribute": "",
+"min": 0,
+"max": 30,
+"smooth": 0.4,
+"default": 0.4,
+"auto": true,
+"kick": 0.12
+},
+{
+"name": "vcpu",
+"entity": "sensor.veron_pc_satelite_cpuload",
+"attribute": "",
+"min": 0,
+"max": 100,
+"smooth": 0.4,
+"default": 0.4,
+"auto": true,
+"kick": 0.12
+},
+{
+"name": "sun",
+"entity": "sun.sun",
+"attribute": "elevation",
+"min": -8,
+"max": 40,
+"smooth": 5,
+"default": 0.4,
+"auto": false,
+"kick": 0.12
+},
+{
+"name": "house",
+"entity": "sensor.main_energy_sensor_power",
+"attribute": "",
+"min": 300,
+"max": 2300,
+"smooth": 0.6,
+"default": 0.4,
+"auto": true,
+"kick": 0.12
+},
+{
+"name": "vgpu",
+"entity": "sensor.veron_pc_satelite_gpuload",
+"attribute": "",
+"min": 0,
+"max": 80,
+"smooth": 0.3,
+"default": 0.3,
+"auto": true,
+"kick": 0.15
+}
+]
+},
+{
+"name": "Signal towers live",
+"code": "# Eight towers, one per radio in the house (two speakers, the ESP boards of both PCs, the meters, the door phone, the hot water\n# board, the plant sensor). The height and the colour are the signal quality: red and short is weak, green and tall is strong.\n# A weak tower flickers like a bad connection, a strong one is steady and sends rings of radio waves over its top.\ncol = min(floor(u * 8), 7)\nxf = fract(u * 8)\nq = (living if col == 0 else (bed if col == 1 else (dpc if col == 2 else (vpc if col == 3 else (meters if col == 4 else (door if col == 5 else (water if col == 6 else plant)))))))\ntop = 0.1 + 0.8 * q\ninside = step(0.14, xf) * step(xf, 0.86)\nshake = 1 - (1 - q) * 0.85 * noise(col * 7.3, now * 7)\nfill = step(y, top) * inside * shake\nhue = 0.02 + 0.36 * q\nbody = hsv(hue, 1, 0.3 + 0.7 * min(y / max(top, 0.1), 1)) * fill\nd = dist((xf - 0.5) * w / 8, y, 0, top)\nf = fract(d * 7 - now * (0.3 + 0.9 * q))\nring = smoothstep(0, 0.25, f) * smoothstep(0.6, 0.25, f) * sat(1 - d * 3.5) * q * step(top, y)\nbody + hsv(fract(hue + 0.5), 0.8, 1) * ring * 1.8",
+"params": [],
+"inputs": [
+{
+"name": "living",
+"entity": "sensor.livingroom_speaker_livingroom_speaker_wifi_signal",
+"attribute": "",
+"min": -95,
+"max": -40,
+"smooth": 3,
+"default": 0.7,
+"auto": false,
+"kick": 0.12
+},
+{
+"name": "bed",
+"entity": "sensor.bedroom_speaker_bedroom_speaker_wifi_signal",
+"attribute": "",
+"min": -95,
+"max": -40,
+"smooth": 3,
+"default": 0.5,
+"auto": false,
+"kick": 0.12
+},
+{
+"name": "dpc",
+"entity": "sensor.esp_32_dima_pc_wifi_signal_db",
+"attribute": "",
+"min": -95,
+"max": -40,
+"smooth": 3,
+"default": 0.5,
+"auto": false,
+"kick": 0.12
+},
+{
+"name": "vpc",
+"entity": "sensor.esp_32_veron_pc_wifi_signal_db",
+"attribute": "",
+"min": -95,
+"max": -40,
+"smooth": 3,
+"default": 0.5,
+"auto": false,
+"kick": 0.12
+},
+{
+"name": "meters",
+"entity": "sensor.esp_32_meters_wifi_signal_db",
+"attribute": "",
+"min": -95,
+"max": -40,
+"smooth": 3,
+"default": 0.3,
+"auto": false,
+"kick": 0.12
+},
+{
+"name": "door",
+"entity": "sensor.domofon_wifi_signal",
+"attribute": "",
+"min": -95,
+"max": -40,
+"smooth": 3,
+"default": 0.2,
+"auto": false,
+"kick": 0.12
+},
+{
+"name": "water",
+"entity": "sensor.esp32_c6_water_hot_water_rssi",
+"attribute": "",
+"min": -95,
+"max": -40,
+"smooth": 3,
+"default": 0.7,
+"auto": false,
+"kick": 0.12
+},
+{
+"name": "plant",
+"entity": "sensor.plant_sensor_436a_signal_strength",
+"attribute": "",
+"min": -95,
+"max": -40,
+"smooth": 3,
+"default": 0.5,
+"auto": false,
+"kick": 0.12
+}
+]
+},
+{
+"name": "Zigbee mesh live",
+"code": "# Five radiators of the Zigbee mesh are five wave sources, like drops in a pond. The link quality of a radiator sets its colour\n# (red is weak, green is strong), how bright and far its waves reach and how fast they run. Where the waves of two radiators meet they\n# interfere and mix their colours, so a mesh with very different links makes a rich, uneven picture.\np1x = (0.12 - 0.5) * w\np2x = (0.32 - 0.5) * w\np3x = (0.52 - 0.5) * w\np4x = (0.72 - 0.5) * w\np5x = (0.9 - 0.5) * w\nd1 = dist(x, y, p1x, 0.68)\nd2 = dist(x, y, p2x, 0.28)\nd3 = dist(x, y, p3x, 0.78)\nd4 = dist(x, y, p4x, 0.3)\nd5 = dist(x, y, p5x, 0.62)\nw1 = (0.5 + 0.5 * sin(tau * (d1 * 4 - now * (0.15 + 0.7 * cab)))) ** 3 * (0.2 + 0.8 * cab) * exp(-d1 * 2.2)\nw2 = (0.5 + 0.5 * sin(tau * (d2 * 4 - now * (0.15 + 0.7 * big)))) ** 3 * (0.2 + 0.8 * big) * exp(-d2 * 2.2)\nw3 = (0.5 + 0.5 * sin(tau * (d3 * 4 - now * (0.15 + 0.7 * liv)))) ** 3 * (0.2 + 0.8 * liv) * exp(-d3 * 2.2)\nw4 = (0.5 + 0.5 * sin(tau * (d4 * 4 - now * (0.15 + 0.7 * bath)))) ** 3 * (0.2 + 0.8 * bath) * exp(-d4 * 2.2)\nw5 = (0.5 + 0.5 * sin(tau * (d5 * 4 - now * (0.15 + 0.7 * bed)))) ** 3 * (0.2 + 0.8 * bed) * exp(-d5 * 2.2)\nwaves = hsv(cab * 0.36, 1, 1) * w1 + hsv(big * 0.36, 1, 1) * w2 + hsv(liv * 0.36, 1, 1) * w3 + hsv(bath * 0.36, 1, 1) * w4 + hsv(bed * 0.36, 1, 1) * w5\ncore = gray(1) * (exp(-(d1 * 14) ** 2) + exp(-(d2 * 14) ** 2) + exp(-(d3 * 14) ** 2) + exp(-(d4 * 14) ** 2) + exp(-(d5 * 14) ** 2))\nwaves * 1.6 + core * 0.8",
+"params": [],
+"inputs": [
+{
+"name": "cab",
+"entity": "sensor.cabinet_radiator_linkquality",
+"attribute": "",
+"min": 40,
+"max": 255,
+"smooth": 3,
+"default": 0.5,
+"auto": false,
+"kick": 0.12
+},
+{
+"name": "big",
+"entity": "sensor.living_room_radiator_big_linkquality",
+"attribute": "",
+"min": 40,
+"max": 255,
+"smooth": 3,
+"default": 0.2,
+"auto": false,
+"kick": 0.12
+},
+{
+"name": "liv",
+"entity": "sensor.living_room_radiator_linkquality",
+"attribute": "",
+"min": 40,
+"max": 255,
+"smooth": 3,
+"default": 0.8,
+"auto": false,
+"kick": 0.12
+},
+{
+"name": "bath",
+"entity": "sensor.bath_room_radiator_linkquality",
+"attribute": "",
+"min": 40,
+"max": 255,
+"smooth": 3,
+"default": 0.4,
+"auto": false,
+"kick": 0.12
+},
+{
+"name": "bed",
+"entity": "sensor.bed_room_radiator_linkquality",
+"attribute": "",
+"min": 40,
+"max": 255,
+"smooth": 3,
+"default": 0.3,
+"auto": false,
+"kick": 0.12
+}
+]
+},
+{
+"name": "Signal stars live",
+"code": "# A night sky with eight stars, one per radio in the house. A strong signal is a big, steady, blue-white star; a weak one is a small\n# red star that flickers hard, like a bad connection. The sky itself drifts slowly in deep blue.\nq1 = living\nq2 = bed\nq3 = dpc\nq4 = vpc\nq5 = meters\nq6 = door\nq7 = water\nq8 = plant\ns1 = exp(-(dist(x, y, (0.1 - 0.5) * w, 0.8) / (0.025 + 0.05 * q1)) ** 2) * (1 - (1 - q1) * 0.9 * noise(1.1, now * 5))\ns2 = exp(-(dist(x, y, (0.25 - 0.5) * w, 0.35) / (0.025 + 0.05 * q2)) ** 2) * (1 - (1 - q2) * 0.9 * noise(2.2, now * 5))\ns3 = exp(-(dist(x, y, (0.38 - 0.5) * w, 0.7) / (0.025 + 0.05 * q3)) ** 2) * (1 - (1 - q3) * 0.9 * noise(3.3, now * 5))\ns4 = exp(-(dist(x, y, (0.5 - 0.5) * w, 0.25) / (0.025 + 0.05 * q4)) ** 2) * (1 - (1 - q4) * 0.9 * noise(4.4, now * 5))\ns5 = exp(-(dist(x, y, (0.62 - 0.5) * w, 0.85) / (0.025 + 0.05 * q5)) ** 2) * (1 - (1 - q5) * 0.9 * noise(5.5, now * 5))\ns6 = exp(-(dist(x, y, (0.74 - 0.5) * w, 0.45) / (0.025 + 0.05 * q6)) ** 2) * (1 - (1 - q6) * 0.9 * noise(6.6, now * 5))\ns7 = exp(-(dist(x, y, (0.86 - 0.5) * w, 0.75) / (0.025 + 0.05 * q7)) ** 2) * (1 - (1 - q7) * 0.9 * noise(7.7, now * 5))\ns8 = exp(-(dist(x, y, (0.93 - 0.5) * w, 0.3) / (0.025 + 0.05 * q8)) ** 2) * (1 - (1 - q8) * 0.9 * noise(8.8, now * 5))\nsky = hsv(0.62, 0.9, 0.04 + 0.1 * noise(x * 3 + now * 0.03, y * 3))\nstars = hsv(q1 * 0.6, 1 - 0.55 * q1, 1) * s1 + hsv(q2 * 0.6, 1 - 0.55 * q2, 1) * s2 + hsv(q3 * 0.6, 1 - 0.55 * q3, 1) * s3 + hsv(q4 * 0.6, 1 - 0.55 * q4, 1) * s4\nstars + hsv(q5 * 0.6, 1 - 0.55 * q5, 1) * s5 + hsv(q6 * 0.6, 1 - 0.55 * q6, 1) * s6 + hsv(q7 * 0.6, 1 - 0.55 * q7, 1) * s7 + hsv(q8 * 0.6, 1 - 0.55 * q8, 1) * s8 + sky",
+"params": [],
+"inputs": [
+{
+"name": "living",
+"entity": "sensor.livingroom_speaker_livingroom_speaker_wifi_signal",
+"attribute": "",
+"min": -95,
+"max": -40,
+"smooth": 3,
+"default": 0.7,
+"auto": false,
+"kick": 0.12
+},
+{
+"name": "bed",
+"entity": "sensor.bedroom_speaker_bedroom_speaker_wifi_signal",
+"attribute": "",
+"min": -95,
+"max": -40,
+"smooth": 3,
+"default": 0.5,
+"auto": false,
+"kick": 0.12
+},
+{
+"name": "dpc",
+"entity": "sensor.esp_32_dima_pc_wifi_signal_db",
+"attribute": "",
+"min": -95,
+"max": -40,
+"smooth": 3,
+"default": 0.5,
+"auto": false,
+"kick": 0.12
+},
+{
+"name": "vpc",
+"entity": "sensor.esp_32_veron_pc_wifi_signal_db",
+"attribute": "",
+"min": -95,
+"max": -40,
+"smooth": 3,
+"default": 0.5,
+"auto": false,
+"kick": 0.12
+},
+{
+"name": "meters",
+"entity": "sensor.esp_32_meters_wifi_signal_db",
+"attribute": "",
+"min": -95,
+"max": -40,
+"smooth": 3,
+"default": 0.3,
+"auto": false,
+"kick": 0.12
+},
+{
+"name": "door",
+"entity": "sensor.domofon_wifi_signal",
+"attribute": "",
+"min": -95,
+"max": -40,
+"smooth": 3,
+"default": 0.2,
+"auto": false,
+"kick": 0.12
+},
+{
+"name": "water",
+"entity": "sensor.esp32_c6_water_hot_water_rssi",
+"attribute": "",
+"min": -95,
+"max": -40,
+"smooth": 3,
+"default": 0.7,
+"auto": false,
+"kick": 0.12
+},
+{
+"name": "plant",
+"entity": "sensor.plant_sensor_436a_signal_strength",
+"attribute": "",
+"min": -95,
+"max": -40,
+"smooth": 3,
+"default": 0.5,
+"auto": false,
+"kick": 0.12
+}
+]
+},
+{
+"name": "Live twinkle",
+"code": "# Twinkle with a pulse from the home: every LED blinks on its own (warm white). The house power sets how fast they blink and how many LEDs take part,\n# the sun cools the colour by day (warm at night), a jump of the load of Dima's PC makes a burst of quick blinks over the whole tree.\nph = hash(i, 1)\nfr = 1 + floor(hash(i, 2) * 3)\ntt = now * 0.12 + house_phase * 0.4\nalive = step(hash(i, 4), 0.45 + 0.55 * house)\ns = (0.5 + 0.5 * sin(tau * (fr * tt + ph))) ** 5\nc = hash(i, 3)\nbase = mix(palette(\"warm white\", c), palette(\"ice\", c), sun * 0.7)\nburst = dcpu_kick * hash(i, floor(now * 7)) ** 2\nbase * (s * alive + burst)",
+"params": [],
+"inputs": [
+{
+"name": "house",
+"entity": "sensor.main_energy_sensor_power",
+"attribute": "",
+"min": 300,
+"max": 2300,
+"smooth": 0.6,
+"default": 0.4,
+"auto": true,
+"kick": 0.12
+},
+{
+"name": "sun",
+"entity": "sun.sun",
+"attribute": "elevation",
+"min": -8,
+"max": 40,
+"smooth": 5,
+"default": 0.2,
+"auto": false,
+"kick": 0.12
+},
+{
+"name": "dcpu",
+"entity": "sensor.dima_pc_satelite_cpuload",
+"attribute": "",
+"min": 0,
+"max": 30,
+"smooth": 0.4,
+"default": 0.3,
+"auto": true,
+"kick": 0.12
+}
+]
+},
+{
+"name": "Live stars",
+"code": "# Slow stars: a few LEDs pulse softly in starlight colours, more of them the more power the house draws. A jump of the load of Dima's PC sends\n# a shooting star along the string of lights (it runs along the numbers of the LEDs, so it follows the wire round the tree).\nph = hash(i, 22)\nfr = 1 + floor(hash(i, 24) * 2)\ntt = now * 0.07 + house_phase * 0.15\nstar = step(hash(i, 21), 0.1 + 0.45 * house)\nb = (0.5 + 0.5 * sin(tau * (fr * tt + ph))) ** 3\nfield = palette(\"starlight\", hash(i, 23)) * b * star\nd = hash(dcpu_count, 3) * n * 0.4 + dcpu_age * 120 - i\ncomet = exp(-d / 16) * step(0, d) * step(dcpu_age, 3.5)\nfield + rgb(0.75, 0.9, 1) * comet",
+"params": [],
+"inputs": [
+{
+"name": "house",
+"entity": "sensor.main_energy_sensor_power",
+"attribute": "",
+"min": 300,
+"max": 2300,
+"smooth": 0.6,
+"default": 0.4,
+"auto": true,
+"kick": 0.12
+},
+{
+"name": "dcpu",
+"entity": "sensor.dima_pc_satelite_cpuload",
+"attribute": "",
+"min": 0,
+"max": 30,
+"smooth": 0.4,
+"default": 0.3,
+"auto": true,
+"kick": 0.12
+}
+]
+},
+{
+"name": "Live glitter",
+"code": "# Glitter: LEDs flash sharply in neon colours, driven by the network. The more data comes down, the faster they flash; the upload decides how\n# many LEDs take part. A jump of the house power flashes the whole tree for a moment.\non = step(hash(i, 41), 0.35 + 0.6 * up)\nuu = fract(down_phase * 0.8 + now * 0.45 + hash(i, 42))\nb = max(0, 1 - uu / 0.22) ** 2\nc = cpalette(\"neon\", hash(i, 43))\nc * 2.6 * (on * b + house_kick * 0.6 * step(0.55, hash(i, floor(now * 9))))",
+"params": [],
+"inputs": [
+{
+"name": "down",
+"entity": "sensor.keenetic_titan_wifistation_internal_downlink_speed",
+"attribute": "",
+"min": 0,
+"max": 60,
+"smooth": 0.5,
+"default": 0.4,
+"auto": true,
+"kick": 0.12
+},
+{
+"name": "up",
+"entity": "sensor.keenetic_titan_wifistation_internal_uplink_speed",
+"attribute": "",
+"min": 0,
+"max": 40,
+"smooth": 0.5,
+"default": 0.4,
+"auto": true,
+"kick": 0.12
+},
+{
+"name": "house",
+"entity": "sensor.main_energy_sensor_power",
+"attribute": "",
+"min": 300,
+"max": 2300,
+"smooth": 0.5,
+"default": 0.4,
+"auto": true,
+"kick": 0.1
+}
+]
+},
+{
+"name": "Live candy",
+"code": "# Candy stripes that follow the wind: the stripes lie across the wind (the bearing of the wind from the weather), run with its speed and are\n# narrower when the house draws more power; a jump of the power makes them flash. Two colours of the candy palette.\nang = wb * tau\nk = 3 + 9 * house\ns = fract((x * cos(ang) + y * sin(ang)) * k * 0.5 + ws_phase * 1.2 + now * 0.04)\nw2 = smoothstep(0.42, 0.5, s) - smoothstep(0.92, 1, s)\nmix(palette(\"candy\", 0), palette(\"candy\", 1), w2) * (0.85 + 0.35 * house_kick)",
+"params": [],
+"inputs": [
+{
+"name": "wb",
+"entity": "weather.forecast_home_2",
+"attribute": "wind_bearing",
+"min": 0,
+"max": 360,
+"smooth": 4,
+"default": 0.18,
+"auto": false,
+"kick": 0.12
+},
+{
+"name": "ws",
+"entity": "weather.forecast_home_2",
+"attribute": "wind_speed",
+"min": 0,
+"max": 30,
+"smooth": 3,
+"default": 0.15,
+"auto": false,
+"kick": 0.12
+},
+{
+"name": "house",
+"entity": "sensor.main_energy_sensor_power",
+"attribute": "",
+"min": 300,
+"max": 2300,
+"smooth": 0.6,
+"default": 0.4,
+"auto": true,
+"kick": 0.1
+}
+]
+},
+{
+"name": "Live rain",
+"code": "# Rain made of network traffic: the more data comes down, the denser the rain; the faster the upload, the faster it falls. Streaks in ice colours\n# fall in columns across the tree; a jump of the house power is a flash of lightning.\nlane = floor(u * 20)\ndens = 1 + 2 * down\nfall = now * 0.5 + up_phase * 1.5\nuu = fract(y * dens + fall + hash(lane, 61))\nb = max(0, 1 - uu / 0.5) ** 1.5\npalette(\"ice\", 0.55 + 0.45 * b) * b * (1.4 + 0.8 * down) + rgb(0.45, 0.6, 1) * house_kick * 0.5",
+"params": [],
+"inputs": [
+{
+"name": "down",
+"entity": "sensor.keenetic_titan_wifistation_internal_downlink_speed",
+"attribute": "",
+"min": 0,
+"max": 60,
+"smooth": 0.5,
+"default": 0.4,
+"auto": true,
+"kick": 0.12
+},
+{
+"name": "up",
+"entity": "sensor.keenetic_titan_wifistation_internal_uplink_speed",
+"attribute": "",
+"min": 0,
+"max": 40,
+"smooth": 0.5,
+"default": 0.4,
+"auto": true,
+"kick": 0.12
+},
+{
+"name": "house",
+"entity": "sensor.main_energy_sensor_power",
+"attribute": "",
+"min": 300,
+"max": 2300,
+"smooth": 0.5,
+"default": 0.4,
+"auto": true,
+"kick": 0.1
+}
+]
+},
+{
+"name": "Live helix",
+"code": "# A double helix: two strands twist round each other up the tree. The house power sets how many turns it has, the load of Dima's PC spins it,\n# a jump of that load makes the strands fatter for a moment.\nturns = 1 + 1.5 * house\nph = tau * (y * turns - dcpu_phase * 0.25 - now * 0.08)\nxs = 0.5 + 0.38 * sin(ph)\nwd = 0.1 + 0.1 * dcpu_kick\ndepth = cos(ph)\nba = exp(-((u - xs) ** 2) / (2 * wd * wd)) * (0.55 + 0.45 * depth)\nbb = exp(-((u - (1 - xs)) ** 2) / (2 * wd * wd)) * (0.55 - 0.45 * depth)\npalette(\"neon\", 0.15) * ba if ba >= bb else palette(\"neon\", 0.85) * bb",
+"params": [],
+"inputs": [
+{
+"name": "house",
+"entity": "sensor.main_energy_sensor_power",
+"attribute": "",
+"min": 300,
+"max": 2300,
+"smooth": 0.6,
+"default": 0.4,
+"auto": true,
+"kick": 0.12
+},
+{
+"name": "dcpu",
+"entity": "sensor.dima_pc_satelite_cpuload",
+"attribute": "",
+"min": 0,
+"max": 30,
+"smooth": 0.4,
+"default": 0.3,
+"auto": true,
+"kick": 0.12
+}
+]
+},
+{
+"name": "Live triple helix",
+"mapping": "plane",
+"code": "# Three strands braided round each other, the strand in front the brightest, on a soft colour that fills the whole tree.\n# The house power sets the number of turns, the load of Dima's PC the spin.\nturns = 0.8 + 1.4 * house\nph = tau * (y * turns - dcpu_phase * 0.2 - now * 0.06)\nwd = 0.1 + 0.07 * dcpu_kick\nx0 = 0.5 + 0.36 * sin(ph)\nx1 = 0.5 + 0.36 * sin(ph + 2.0944)\nx2 = 0.5 + 0.36 * sin(ph + 4.1888)\ng0 = exp(-((u - x0) ** 2) / (2 * wd * wd)) * (0.55 + 0.45 * cos(ph))\ng1 = exp(-((u - x1) ** 2) / (2 * wd * wd)) * (0.55 + 0.45 * cos(ph + 2.0944))\ng2 = exp(-((u - x2) ** 2) / (2 * wd * wd)) * (0.55 + 0.45 * cos(ph + 4.1888))\nw0 = step(g1, g0) * step(g2, g0)\nw1 = (1 - w0) * step(g2, g1)\nw2 = 1 - w0 - w1\ngm = max(g0, max(g1, g2))\nbg = palette(\"aurora\", 0.55 + 0.3 * sin(tau * (v * 0.7 + now * 0.01))) * 0.3\nrgb(1, 0.15, 0.3) * g0 * w0 + rgb(0.1, 0.9, 0.4) * g1 * w1 + rgb(0.2, 0.4, 1) * g2 * w2 + bg * (1 - min(gm * 1.5, 1))",
+"params": [],
+"inputs": [
+{
+"name": "house",
+"entity": "sensor.main_energy_sensor_power",
+"attribute": "",
+"min": 300,
+"max": 2300,
+"smooth": 0.6,
+"default": 0.4,
+"auto": true,
+"kick": 0.1
+},
+{
+"name": "dcpu",
+"entity": "sensor.dima_pc_satelite_cpuload",
+"attribute": "",
+"min": 0,
+"max": 30,
+"smooth": 0.4,
+"default": 0.3,
+"auto": true,
+"kick": 0.12
+}
+]
+},
+{
+"name": "Live DNA ladder",
+"mapping": "plane",
+"code": "# A double helix with rungs between the strands, on a soft two-colour glow that fills the tree. House power: turns, PC load: spin.\nturns = 1 + 1.2 * house\nph = tau * (y * turns - dcpu_phase * 0.2 - now * 0.06)\nxs = 0.5 + 0.36 * sin(ph)\nwd = 0.09\nba = exp(-((u - xs) ** 2) / (2 * wd * wd)) * (0.55 + 0.45 * cos(ph))\nbb = exp(-((u - (1 - xs)) ** 2) / (2 * wd * wd)) * (0.55 - 0.45 * cos(ph))\nrung = smoothstep(0.3, 0.0, abs(cos(ph))) * step(abs(u - 0.5), 0.4 * abs(sin(ph)))\nstrand = palette(\"neon\", 0.15) * ba if ba >= bb else palette(\"neon\", 0.85) * bb\nbg = mix(palette(\"neon\", 0.1), palette(\"neon\", 0.9), v) * 0.32\nstrand + rgb(1, 1, 1) * rung * 0.8 + bg * (1 - min(max(ba, bb) * 1.5 + rung, 1))",
+"params": [],
+"inputs": [
+{
+"name": "house",
+"entity": "sensor.main_energy_sensor_power",
+"attribute": "",
+"min": 300,
+"max": 2300,
+"smooth": 0.6,
+"default": 0.4,
+"auto": true,
+"kick": 0.1
+},
+{
+"name": "dcpu",
+"entity": "sensor.dima_pc_satelite_cpuload",
+"attribute": "",
+"min": 0,
+"max": 30,
+"smooth": 0.4,
+"default": 0.3,
+"auto": true,
+"kick": 0.12
+}
+]
+},
+{
+"name": "Live ribbons",
+"mapping": "plane",
+"code": "# Three ribbons of light sway up the tree and cross each other, where they meet the colours mix, on a deep colour that fills the tree.\n# The speed follows the download.\na1 = 0.5 + 0.34 * sin(tau * (y * 0.9 - now * 0.05 - down_phase * 0.1))\na2 = 0.5 + 0.34 * sin(tau * (y * 1.3 - now * 0.07 - down_phase * 0.12) + 2)\na3 = 0.5 + 0.34 * sin(tau * (y * 1.7 + now * 0.04 + down_phase * 0.08) + 4)\nwd = 0.1 + 0.05 * up\nbg = palette(\"aurora\", 0.3 + 0.25 * sin(tau * (v + now * 0.02))) * 0.3\npalette(\"aurora\", 0.1) * exp(-((u - a1) ** 2) / (2 * wd * wd)) + palette(\"aurora\", 0.5) * exp(-((u - a2) ** 2) / (2 * wd * wd)) + palette(\"aurora\", 0.9) * exp(-((u - a3) ** 2) / (2 * wd * wd)) + bg",
+"params": [],
+"inputs": [
+{
+"name": "down",
+"entity": "sensor.keenetic_titan_wifistation_internal_downlink_speed",
+"attribute": "",
+"min": 0,
+"max": 60,
+"smooth": 0.5,
+"default": 0.4,
+"auto": true,
+"kick": 0.12
+},
+{
+"name": "up",
+"entity": "sensor.keenetic_titan_wifistation_internal_uplink_speed",
+"attribute": "",
+"min": 0,
+"max": 40,
+"smooth": 0.5,
+"default": 0.4,
+"auto": true,
+"kick": 0.12
+}
+]
+},
+{
+"name": "Live wavy candy",
+"mapping": "plane",
+"code": "# Candy stripes that wave like a flag: the wind speed sets how strongly they sway, the wind bearing which way they lean.\nang = wb * tau\nsway = 0.04 + 0.2 * ws\nc = (x * cos(ang) + y * sin(ang)) * 4 + sway * 4 * sin(tau * (y * 2 + now * 0.1)) + ws_phase * 1.2 + now * 0.05\ns = fract(c)\nw2 = smoothstep(0.42, 0.5, s) - smoothstep(0.92, 1, s)\nmix(palette(\"candy\", 0), palette(\"candy\", 1), w2)",
+"params": [],
+"inputs": [
+{
+"name": "wb",
+"entity": "weather.forecast_home_2",
+"attribute": "wind_bearing",
+"min": 0,
+"max": 360,
+"smooth": 4,
+"default": 0.18,
+"auto": false,
+"kick": 0.12
+},
+{
+"name": "ws",
+"entity": "weather.forecast_home_2",
+"attribute": "wind_speed",
+"min": 0,
+"max": 30,
+"smooth": 3,
+"default": 0.15,
+"auto": false,
+"kick": 0.12
+}
+]
+},
+{
+"name": "Live frosted candy",
+"mapping": "plane",
+"code": "# Candy stripes in white and ice blue with glitter sparkling in the stripes. The wind turns the stripes and drives them.\nang = wb * tau\ns = fract((x * cos(ang) + y * sin(ang)) * 4 + ws_phase * 1.2 + now * 0.04)\nw2 = smoothstep(0.42, 0.5, s) - smoothstep(0.92, 1, s)\nsparkle = step(0.9, hash(i, floor(now * 6)))\nmix(rgb(0.05, 0.2, 0.55), rgb(0.85, 0.95, 1), w2) * (0.85 + 0.15 * hash(i, 5)) + rgb(1, 1, 1) * sparkle * (0.4 + 0.6 * w2)",
+"params": [],
+"inputs": [
+{
+"name": "wb",
+"entity": "weather.forecast_home_2",
+"attribute": "wind_bearing",
+"min": 0,
+"max": 360,
+"smooth": 4,
+"default": 0.18,
+"auto": false,
+"kick": 0.12
+},
+{
+"name": "ws",
+"entity": "weather.forecast_home_2",
+"attribute": "wind_speed",
+"min": 0,
+"max": 30,
+"smooth": 3,
+"default": 0.15,
+"auto": false,
+"kick": 0.12
+}
+]
+},
+{
+"name": "Live spiral candy",
+"mapping": "wrap",
+"code": "# Candy stripes that wind round the tree like a ribbon round a candy cane (on a wall they are just slanted stripes). The house power sets\n# how steep the spiral is, the wind drives it.\ns = fract(u * 2 + v * (1.5 + 2 * house) - now * 0.05 - ws_phase * 1.0)\nw2 = smoothstep(0.42, 0.5, s) - smoothstep(0.92, 1, s)\nmix(palette(\"candy\", 0), palette(\"candy\", 1), w2)",
+"params": [],
+"inputs": [
+{
+"name": "house",
+"entity": "sensor.main_energy_sensor_power",
+"attribute": "",
+"min": 300,
+"max": 2300,
+"smooth": 0.6,
+"default": 0.4,
+"auto": true,
+"kick": 0.1
+},
+{
+"name": "ws",
+"entity": "weather.forecast_home_2",
+"attribute": "wind_speed",
+"min": 0,
+"max": 30,
+"smooth": 3,
+"default": 0.15,
+"auto": false,
+"kick": 0.12
+}
+]
+},
+{
+"name": "Live christmas spiral",
+"mapping": "wrap",
+"code": "# Three wide spirals, red, green and white, wind up the tree side by side and cover all of it. The load of Dima's PC drives them.\ns = fract(u * 3 + v * 2.2 - now * 0.05 - dcpu_phase * 0.3)\nf = fract(s * 3)\nedge = smoothstep(0, 0.12, f) * smoothstep(1, 0.88, f)\ni0 = 1 - step(0.3333, s)\ni2 = step(0.6667, s)\ni1 = 1 - i0 - i2\n(rgb(0.95, 0.04, 0.06) * i0 + rgb(0.04, 0.8, 0.2) * i1 + rgb(1, 0.95, 0.85) * i2) * (0.35 + 0.65 * edge)",
+"params": [],
+"inputs": [
+{
+"name": "dcpu",
+"entity": "sensor.dima_pc_satelite_cpuload",
+"attribute": "",
+"min": 0,
+"max": 30,
+"smooth": 0.4,
+"default": 0.3,
+"auto": true,
+"kick": 0.12
+}
+]
+},
+{
+"name": "Live rainbow spiral",
+"mapping": "wrap",
+"code": "# A rainbow that winds round the tree. The speed follows the network.\nhue = fract(u * 2 + v * 1.5 - now * 0.04 - down_phase * 0.1)\nhsv(hue, 0.95, 1)",
+"params": [],
+"inputs": [
+{
+"name": "down",
+"entity": "sensor.keenetic_titan_wifistation_internal_downlink_speed",
+"attribute": "",
+"min": 0,
+"max": 60,
+"smooth": 0.5,
+"default": 0.4,
+"auto": true,
+"kick": 0.12
+}
+]
+},
+{
+"name": "Live twisted candy",
+"mapping": "wrap",
+"code": "# Candy stripes that twist: the stripes round the tree wobble up and down as they go round, and the wobble grows with the wind.\nc = v * 4 + 0.4 * (0.4 + ws) * sin(tau * (u * 2 + now * 0.06)) + now * 0.06 + ws_phase * 0.8\ns = fract(c)\nw2 = smoothstep(0.42, 0.5, s) - smoothstep(0.92, 1, s)\nmix(palette(\"candy\", 0), palette(\"candy\", 1), w2)",
+"params": [],
+"inputs": [
+{
+"name": "ws",
+"entity": "weather.forecast_home_2",
+"attribute": "wind_speed",
+"min": 0,
+"max": 30,
+"smooth": 3,
+"default": 0.15,
+"auto": false,
+"kick": 0.12
+}
+]
+}
+]

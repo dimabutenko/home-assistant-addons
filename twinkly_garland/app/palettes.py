@@ -4,7 +4,9 @@ A palette is a list of stops [[position 0..1, "#rrggbb"], ...]. Built-in ones ar
 read-only; custom ones live in /data/palettes.json.
 """
 import json
+import math
 import os
+import random
 import re
 from pathlib import Path
 
@@ -121,3 +123,24 @@ def get(name: str) -> Palette:
         stops = BUILTIN.get(name) or next((p["stops"] for p in custom() if p["name"] == name), None)
         _objs[name] = Palette(stops or BUILTIN["rainbow"])
     return _objs[name]
+
+
+# ---- the theme of a live round ---------------------------------------------------------------------------
+# `live:random` picks one palette and one speed for every scene of the round; a formula reads them as
+# palette("theme", v) / cpalette("theme", v) and `pace`.
+
+DEFAULT_THEME = {"palette": "rainbow", "pace": 1.0}  # a scene started by name, a stored effect, a preview
+THEME_SKIP = {"fire", "lava", "storm"}               # start in near black: whole regions of a scene would go dark
+PACE_RANGE = (0.6, 1.6)
+
+
+def theme_names() -> list:
+    return [n for n in BUILTIN if n not in THEME_SKIP] + [p["name"] for p in custom()]
+
+
+def pick_theme(avoid: set = frozenset(), rng=random) -> dict:
+    """A palette (another one than those in `avoid`, if there is a choice) and a speed multiplier, 0.6..1.6 (log scale)."""
+    names = theme_names()
+    names = [n for n in names if n not in avoid] or names
+    lo, hi = PACE_RANGE
+    return {"palette": rng.choice(names), "pace": round(math.exp(rng.uniform(math.log(lo), math.log(hi))), 2)}

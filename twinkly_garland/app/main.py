@@ -20,7 +20,7 @@ from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import compose, device, effects, formula, hadata, live, mqtt_bridge, palettes, scan
+from . import compose, device, effects, formula, hadata, live, mqtt_bridge, palettes, rounds, scan
 
 OPTIONS_PATH = Path(os.environ.get("OPTIONS_PATH", "/data/options.json"))
 STATIC = Path(__file__).parent / "static"
@@ -358,51 +358,44 @@ def api_health():
     return {"ok": True}
 
 
-RANDOM_FOLLOW_S = 120  # a device that asks for live:random within this time after another one switched joins that scene
+RANDOM_FOLLOW_S = 120  # a device that asks for live:random within this time after another one switched joins its round (theme, and the scene if it may play it)
 
 
-def start_live(scene_name: str, names: list, fps: float | None = None, restart: bool = False) -> list:
+def start_random(names: list, fps: float | None, restart: bool) -> list:
+    """One `live:random` round: every garland gets a scene meant for its shape (wall: "wall" or "any", tree: "tree" or "any"),
+    the same scene where the pools allow it, and ALL of them one theme (palette and pace, see app/rounds.py)."""
+    live_scenes = [f for f in formula.load() if f.get("inputs")]
+    if not live_scenes:
+        raise HTTPException(404, "no live scene is saved yet: save a formula with inputs in the Formulas tab")
+    running = {n: device.live_hosts.get(find_device(n)["host"]) for n in names}
+    now = time.time()
+    # a round that another garland (not in this call) started a moment ago: the garlands of one room change together even
+    # when the automation asks for them one by one
+    recent = sorted((st for st in device.live_hosts.values() if st.in_round and st.started and now - st.started < RANDOM_FOLLOW_S
+                     and st.dev["name"] not in names and st.thread.is_alive()), key=lambda st: st.started, reverse=True)
+    avoid = {st.scene.theme["palette"] for st in device.live_hosts.values()}
+    rnd = rounds.plan(live_scenes, {n: device.device_shape(n) for n in names}, {n: running[n].name if running[n] else None for n in names},
+                      [(st.name, st.scene.theme) for st in recent], avoid)
+    out = []
+    for g in rnd["groups"]:
+        if g["error"]:
+            out += [{"device": n, "error": g["error"]} for n in g["devices"]]
+        elif g["kept"]:
+            out += [{"device": n, "live": running[n].name, "fps": running[n].fps, "kept": True} for n in g["devices"] if running[n]]
+        else:
+            out += start_live(g["scene"], g["devices"], fps, restart, theme=rnd["theme"], in_round=True)
+    return out
+
+
+def start_live(scene_name: str, names: list, fps: float | None = None, restart: bool = False,
+               theme: dict | None = None, in_round: bool = False) -> list:
     """Start the formula `scene_name` as a live scene on the devices. A running one on the same device is replaced,
     unless it already plays the same scene (then it just keeps running, so a periodic call does not restart it).
-    `fps` None = the setting of each device. `random` picks one of the saved formulas that have inputs (live scenes),
-    preferring another one than the current, and the SAME one for all the devices (garlands that stand side by side
-    play one scene), when a scene is allowed on all of them."""
-    running = {n: device.live_hosts.get(find_device(n)["host"]) for n in names}
+    `fps` None = the setting of each device. `random` starts a round (start_random). `theme` is the palette and pace
+    of the round (None = the default theme, as for a scene started by name)."""
     if scene_name == "random":
-        live_scenes = [f for f in formula.load() if f.get("inputs")]
-        if not live_scenes:
-            raise HTTPException(404, "no live scene is saved yet: save a formula with inputs in the Formulas tab")
-        shape = {n: device.device_shape(n) for n in names}
-        allowed = {n: {f["name"] for f in live_scenes if f.get("shape", "any") in ("any", shape[n])} for n in names}
-        common = set.intersection(*allowed.values())
-        if common:
-            groups = [(sorted(common), list(names))]
-        else:  # no scene fits all of them (some are meant for a tree only): one scene per kind of garland
-            by_shape: dict = {}
-            for n in names:
-                by_shape.setdefault(shape[n], []).append(n)
-            groups = [(sorted(allowed[g[0]]), g) for g in by_shape.values()]
-        out = []
-        for pool, group in groups:
-            if not pool:
-                out += [{"device": n, "error": f"no live scene is meant for a {shape[n]}"} for n in group]
-                continue
-            # a scene that another garland (not in this call) switched to a moment ago: join it, so that the garlands
-            # of one room change together even when the automation asks for them one by one
-            now = time.time()
-            recent = [st for h, st in device.live_hosts.items()
-                      if st.name in pool and st.started and now - st.started < RANDOM_FOLLOW_S
-                      and st.dev["name"] not in group and st.thread.is_alive()]
-            if recent:
-                out += start_live(max(recent, key=lambda st: st.started).name, group, fps, restart)
-                continue
-            current = {running[n].name for n in group if running[n]}
-            fresh = [p for p in pool if p not in current]
-            if not fresh:  # nothing else to switch to
-                out += [{"device": n, "live": running[n].name, "fps": running[n].fps, "kept": True} for n in group if running[n]] or start_live(pool[0], group, fps, restart)
-            else:
-                out += start_live(random.choice(fresh), group, fps, restart)
-        return out
+        return start_random(names, fps, restart)
+    running = {n: device.live_hosts.get(find_device(n)["host"]) for n in names}
     spec = formula.get(scene_name)
     if spec is None:
         raise HTTPException(404, f"unknown formula {scene_name!r}: save it in the Formulas tab first")
@@ -418,8 +411,8 @@ def start_live(scene_name: str, names: list, fps: float | None = None, restart: 
                 out.append({"device": n, "live": scene_name, "fps": running[n].fps, "kept": True})
                 continue
             layout = device.render_layout(dev, spec.get("mapping", "plane"))
-            scene = live.LiveScene(spec, layout, {})  # built first (it fetches history), while the old scene keeps playing
-            stream = live.LiveStream(dev, scene, scene_name, dev_fps)
+            scene = live.LiveScene(spec, layout, {}, theme=theme)  # built first (it fetches history), while the old scene keeps playing
+            stream = live.LiveStream(dev, scene, scene_name, dev_fps, in_round)
             old = running[n]
             if old is not None and old.thread.is_alive():
                 inherit = (old.prev_mode, old.prev_uid)

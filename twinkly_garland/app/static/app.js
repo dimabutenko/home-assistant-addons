@@ -169,7 +169,7 @@ function deviceCard(d) {
   if (!d.online) return h('div', { class: 'card' }, h('h2', {}, h('span', { class: 'dot' }), `${d.name} (${d.host})`), h('div', { class: 'bad' }, `Offline (${d.error || 'no answer'})`));
   if (d.live) return h('div', { class: 'card' },
     h('h2', {}, h('span', { class: 'dot on' }), `${d.name} (${d.host})`),
-    h('div', {}, h('b', {}, `Live scene: ${d.live.scene}`), h('span', { class: 'muted' }, `  ·  ${d.live.fps} fps · ${d.live.seconds} s · frame ${d.live.compute_ms} ms`)),
+    h('div', {}, h('b', {}, `Live scene: ${d.live.scene}`), h('span', { class: 'muted' }, `  ·  palette ${d.live.theme.palette} · pace ×${d.live.theme.pace}  ·  ${d.live.fps} fps · ${d.live.seconds} s · frame ${d.live.compute_ms} ms`)),
     h('div', { class: 'muted' }, 'The garland is streamed in real time. It goes back to how it was when you stop it; any other effect (not "random") also ends it.' + (d.live.relogins ? ` Re-logins: ${d.live.relogins}.` : '')),
     h('div', { class: 'row', style: 'margin-top:8px' }, h('button', { class: 'primary', onclick: () => stopLive(d.name) }, 'Stop live scene'), fpsInput(d)));
   const cap = d.capacity || 2245, want = d.desired_frames || 0, over = want > cap;

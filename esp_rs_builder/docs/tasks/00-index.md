@@ -13,6 +13,9 @@ Statuses: `TODO`, `IN_PROGRESS`, `DONE`, `BLOCKED`.
 | 07 | [Web UI: schema forms, pinout, flasher](07-web-ui-schemas-and-serial.md) | DONE |
 | 08 | [Add-on packaging: config.yaml, Dockerfile, ingress](08-addon-packaging.md) | DONE (image build not verified: no Docker here) |
 | 09 | [Boards: chip vs board, XIAO ESP32-C6](09-boards-xiao-esp32c6.md) | TODO |
-| 10 | [Secrets backend: `!secret` + secrets.yaml](10-secrets-backend.md) | TODO |
-| 11 | [YAML editor + Code/Split/Visual modes](11-yaml-editor-view-modes.md) | TODO |
-| 12 | [Secrets UI: editor, autocomplete, pickers](12-secrets-ui.md) | TODO |
+| 10 | [Component porting kit (+ pulse_counter)](10-component-porting-kit.md) | TODO |
+| 11 | [ESPHome schema import and stubs](11-esphome-schema-import-and-stubs.md) | TODO |
+| 12 | [Secrets backend: `!secret` + secrets.yaml](12-secrets-backend.md) | TODO |
+| 13 | [YAML editor + Code/Split/Visual modes](13-yaml-editor-view-modes.md) | TODO |
+| 14 | [Secrets UI: editor, autocomplete, pickers](14-secrets-ui.md) | TODO |
+| 15 | [Filters, automations, templates (draft, not prioritized)](15-filters-and-automations.md) | TODO (draft) |

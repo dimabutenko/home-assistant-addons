@@ -6,11 +6,11 @@ Like ESPHome: a device config can reference a value from a separate secrets file
 ## Scope
 - **Storage:** a flat YAML map `name: value` (strings only) at `BUILDER_SECRETS_FILE` (default `<BUILDER_WORK_DIR>/../secrets.yaml`; in the image `/data/secrets.yaml`, **not** under `/data/work`, which is excluded from backups the user may want to keep secrets in — decide and record; file mode `0600`). Atomic write (temp file + rename). Names: `[A-Za-z0-9_]+`.
 - **Engine (`builder-engine`):** parse the `!secret name` tag (serde_yaml tagged value) in the config; resolve it against a `Secrets` map **after** parsing and before schema/validation of values (so `minLength` of a Wi-Fi password is checked on the real value), but keep the diagnostics `path`s unchanged. An unknown name is a validation **error** at that path (`unknown secret "wifi_password"`), not a panic. `!secret` is allowed only where the component schema marks the property `x-secret` — **or** on any string property (decide; ESPHome allows anywhere; recommend: any scalar property, simplest rule). Codegen and `redact` use the resolved values (redaction list = all resolved secret values + literal `x-secret` values).
-- **API (`builder-server`):** `GET /api/secrets` → names only (`["wifi_password", ...]`), never values; `PUT /api/secrets/{name}` (body = value, max 4 KiB) and `DELETE /api/secrets/{name}`; `GET /api/secrets/file` / `PUT /api/secrets/file` for the raw YAML text (needed by the UI editor in task 12; the raw read is the **only** place values are returned — local to the add-on ingress, document this) with validation (flat string map). `POST /api/validate|generate|build` read the secrets from the store; no secrets in the request body.
+- **API (`builder-server`):** `GET /api/secrets` → names only (`["wifi_password", ...]`), never values; `PUT /api/secrets/{name}` (body = value, max 4 KiB) and `DELETE /api/secrets/{name}`; `GET /api/secrets/file` / `PUT /api/secrets/file` for the raw YAML text (needed by the UI editor in task 14; the raw read is the **only** place values are returned — local to the add-on ingress, document this) with validation (flat string map). `POST /api/validate|generate|build` read the secrets from the store; no secrets in the request body.
 - `main.rs`: new env `BUILDER_SECRETS_FILE`; create an empty file on first start if missing.
 - `Dockerfile`/`run.sh`: set `BUILDER_SECRETS_FILE=/data/secrets.yaml`; `config.yaml` unchanged (no new privileges, no option). `backup_exclude` must **not** list the secrets file.
 - Docs: `ARCHITECTURE.md` (secrets section), README (how secrets work, where the file is), CHANGELOG + minor version bump.
-- **Out of scope:** any UI (tasks 11–12), encryption at rest, secret rotation, per-device secrets.
+- **Out of scope:** any UI (tasks 13–14), encryption at rest, secret rotation, per-device secrets.
 
 ## Constraints
 - Never log or return secret values except the explicit raw-file endpoint; error messages use names only.
@@ -25,4 +25,4 @@ Like ESPHome: a device config can reference a value from a separate secrets file
 - **Cannot run here:** the Docker image with `/data/secrets.yaml`.
 
 ## Definition of Done
-- Engine + API + env + Dockerfile updated, tests pass, docs updated, `00-index.md` + `HANDOFF.md` updated with the next prompt (task 11).
+- Engine + API + env + Dockerfile updated, tests pass, docs updated, `00-index.md` + `HANDOFF.md` updated with the next prompt (task 13).

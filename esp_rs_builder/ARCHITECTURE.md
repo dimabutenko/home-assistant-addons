@@ -70,7 +70,8 @@ Defined in `crates/builder-engine/src/codegen.rs` (module doc); the component sc
 - Generated code is deterministic (stable ordering) and contains a "generated, do not edit" header.
 - Every validation error carries a YAML path (for UI highlighting).
 
-## Planned (tasks 09–12, not built yet)
+## Planned (tasks 09–15, not built yet)
 - **Boards vs chips (09, 13):** a board schema may inherit a chip-level schema (`chip_base`) and list only the broken-out pins with labels, on-board pins and reserved pins; `board:` in the YAML is a board id. First new board: Seeed XIAO ESP32-C6. New boards are added as schema files (no board-editor UI for now).
-- **Secrets (10, 12):** ESPHome-style `!secret name` in the device YAML, resolved by `builder-engine` from a flat `secrets.yaml` in `/data` (managed through `/api/secrets*`, names-only listing, values never logged or put in responses except the raw-file endpoint used by the editor).
-- **Editor (11):** the YAML text is the source of truth; `POST /api/parse` (serde_yaml) feeds the visual model; three view modes (Code / Split / Visual).
+- **Secrets (12, 14):** ESPHome-style `!secret name` in the device YAML, resolved by `builder-engine` from a flat `secrets.yaml` in `/data` (managed through `/api/secrets*`, names-only listing, values never logged or put in responses except the raw-file endpoint used by the editor).
+- **Editor (13):** the YAML text is the source of truth; `POST /api/parse` (serde_yaml) feeds the visual model; three view modes (Code / Split / Visual).
+- **Porting ESPHome components (10, 11, 15):** the product is an ESPHome-like builder that emits Rust. A component = one schema + one firmware module (task 10 contract, shared entity options, scaffold, `docs/PORTING.md`; ESPHome key names are kept where semantics match). Not-yet-ported ESPHome components are imported as `status: stub` schemas, shown greyed in the UI (11). Filters, automations and a lambda replacement are a separate draft (15).

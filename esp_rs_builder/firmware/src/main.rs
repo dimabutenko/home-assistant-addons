@@ -16,6 +16,9 @@ esp_bootloader_esp_idf::esp_app_desc!();
 async fn main(spawner: Spawner) {
     let p = esp_hal::init(esp_hal::Config::default());
 
+    // Heap for the Wi-Fi radio driver ONLY (documented decision); runtime code itself never allocates.
+    esp_alloc::heap_allocator!(size: 80 * 1024);
+
     // The RTOS scheduler needs TIMG0 and FROM_CPU_INTR0. Generated code never uses them (no component
     // schema lists them in `firmware.peripherals`), so a second handle to each is sound.
     // SAFETY: neither peripheral is handed to any component by `generated::setup`.

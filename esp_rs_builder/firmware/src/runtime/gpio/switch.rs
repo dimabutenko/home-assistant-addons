@@ -26,6 +26,7 @@ pub async fn run(cfg: &'static Config, pin: AnyPin<'static>) {
         log::error!("switch `{}`: no free slot (max {})", cfg.id, MAX_SWITCHES);
         return;
     };
+    slot.describe(cfg.name, "", "");
     let mut on = match cfg.restore_mode {
         RestoreMode::AlwaysOn => true,
         RestoreMode::AlwaysOff => false,

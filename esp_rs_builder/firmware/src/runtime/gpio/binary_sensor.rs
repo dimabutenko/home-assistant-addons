@@ -27,6 +27,23 @@ pub enum DeviceClass {
     None,
 }
 
+impl DeviceClass {
+    /// Home Assistant `device_class` (empty = none).
+    pub const fn ha_name(self) -> &'static str {
+        match self {
+            DeviceClass::Motion => "motion",
+            DeviceClass::Door => "door",
+            DeviceClass::Window => "window",
+            DeviceClass::Opening => "opening",
+            DeviceClass::Occupancy => "occupancy",
+            DeviceClass::Presence => "presence",
+            DeviceClass::Moisture => "moisture",
+            DeviceClass::Smoke => "smoke",
+            DeviceClass::None => "",
+        }
+    }
+}
+
 pub struct Config {
     pub id: &'static str,
     pub name: &'static str,
@@ -41,6 +58,7 @@ pub async fn run(cfg: &'static Config, pin: AnyPin<'static>) {
         log::error!("binary_sensor `{}`: no free slot (max {})", cfg.id, MAX_BINARY_SENSORS);
         return;
     };
+    slot.describe(cfg.name, cfg.device_class.ha_name(), "");
     let pull = match cfg.pull {
         Pull::None => HalPull::None,
         Pull::Up => HalPull::Up,

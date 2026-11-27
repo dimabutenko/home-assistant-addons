@@ -1,37 +1,44 @@
 # HANDOFF
 
 ## Status
-- **Tasks 01–04 — DONE.** Task 05 spec written (`docs/tasks/05-firmware-net-and-ha.md`), not started.
-- Verified this session (PowerShell, from `firmware/` and the add-on root):
-  - `cargo check --features esp32c6` — passes, 0 warnings.
-  - `cargo build --features esp32c6` — compiles and **links**.
+- **Tasks 01–05 — DONE.** Task 06 spec written (`docs/tasks/06-builder-server-ws.md`), not started.
+- Verified this session (Bash with `~/.cargo/bin` on PATH; the PowerShell tool was disabled):
+  - `cargo check --features esp32c6` (in `firmware/`) — passes, 0 warnings.
+  - `cargo build --features esp32c6` — compiles and **links** (needed `esp-rtos` feature `esp-radio`).
   - `cargo test -p builder-engine` — passes (4 codegen + 8 validator tests); `cargo check --workspace` — passes (only the pre-existing unused-dependency warning in builder-server).
-- **Not verified:** anything on real hardware or in the emulator (no board here); the BME280 compensation math was written from the datasheet and has no unit test; ESP32-S3 (needs `espup`) was not built.
+- **Not verified:** anything on real hardware or in the emulator (no board here): joining Wi-Fi, the fallback AP, the MQTT session, Home Assistant discovery and command handling are untested at runtime. `ha.rs` (topic layout, discovery JSON, `ON`/`OFF` parsing) has **no unit tests** (the firmware crate is a `no_std` binary; consider moving the pure parts to a host-testable crate). The BME280 math still has no unit test. ESP32-S3 (needs `espup`) was not built. Heap size (80 KiB) and RAM use were not measured.
 
-## Completed artifacts (task 04)
-- `firmware/Cargo.toml` (deps pinned, features `esp32c6`/`esp32s3`), `firmware/.cargo/config.toml` (target + linker flags), `firmware/build.rs`, `firmware/src/main.rs`.
-- `firmware/src/generated.rs` = output of `builder-engine generate crates/builder-engine/tests/fixtures/valid_c6.yaml` (sample; contains the fixture's fake credentials only).
-- `firmware/src/runtime/`: `entity.rs` (slot registry), `bus/i2c.rs`, `gpio/{switch,binary_sensor}.rs`, `drivers/bme280.rs`, `wifi.rs` + `mqtt.rs` (stubs).
-- Earlier tasks: workspace, `schemas/`, `crates/builder-engine` (validator + codegen + CLI `validate` / `generate`), `crates/builder-server` stub.
+## Completed artifacts (task 05)
+- `firmware/src/runtime/wifi.rs`: `esp-radio` station + `embassy-net` DHCP stack, reconnect loop (`reconnect_interval_s`), fallback AP (station + AP after 3 failed attempts, static 192.168.4.1/24, no DHCP server), `wifi::stack()` for other tasks.
+- `firmware/src/runtime/mqtt.rs`: `rust-mqtt` client task: DNS or IPv4 broker, retained `online`/`offline` (last will) on `<prefix>/<device>/status`, discovery, command subscription, state publishing, ping, reconnect after 5 s.
+- `firmware/src/runtime/ha.rs`: `HomeAssistantLink` trait, `Topics`, discovery JSON (`switch`, `binary_sensor` + `device_class`, `sensor` + unit), `StateTracker`, command parsing (`ON`/`OFF`).
+- `firmware/src/runtime/entity.rs`: `Slot::{key, meta, describe}`, `Registry::iter`; switch / binary sensor / BME280 call `describe`. `DeviceClass::ha_name` added.
+- `main.rs`: `esp_alloc::heap_allocator!(size: 80 * 1024)`.
+- Codegen and `generated.rs` / golden file **unchanged** (the existing `start(spawner, &CONFIG[, WIFI])` signatures were enough).
+- `ARCHITECTURE.md` updated (heap exception, network layer). `00-index.md`: 05 DONE, 06 spec written.
+- Earlier: workspace, `schemas/`, `crates/builder-engine` (validator + codegen + CLI), `crates/builder-server` stub, firmware runtime (task 04).
 
 ## Decisions
-- **Firmware dependencies (verified on crates.io 2026-11-27):** `esp-hal ~1.2` (feature `unstable`), `esp-rtos 0.4` (`embassy`), `esp-bootloader-esp-idf 0.6`, `esp-println 0.18` (`log-04`), `esp-backtrace 0.20` (`panic-handler`, `println`), `log 0.4`, `embassy-executor 0.10`, `embassy-time 0.5`, `embassy-sync 0.8`, `embassy-embedded-hal 0.6`, `embedded-hal-async 1.0`, `static_cell 2.1`. `esp-hal-embassy` is obsolete (replaced by `esp-rtos`); the task spec's "executor 0.9" became 0.10 — the generated `if let Ok(token) = task(..) { spawner.spawn(token); }` and `p.GPIOn.into()` compile unchanged, so **codegen and its golden file did not change**.
-- Per-entity state/commands live in `runtime::entity::Registry` slots keyed `(id, aspect)`, not in generated statics (keeps the codegen contract unchanged). Task 05 needs an enumeration API there.
-- `main.rs` takes second handles to `TIMG0` / `FROM_CPU_INTR0` with `clone_unchecked` (generated code never uses them).
-- `i2c::init` resets the chip on an invalid bus config (contract returns `Bus`, not `Result`).
-- `Restore` switch mode behaves as always-off (logged) until persistent storage exists.
-- Earlier decisions (codegen deps `quote`/`proc-macro2`/`prettyplease`/`syn`, `generate` returns `Result`, secrets as plain literals in `generated.rs`, golden regeneration with `UPDATE_GOLDEN=1`, bus N maps to `I2C<N>` unchecked — a 2nd bus on C6 will not compile) still hold; see git history of this file if needed.
-- **Concern:** `generated.rs` must not be committed with real credentials; consider env/secrets injection (task 05+).
+- **New firmware dependencies (verified on crates.io 2026-11-27):** `esp-radio =1.0.0-beta.1` (features `wifi`, `unstable`, `log-04`; pairs with `esp-hal ~1.2` / `esp-rtos 0.4`; pinned exactly because it is a beta), `esp-alloc 0.11`, `embassy-net 0.9` (`tcp udp dns dhcpv4 medium-ethernet proto-ipv4`), `rust-mqtt 0.6` (`v5 bump log`, no `alloc`), `heapless 0.9`, `embassy-futures 0.1`; `esp-rtos` now also has feature `esp-radio`. Cargo features `esp32c6`/`esp32s3` forward to `esp-radio` and `esp-alloc`.
+- **Heap exception:** the Wi-Fi driver needs a heap; `esp-alloc` 80 KiB is installed in `main.rs` and used by the radio only (recorded in ARCHITECTURE).
+- **MQTT client:** `rust-mqtt 0.6` supports **only MQTT 5** (its `v3` feature is unused, and building without `v5` fails). Mosquitto 2.x (the HA add-on) supports v5. All publishes are QoS 0; state and discovery are retained.
+- **State delivery:** `StateTracker` polls `Watch` receivers every 250 ms (no dynamic multi-future select without a heap); a new session creates new receivers so a reconnect republishes all states.
+- `wifi::STA_STACK` is a `static` with `unsafe impl Sync` (embassy-net `Stack` is `!Sync`; sound because the firmware runs one single-core thread-mode executor).
+- Fallback AP limitation: no DHCP server and no provisioning page yet (clients need a static IP); the AP stays up until reboot once raised.
+- Secrets are not logged (only the SSID / broker host are).
+- Earlier decisions still hold (see task 04 notes in git history): per-entity registries instead of generated statics; `clone_unchecked` for `TIMG0` / `FROM_CPU_INTR0`; `Restore` switch mode = off; codegen deps; secrets as plain literals in `generated.rs`; `UPDATE_GOLDEN=1` for the golden file; bus N maps to `I2C<N>` unchecked.
+- **Concern (unchanged):** `generated.rs` must not be committed with real credentials; consider env/secrets injection later. The committed sample contains only the fixture's fake credentials.
 
 ## Environment notes / blockers
-- Use PowerShell with `%USERPROFILE%\.cargo\bin` on PATH (`cargo` is not on the Git Bash PATH). The `riscv32imac-unknown-none-elf` target was installed with `rustup target add` this session.
+- `cargo` is not on the Git Bash PATH by default: `export PATH="$PATH:/c/Users/Dima/.cargo/bin"` (the PowerShell tool was disabled in the last session). Target `riscv32imac-unknown-none-elf` is installed.
 - Board pin data is from memory and still needs a datasheet check.
-- Task 04 work is committed locally (not pushed).
+- The root `CLAUDE.md` shows as modified in `git status` (not by this task); it was left unstaged.
+- Task 05 work is committed locally; nothing is pushed (push needs explicit approval).
 
 ## Token / context assessment
-- This session loaded the Rust embedded stack (dependency resolution, many compiler messages). Task 05 (Wi-Fi/MQTT/HA) is a different, heavier subsystem with new crates to research: start a **new chat** — re-reading `CLAUDE.md` + `ARCHITECTURE.md` + this file + the spec is cheaper than carrying this history.
+- Task 06 is a different subsystem (host-side Axum server, no embedded stack): start a **new chat**; re-reading `CLAUDE.md` + `ARCHITECTURE.md` + this file + the spec is cheaper than carrying the Wi-Fi/MQTT research.
 
 ## Prompt for next session
 ```
-Work in esp_rs_builder/. Read esp_rs_builder/CLAUDE.md, ARCHITECTURE.md and HANDOFF.md. Tasks 01–04 are DONE. Execute docs/tasks/05-firmware-net-and-ha.md only (follow its Scope/Constraints/Verification; run cargo via PowerShell). When done, update 00-index.md, write docs/tasks/06-builder-server-ws.md, and refresh HANDOFF.md.
+Work in esp_rs_builder/. Read esp_rs_builder/CLAUDE.md, ARCHITECTURE.md and HANDOFF.md. Tasks 01–05 are DONE. Execute docs/tasks/06-builder-server-ws.md only (follow its Scope/Constraints/Verification; run cargo with ~/.cargo/bin on PATH). When done, update 00-index.md, write docs/tasks/07-web-ui-schemas-and-serial.md, and refresh HANDOFF.md.
 ```

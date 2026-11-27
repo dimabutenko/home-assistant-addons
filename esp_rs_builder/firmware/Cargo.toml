@@ -13,16 +13,18 @@ default = []
 esp32c6 = [
   "esp-hal/esp32c6", "esp-rtos/esp32c6", "esp-println/esp32c6",
   "esp-backtrace/esp32c6", "esp-bootloader-esp-idf/esp32c6",
+  "esp-radio/esp32c6", "esp-alloc/esp32c6",
 ]   # target riscv32imac-unknown-none-elf
 esp32s3 = [
   "esp-hal/esp32s3", "esp-rtos/esp32s3", "esp-println/esp32s3",
   "esp-backtrace/esp32s3", "esp-bootloader-esp-idf/esp32s3",
+  "esp-radio/esp32s3", "esp-alloc/esp32s3",
 ]   # target xtensa-esp32s3-none-elf (esp toolchain, `espup`)
 
 # Versions verified against crates.io on 2026-11-27 (see HANDOFF "Decisions").
 [dependencies]
 esp-hal = { version = "~1.2", features = ["unstable"] }
-esp-rtos = { version = "0.4", features = ["embassy"] }
+esp-rtos = { version = "0.4", features = ["embassy", "esp-radio"] }
 esp-bootloader-esp-idf = "0.6"
 esp-println = { version = "0.18", features = ["log-04"] }
 esp-backtrace = { version = "0.20", features = ["panic-handler", "println"] }
@@ -33,6 +35,13 @@ embassy-sync = "0.8"
 embassy-embedded-hal = "0.6"
 embedded-hal-async = "1.0"
 static_cell = "2.1"
+# Task 05 (verified on crates.io 2026-11-27). The radio driver needs a heap: `esp-alloc` is used ONLY for it.
+esp-radio = { version = "=1.0.0-beta.1", features = ["wifi", "unstable", "log-04"] }
+esp-alloc = "0.11"
+embassy-net = { version = "0.9", features = ["tcp", "udp", "dns", "dhcpv4", "medium-ethernet", "proto-ipv4"] }
+rust-mqtt = { version = "0.6", default-features = false, features = ["v5", "bump", "log"] }
+heapless = "0.9"
+embassy-futures = "0.1"
 
 [profile.dev]
 opt-level = "s"   # debug builds of esp-hal are too slow / large

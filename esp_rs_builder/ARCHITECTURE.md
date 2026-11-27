@@ -40,7 +40,7 @@ Pipeline: YAML → typed config → schema validation → board/pin validation �
 Axum REST (list schemas, validate, build, download artifacts), WebSocket `/ws` streaming build logs. SPA renders forms from component JSON Schema, draws the SVG pinout from board schema, flashes via Web Serial.
 
 ## `no_std` invariants (firmware)
-1. No heap by default; all long-lived state in `StaticCell`/`static`. If an allocator is ever needed it must be an explicit, documented decision.
+1. No heap by default; all long-lived state in `StaticCell`/`static`. **Documented exception:** the Wi-Fi radio driver (`esp-radio`) needs a heap, so `main.rs` installs an 80 KiB `esp-alloc` heap for it; runtime and component code never allocate (heapless buffers only).
 2. Component set is fixed at build time; **no dynamic creation at runtime**.
 3. No `unwrap()`/`expect()`/panicking index or arithmetic in runtime loops; errors are handled, logged, retried.
 4. Inter-task communication only through typed Embassy channels (`Watch`, `PubSubChannel`, `Signal`).
@@ -58,6 +58,7 @@ Defined in `crates/builder-engine/src/codegen.rs` (module doc); the component sc
 - Stack: `esp-hal ~1.2` (`unstable`), `esp-rtos 0.4` (`embassy` feature; replaces the old `esp-hal-embassy`), `embassy-executor 0.10`, `embassy-sync 0.8`, `embassy-time 0.5`, `embassy-embedded-hal 0.6`. Chip via cargo features `esp32c6`/`esp32s3`; linker script via `.cargo/config.toml` rustflags.
 - `main.rs` starts the RTOS with `TIMG0` + `FROM_CPU_INTR0` (second handle via `clone_unchecked`; no component uses them), then `generated::setup(spawner, p)`.
 - `runtime::entity::Registry<T, N>`: fixed array of slots claimed by `(id, aspect)`; each slot has a `Watch` (state) and a `Signal` (command). Switches, binary sensors and BME280 channels publish there; the MQTT/HA link (task 05) consumes them. No per-instance statics are generated.
+- **Network (task 05):** `runtime::wifi` = `esp-radio 1.0.0-beta.1` station + `embassy-net` DHCP, reconnect loop, optional fallback AP (station + AP after 3 failed attempts; AP has the static address 192.168.4.1/24 and **no DHCP server**). `runtime::mqtt` = `rust-mqtt 0.6` (MQTT **5** only, static `bump` buffer), QoS 0, retained `online`/`offline` availability (`<prefix>/<device>/status`, last will), state changes collected every 250 ms. `runtime::ha` is transport independent: `HomeAssistantLink` trait, topic layout, Auto-Discovery payloads, `StateTracker` (per-session receivers over the entity registries, so a reconnect republishes every state). Topics: state `<prefix>/<device>/<component>/<object_id>/state`, command `<prefix>/<device>/switch/<id>/set` (`ON`/`OFF`), discovery `<discovery_prefix>/<component>/<device>_<object_id>/config`; sensors use `<id>_<aspect>` as object id. `Slot::describe` carries name / device class / unit from the owning task to the link.
 - `runtime::bus::i2c::Bus` = `Mutex<CriticalSectionRawMutex, I2c<Async>>`; devices wrap it with `I2cDevice`. A bus that cannot be created logs and resets the chip (fatal config error).
 
 ## Codegen invariants

@@ -153,6 +153,15 @@ pub async fn run(cfg: &'static Config, bus: &'static Bus) {
     let temperature = cfg.temperature.as_ref().and_then(|_| TEMPERATURE.claim(cfg.id, "temperature"));
     let humidity = cfg.humidity.as_ref().and_then(|_| HUMIDITY.claim(cfg.id, "humidity"));
     let pressure = cfg.pressure.as_ref().and_then(|_| PRESSURE.claim(cfg.id, "pressure"));
+    if let (Some(slot), Some(c)) = (temperature, cfg.temperature.as_ref()) {
+        slot.describe(c.name, "temperature", "°C");
+    }
+    if let (Some(slot), Some(c)) = (humidity, cfg.humidity.as_ref()) {
+        slot.describe(c.name, "humidity", "%");
+    }
+    if let (Some(slot), Some(c)) = (pressure, cfg.pressure.as_ref()) {
+        slot.describe(c.name, "pressure", "hPa");
+    }
     let period_s = u64::from(cfg.update_interval_s.max(1));
     let mut calib: Option<Calib> = None;
     loop {

@@ -1,0 +1,18 @@
+{
+  "id": "wifi", "kind": "network", "title": "Wi-Fi", "yaml_key": "wifi", "singleton": true,
+  "config": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object",
+    "properties": {
+      "ssid": {"type": "string", "minLength": 1, "maxLength": 32, "title": "SSID"},
+      "password": {"type": "string", "minLength": 8, "maxLength": 63, "title": "Password", "x-secret": true},
+      "fallback_ap": {"type": "object", "title": "Fallback access point", "properties": {
+        "ssid": {"type": "string", "minLength": 1, "maxLength": 32},
+        "password": {"type": "string", "minLength": 8, "maxLength": 63, "x-secret": true}},
+        "required": ["ssid"], "additionalProperties": false},
+      "reconnect_interval_s": {"type": "integer", "minimum": 1, "maximum": 3600, "default": 5}
+    },
+    "required": ["ssid", "password"], "additionalProperties": false
+  },
+  "pins": {}, "requires": [], "provides": null,
+  "firmware": {"module": "runtime::wifi", "peripherals": ["WIFI"]}
+}

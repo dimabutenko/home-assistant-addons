@@ -1,0 +1,572 @@
+{
+  "$schema_version": 1,
+  "id": "esp32c6",
+  "chip": "ESP32-C6",
+  "arch": "riscv32",
+  "target": "riscv32imac-unknown-none-elf",
+  "feature": "esp32c6",
+  "toolchain": "stable",
+  "flash_tool": "espflash",
+  "wifi": true,
+  "pins": [
+    {
+      "gpio": 0,
+      "caps": [
+        "input",
+        "output",
+        "pwm",
+        "i2c_sda",
+        "i2c_scl",
+        "spi",
+        "uart",
+        "adc"
+      ],
+      "flags": [],
+      "ui": {
+        "side": "left",
+        "x": 0,
+        "y": 20
+      }
+    },
+    {
+      "gpio": 1,
+      "caps": [
+        "input",
+        "output",
+        "pwm",
+        "i2c_sda",
+        "i2c_scl",
+        "spi",
+        "uart",
+        "adc"
+      ],
+      "flags": [],
+      "ui": {
+        "side": "right",
+        "x": 100,
+        "y": 20
+      }
+    },
+    {
+      "gpio": 2,
+      "caps": [
+        "input",
+        "output",
+        "pwm",
+        "i2c_sda",
+        "i2c_scl",
+        "spi",
+        "uart",
+        "adc"
+      ],
+      "flags": [],
+      "ui": {
+        "side": "left",
+        "x": 0,
+        "y": 40
+      }
+    },
+    {
+      "gpio": 3,
+      "caps": [
+        "input",
+        "output",
+        "pwm",
+        "i2c_sda",
+        "i2c_scl",
+        "spi",
+        "uart",
+        "adc"
+      ],
+      "flags": [],
+      "ui": {
+        "side": "right",
+        "x": 100,
+        "y": 40
+      }
+    },
+    {
+      "gpio": 4,
+      "caps": [
+        "input",
+        "output",
+        "pwm",
+        "i2c_sda",
+        "i2c_scl",
+        "spi",
+        "uart",
+        "adc"
+      ],
+      "flags": [
+        "strapping"
+      ],
+      "ui": {
+        "side": "left",
+        "x": 0,
+        "y": 60
+      }
+    },
+    {
+      "gpio": 5,
+      "caps": [
+        "input",
+        "output",
+        "pwm",
+        "i2c_sda",
+        "i2c_scl",
+        "spi",
+        "uart",
+        "adc"
+      ],
+      "flags": [
+        "strapping"
+      ],
+      "ui": {
+        "side": "right",
+        "x": 100,
+        "y": 60
+      }
+    },
+    {
+      "gpio": 6,
+      "caps": [
+        "input",
+        "output",
+        "pwm",
+        "i2c_sda",
+        "i2c_scl",
+        "spi",
+        "uart",
+        "adc"
+      ],
+      "flags": [],
+      "ui": {
+        "side": "left",
+        "x": 0,
+        "y": 80
+      }
+    },
+    {
+      "gpio": 7,
+      "caps": [
+        "input",
+        "output",
+        "pwm",
+        "i2c_sda",
+        "i2c_scl",
+        "spi",
+        "uart"
+      ],
+      "flags": [],
+      "ui": {
+        "side": "right",
+        "x": 100,
+        "y": 80
+      }
+    },
+    {
+      "gpio": 8,
+      "caps": [
+        "input",
+        "output",
+        "pwm",
+        "i2c_sda",
+        "i2c_scl",
+        "spi",
+        "uart"
+      ],
+      "flags": [
+        "strapping"
+      ],
+      "ui": {
+        "side": "left",
+        "x": 0,
+        "y": 100
+      }
+    },
+    {
+      "gpio": 9,
+      "caps": [
+        "input",
+        "output",
+        "pwm",
+        "i2c_sda",
+        "i2c_scl",
+        "spi",
+        "uart"
+      ],
+      "flags": [
+        "strapping"
+      ],
+      "ui": {
+        "side": "right",
+        "x": 100,
+        "y": 100
+      }
+    },
+    {
+      "gpio": 10,
+      "caps": [
+        "input",
+        "output",
+        "pwm",
+        "i2c_sda",
+        "i2c_scl",
+        "spi",
+        "uart"
+      ],
+      "flags": [],
+      "ui": {
+        "side": "left",
+        "x": 0,
+        "y": 120
+      }
+    },
+    {
+      "gpio": 11,
+      "caps": [
+        "input",
+        "output",
+        "pwm",
+        "i2c_sda",
+        "i2c_scl",
+        "spi",
+        "uart"
+      ],
+      "flags": [],
+      "ui": {
+        "side": "right",
+        "x": 100,
+        "y": 120
+      }
+    },
+    {
+      "gpio": 12,
+      "caps": [
+        "input",
+        "output",
+        "pwm",
+        "i2c_sda",
+        "i2c_scl",
+        "spi",
+        "uart"
+      ],
+      "flags": [
+        "usb"
+      ],
+      "ui": {
+        "side": "left",
+        "x": 0,
+        "y": 140
+      }
+    },
+    {
+      "gpio": 13,
+      "caps": [
+        "input",
+        "output",
+        "pwm",
+        "i2c_sda",
+        "i2c_scl",
+        "spi",
+        "uart"
+      ],
+      "flags": [
+        "usb"
+      ],
+      "ui": {
+        "side": "right",
+        "x": 100,
+        "y": 140
+      }
+    },
+    {
+      "gpio": 14,
+      "caps": [
+        "input",
+        "output",
+        "pwm",
+        "i2c_sda",
+        "i2c_scl",
+        "spi",
+        "uart"
+      ],
+      "flags": [],
+      "ui": {
+        "side": "left",
+        "x": 0,
+        "y": 160
+      }
+    },
+    {
+      "gpio": 15,
+      "caps": [
+        "input",
+        "output",
+        "pwm",
+        "i2c_sda",
+        "i2c_scl",
+        "spi",
+        "uart"
+      ],
+      "flags": [
+        "strapping"
+      ],
+      "ui": {
+        "side": "right",
+        "x": 100,
+        "y": 160
+      }
+    },
+    {
+      "gpio": 16,
+      "caps": [
+        "input",
+        "output",
+        "pwm",
+        "i2c_sda",
+        "i2c_scl",
+        "spi",
+        "uart"
+      ],
+      "flags": [
+        "uart0_console"
+      ],
+      "ui": {
+        "side": "left",
+        "x": 0,
+        "y": 180
+      }
+    },
+    {
+      "gpio": 17,
+      "caps": [
+        "input",
+        "output",
+        "pwm",
+        "i2c_sda",
+        "i2c_scl",
+        "spi",
+        "uart"
+      ],
+      "flags": [
+        "uart0_console"
+      ],
+      "ui": {
+        "side": "right",
+        "x": 100,
+        "y": 180
+      }
+    },
+    {
+      "gpio": 18,
+      "caps": [
+        "input",
+        "output",
+        "pwm",
+        "i2c_sda",
+        "i2c_scl",
+        "spi",
+        "uart"
+      ],
+      "flags": [],
+      "ui": {
+        "side": "left",
+        "x": 0,
+        "y": 200
+      }
+    },
+    {
+      "gpio": 19,
+      "caps": [
+        "input",
+        "output",
+        "pwm",
+        "i2c_sda",
+        "i2c_scl",
+        "spi",
+        "uart"
+      ],
+      "flags": [],
+      "ui": {
+        "side": "right",
+        "x": 100,
+        "y": 200
+      }
+    },
+    {
+      "gpio": 20,
+      "caps": [
+        "input",
+        "output",
+        "pwm",
+        "i2c_sda",
+        "i2c_scl",
+        "spi",
+        "uart"
+      ],
+      "flags": [],
+      "ui": {
+        "side": "left",
+        "x": 0,
+        "y": 220
+      }
+    },
+    {
+      "gpio": 21,
+      "caps": [
+        "input",
+        "output",
+        "pwm",
+        "i2c_sda",
+        "i2c_scl",
+        "spi",
+        "uart"
+      ],
+      "flags": [],
+      "ui": {
+        "side": "right",
+        "x": 100,
+        "y": 220
+      }
+    },
+    {
+      "gpio": 22,
+      "caps": [
+        "input",
+        "output",
+        "pwm",
+        "i2c_sda",
+        "i2c_scl",
+        "spi",
+        "uart"
+      ],
+      "flags": [],
+      "ui": {
+        "side": "left",
+        "x": 0,
+        "y": 240
+      }
+    },
+    {
+      "gpio": 23,
+      "caps": [
+        "input",
+        "output",
+        "pwm",
+        "i2c_sda",
+        "i2c_scl",
+        "spi",
+        "uart"
+      ],
+      "flags": [],
+      "ui": {
+        "side": "right",
+        "x": 100,
+        "y": 240
+      }
+    },
+    {
+      "gpio": 24,
+      "caps": [],
+      "flags": [
+        "flash",
+        "reserved"
+      ],
+      "ui": {
+        "side": "left",
+        "x": 0,
+        "y": 260
+      }
+    },
+    {
+      "gpio": 25,
+      "caps": [],
+      "flags": [
+        "flash",
+        "reserved"
+      ],
+      "ui": {
+        "side": "right",
+        "x": 100,
+        "y": 260
+      }
+    },
+    {
+      "gpio": 26,
+      "caps": [],
+      "flags": [
+        "flash",
+        "reserved"
+      ],
+      "ui": {
+        "side": "left",
+        "x": 0,
+        "y": 280
+      }
+    },
+    {
+      "gpio": 27,
+      "caps": [],
+      "flags": [
+        "flash",
+        "reserved"
+      ],
+      "ui": {
+        "side": "right",
+        "x": 100,
+        "y": 280
+      }
+    },
+    {
+      "gpio": 28,
+      "caps": [],
+      "flags": [
+        "flash",
+        "reserved"
+      ],
+      "ui": {
+        "side": "left",
+        "x": 0,
+        "y": 300
+      }
+    },
+    {
+      "gpio": 29,
+      "caps": [],
+      "flags": [
+        "flash",
+        "reserved"
+      ],
+      "ui": {
+        "side": "right",
+        "x": 100,
+        "y": 300
+      }
+    },
+    {
+      "gpio": 30,
+      "caps": [],
+      "flags": [
+        "flash",
+        "reserved"
+      ],
+      "ui": {
+        "side": "left",
+        "x": 0,
+        "y": 320
+      }
+    }
+  ],
+  "defaults": {
+    "i2c": {
+      "sda": 6,
+      "scl": 7
+    },
+    "uart0": {
+      "tx": 16,
+      "rx": 17
+    }
+  },
+  "notes": "GPIO24-30 are the SPI flash. GPIO12/13 are native USB. GPIO16/17 are the UART0 console."
+}

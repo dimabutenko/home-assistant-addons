@@ -1,0 +1,9 @@
+[package]
+name = "builder-server"
+description = "Axum REST + WebSocket log streamer + artifact server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+builder-engine = { path = "../builder-engine" }

@@ -1,0 +1,18 @@
+{
+  "id": "gpio_switch", "kind": "switch", "title": "GPIO switch", "yaml_key": "switch", "platform": "gpio", "singleton": false,
+  "config": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object",
+    "properties": {
+      "platform": {"const": "gpio"},
+      "id": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"},
+      "name": {"type": "string", "minLength": 1},
+      "pin": {"type": "integer", "minimum": 0, "title": "GPIO"},
+      "inverted": {"type": "boolean", "default": false},
+      "restore_mode": {"enum": ["always_off", "always_on", "restore"], "default": "always_off"}
+    },
+    "required": ["platform", "id", "name", "pin"], "additionalProperties": false
+  },
+  "pins": {"pin": {"caps": ["output"]}},
+  "requires": [], "provides": {"entity": "switch", "ha_component": "switch"},
+  "firmware": {"module": "runtime::gpio::switch"}
+}

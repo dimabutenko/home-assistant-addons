@@ -1,0 +1,33 @@
+board: esp32c6
+name: living-room
+
+wifi:
+  ssid: HomeNet
+  password: supersecret1
+
+mqtt:
+  broker: 192.168.1.10
+
+i2c:
+  - id: bus0
+    sda: 6
+    scl: 7
+
+sensor:
+  - platform: bme280
+    id: env
+    i2c_id: bus0
+    temperature:
+      name: Temperature
+
+switch:
+  - platform: gpio
+    id: relay
+    name: Relay
+    pin: 10
+
+binary_sensor:
+  - platform: gpio
+    id: door
+    name: Door
+    pin: 11

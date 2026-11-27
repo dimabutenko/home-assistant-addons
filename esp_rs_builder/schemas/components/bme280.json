@@ -1,0 +1,26 @@
+{
+  "id": "bme280", "kind": "sensor", "title": "BME280 (temperature, humidity, pressure)", "yaml_key": "sensor", "platform": "bme280", "singleton": false,
+  "config": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object",
+    "properties": {
+      "platform": {"const": "bme280"},
+      "id": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"},
+      "i2c_id": {"type": "string", "title": "I2C bus id", "x-ref": "i2c_bus"},
+      "address": {"enum": [118, 119], "default": 118, "title": "I2C address (0x76 = 118, 0x77 = 119)"},
+      "update_interval_s": {"type": "integer", "minimum": 1, "maximum": 3600, "default": 60},
+      "temperature": {"type": "object", "properties": {"name": {"type": "string", "minLength": 1}}, "required": ["name"], "additionalProperties": false},
+      "humidity": {"type": "object", "properties": {"name": {"type": "string", "minLength": 1}}, "required": ["name"], "additionalProperties": false},
+      "pressure": {"type": "object", "properties": {"name": {"type": "string", "minLength": 1}}, "required": ["name"], "additionalProperties": false}
+    },
+    "required": ["platform", "id", "i2c_id"],
+    "anyOf": [{"required": ["temperature"]}, {"required": ["humidity"]}, {"required": ["pressure"]}],
+    "additionalProperties": false
+  },
+  "pins": {},
+  "requires": ["i2c_bus"],
+  "provides": {"entities": [
+    {"key": "temperature", "ha_component": "sensor", "device_class": "temperature", "unit": "°C"},
+    {"key": "humidity", "ha_component": "sensor", "device_class": "humidity", "unit": "%"},
+    {"key": "pressure", "ha_component": "sensor", "device_class": "pressure", "unit": "hPa"}]},
+  "firmware": {"module": "runtime::drivers::bme280", "bus_trait": "embedded_hal_async::i2c::I2c"}
+}

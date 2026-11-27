@@ -1,0 +1,16 @@
+{
+  "id": "i2c_bus", "kind": "bus", "title": "I2C bus", "yaml_key": "i2c", "singleton": false,
+  "config": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object",
+    "properties": {
+      "id": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"},
+      "sda": {"type": "integer", "minimum": 0, "title": "SDA GPIO"},
+      "scl": {"type": "integer", "minimum": 0, "title": "SCL GPIO"},
+      "frequency_hz": {"type": "integer", "enum": [100000, 400000], "default": 100000}
+    },
+    "required": ["id", "sda", "scl"], "additionalProperties": false
+  },
+  "pins": {"sda": {"caps": ["i2c_sda"]}, "scl": {"caps": ["i2c_scl"]}},
+  "requires": [], "provides": {"bus": "i2c"},
+  "firmware": {"module": "runtime::bus::i2c", "indexed_peripheral": "I2C","shared": "embassy_embedded_hal::shared_bus::asynch::i2c::I2cDevice"}
+}

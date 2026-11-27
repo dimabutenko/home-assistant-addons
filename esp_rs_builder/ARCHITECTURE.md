@@ -1,0 +1,66 @@
+# ARCHITECTURE
+
+An ESPHome-equivalent with **no Python and no C++**: a YAML config is validated against JSON schemas, compiled to Rust source, built with Embassy for ESP32-C6 / ESP32-S3, and flashed — all driven from a web builder.
+
+## Repository layout
+
+```text
+├── CLAUDE.md  ARCHITECTURE.md  HANDOFF.md
+├── docs/tasks/                 # 00-index.md + NN-<slug>.md task specs
+├── Cargo.toml                  # Host workspace: crates/builder-engine, crates/builder-server
+├── schemas/
+│   ├── boards/{esp32c6,esp32s3}.json
+│   └── components/{wifi,mqtt,i2c_bus,gpio_switch,gpio_binary_sensor,bme280}.json
+├── firmware/                   # Standalone no_std crate (NOT a workspace member)
+│   ├── Cargo.toml  build.rs
+│   └── src/{main.rs, runtime/, generated.rs}
+├── crates/
+│   ├── builder-engine/         # lib + CLI: parse, validate, codegen, build, flash
+│   └── builder-server/         # Axum REST + /ws log streamer + .bin serving
+└── ui/                         # SPA: schema-driven forms, SVG pinout, Web Serial flasher
+```
+
+## Layers
+
+### 1. Schemas (`schemas/`) — single source of truth
+- **Board schema:** `id`, `chip`, `arch`, Rust `target` triple, Cargo `feature`, pin list. Each pin: `gpio`, `caps` (`input`, `output`, `adc`, `i2c_sda`/`i2c_scl`, `spi`, `uart`, `pwm`, `touch`, …), `flags` (`strapping`, `usb`, `flash`, `reserved`), and `ui` coordinates for the SVG pinout.
+- **Component schema:** `id`, `kind` (`platform` | `bus` | `sensor` | `switch` | `binary_sensor` | `network`), `config` (JSON Schema draft 2020-12 for the YAML block), `pins` (named pin roles + required caps), `requires` (e.g. a bus), `provides` (entity type, device class, unit), `firmware` (Rust path/driver crate used by codegen).
+- Schemas are consumed by: validator (pin conflicts, capability checks, references), codegen (which Rust to emit), UI (form + pinout rendering).
+
+### 2. Firmware runtime (`firmware/`) — `no_std`, Embassy
+- `main.rs`: HAL init (esp-hal), spawner, calls `generated::setup(spawner, peripherals)`.
+- `runtime/`: Wi-Fi connect/reconnect/fallback AP; MQTT with Home Assistant Auto-Discovery behind a `HomeAssistantLink` trait (so a native HA API or Matter backend can be added); OTA with two app partitions.
+- `generated.rs`: produced by builder-engine; instantiates buses/components/tasks statically.
+- State flows through typed channels: `Watch<T>` for latest-value state, `PubSubChannel` for events/commands.
+
+### 3. Codegen / build engine (`crates/builder-engine`)
+Pipeline: YAML → typed config → schema validation → board/pin validation → Rust token streams (`quote`) → `prettyplease` → `firmware/src/generated.rs` → `cargo build` (target from board schema) → `.bin` → `espflash`/serve to UI.
+
+### 4. Web builder (`crates/builder-server` + `ui/`)
+Axum REST (list schemas, validate, build, download artifacts), WebSocket `/ws` streaming build logs. SPA renders forms from component JSON Schema, draws the SVG pinout from board schema, flashes via Web Serial.
+
+## `no_std` invariants (firmware)
+1. No heap by default; all long-lived state in `StaticCell`/`static`. If an allocator is ever needed it must be an explicit, documented decision.
+2. Component set is fixed at build time; **no dynamic creation at runtime**.
+3. No `unwrap()`/`expect()`/panicking index or arithmetic in runtime loops; errors are handled, logged, retried.
+4. Inter-task communication only through typed Embassy channels (`Watch`, `PubSubChannel`, `Signal`).
+5. Shared I2C/SPI buses via `embassy-embedded-hal` shared-bus wrappers; drivers use `embedded-hal-async`.
+6. Chip differences are isolated with cargo features `esp32c6` / `esp32s3` and the board schema, never ad-hoc `cfg`s in components.
+
+## Codegen contract (generated.rs <-> runtime)
+Defined in `crates/builder-engine/src/codegen.rs` (module doc); the component schema's `firmware` block drives it:
+`module` (runtime module path), `peripherals` (fixed `Peripherals` fields, e.g. `WIFI`), `indexed_peripheral` (family allocated per instance, e.g. `I2C` -> `I2C0`, `I2C1`).
+- `<module>::Config` struct; nested objects `<module>::<Prop>Config`; string enums `<module>::<Prop>::<Variant>`; optional properties without a default are `Option<_>`.
+- network: `start(spawner, &CONFIG, peripherals..)`; bus: `init(&CONFIG, peripherals.., pins..) -> Bus`; other: generated task -> `run(&CONFIG, pins.., bus refs..).await`.
+- Argument order: config, peripherals, pins (by role name, alphabetical), refs (by property name). Pins are passed as `p.GPIOn.into()` (`esp_hal::gpio::AnyPin<'static>`).
+
+## Firmware runtime (as built in task 04)
+- Stack: `esp-hal ~1.2` (`unstable`), `esp-rtos 0.4` (`embassy` feature; replaces the old `esp-hal-embassy`), `embassy-executor 0.10`, `embassy-sync 0.8`, `embassy-time 0.5`, `embassy-embedded-hal 0.6`. Chip via cargo features `esp32c6`/`esp32s3`; linker script via `.cargo/config.toml` rustflags.
+- `main.rs` starts the RTOS with `TIMG0` + `FROM_CPU_INTR0` (second handle via `clone_unchecked`; no component uses them), then `generated::setup(spawner, p)`.
+- `runtime::entity::Registry<T, N>`: fixed array of slots claimed by `(id, aspect)`; each slot has a `Watch` (state) and a `Signal` (command). Switches, binary sensors and BME280 channels publish there; the MQTT/HA link (task 05) consumes them. No per-instance statics are generated.
+- `runtime::bus::i2c::Bus` = `Mutex<CriticalSectionRawMutex, I2c<Async>>`; devices wrap it with `I2cDevice`. A bus that cannot be created logs and resets the chip (fatal config error).
+
+## Codegen invariants
+- Output via `quote!` + `prettyplease::unparse`; no string templates.
+- Generated code is deterministic (stable ordering) and contains a "generated, do not edit" header.
+- Every validation error carries a YAML path (for UI highlighting).

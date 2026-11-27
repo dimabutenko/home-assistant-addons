@@ -1,0 +1,20 @@
+{
+  "id": "gpio_binary_sensor", "kind": "binary_sensor", "title": "GPIO binary sensor", "yaml_key": "binary_sensor", "platform": "gpio", "singleton": false,
+  "config": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object",
+    "properties": {
+      "platform": {"const": "gpio"},
+      "id": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"},
+      "name": {"type": "string", "minLength": 1},
+      "pin": {"type": "integer", "minimum": 0, "title": "GPIO"},
+      "pull": {"enum": ["none", "up", "down"], "default": "none"},
+      "inverted": {"type": "boolean", "default": false},
+      "device_class": {"type": "string", "enum": ["motion", "door", "window", "opening", "occupancy", "presence", "moisture", "smoke", "none"], "default": "none"},
+      "debounce_ms": {"type": "integer", "minimum": 0, "maximum": 5000, "default": 50}
+    },
+    "required": ["platform", "id", "name", "pin"], "additionalProperties": false
+  },
+  "pins": {"pin": {"caps": ["input"]}},
+  "requires": [], "provides": {"entity": "binary_sensor", "ha_component": "binary_sensor"},
+  "firmware": {"module": "runtime::gpio::binary_sensor"}
+}

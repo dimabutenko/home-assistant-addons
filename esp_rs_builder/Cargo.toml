@@ -1,0 +1,10 @@
+[workspace]
+resolver = "2"
+members = ["crates/builder-engine", "crates/builder-server"]
+# firmware/ is a standalone no_std crate with its own toolchain/target.
+exclude = ["firmware"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"

@@ -1,0 +1,19 @@
+{
+  "id": "mqtt", "kind": "network", "title": "MQTT", "yaml_key": "mqtt", "singleton": true,
+  "config": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object",
+    "properties": {
+      "broker": {"type": "string", "minLength": 1, "title": "Broker host or IP"},
+      "port": {"type": "integer", "minimum": 1, "maximum": 65535, "default": 1883},
+      "username": {"type": "string"},
+      "password": {"type": "string", "x-secret": true},
+      "client_id": {"type": "string", "maxLength": 64},
+      "topic_prefix": {"type": "string", "default": "esp-rs"},
+      "discovery": {"type": "boolean", "default": true, "title": "Home Assistant MQTT Auto-Discovery"},
+      "discovery_prefix": {"type": "string", "default": "homeassistant"}
+    },
+    "required": ["broker"], "additionalProperties": false
+  },
+  "pins": {}, "requires": ["wifi"], "provides": null,
+  "firmware": {"module": "runtime::mqtt"}
+}

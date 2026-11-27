@@ -6,7 +6,7 @@
 | `calibre_web_automated` | wrapper of an upstream image, `privileged`, `map: media` | none | `build.yml` (single arch, ghcr) |
 | `nvme_smart` | shell (`run.sh`), `privileged` + `devices` | none | none |
 | `part_db` | upstream wrapper (`ha-entrypoint.sh`, `ha-ingress.conf`) | none | none |
-| `esp_rs_builder` | Rust workspace + firmware, ingress 8099, version 0.0.1 (in development) | PowerShell, from the folder: `cargo test -p builder-engine`, `cargo check --workspace` | none |
+| `esp_rs_builder` | Rust workspace + firmware, ingress 8099, version 0.1.0 (in development) | PowerShell, from the folder: `cargo test --workspace` | `build-esp-rs-builder.yml` |
 | `koinsight`, `dzen_analytics`, `samba-v1` | config-only / minimal | none | none |
 
 Notes

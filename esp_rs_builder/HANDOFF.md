@@ -1,29 +1,27 @@
 # HANDOFF
 
 ## Status
-- **Tasks 01–07 — DONE.** Task 08 spec written (`docs/tasks/08-addon-packaging.md`), not started.
-- Verified this session (Bash with `~/.cargo/bin` on PATH, Node v26):
-  - `cargo test --workspace` — passes (builder-engine 2 + 4 + 8, builder-server 1 unit + 10 integration incl. the new static-file test); `cargo clippy --workspace --all-targets` — no warnings.
-  - `cd ui && node --test test/` — 9 tests pass (schema -> field model for every shipped component, diagnostic path -> field, YAML emitter, secret masking, used pins, SVG pinout, ws URL); `node --check` on every `.js` file.
-  - Real `builder-server` with the UI: `GET /`, `app.js`, `lib/model.js`, `style.css`, `vendor/esptool-js.js` = 200 with the right content types; `/../Cargo.toml` = 404. A YAML produced by the UI model code (node) was POSTed to `/api/validate` -> `[]`; the same with `pin: 6` -> error `switch[0].pin` "GPIO6 is already used by `i2c[0].sda`" (the path format matches what the UI maps to fields).
-- **NOT verified (no browser in this session):** the DOM code in `ui/app.js` was never run in a browser — forms, inline diagnostics, SVG pinout clicking, build log streaming over `/ws`, the Build/Download buttons and the whole Web Serial flash flow are untested. Flashing needs a real ESP32-C6 and Chrome/Edge. First thing to do next time someone has a browser: open `http://127.0.0.1:8099/`, add components, build, download.
-- Still not verified from earlier tasks: flashing on a real board; ESP32-S3 build; firmware Wi-Fi/fallback AP/MQTT/HA discovery on hardware; secret redaction on real cargo output; Linux/Docker build.
+- **Tasks 01�08 � DONE; no further task is planned.** (Task 08 = add-on packaging, version 0.1.0.)
+- Verified: `cargo test --workspace` passes; the server run locally with `BUILDER_UI_DIR` serves `/`, `api/boards`, `style.css` (200). The UI uses relative URLs and a `location`-derived `ws:`/`wss:` URL, so it is ingress-prefix safe by inspection only (no real ingress run).
+- **NOT verified: Docker is not installed here.** `docker build`, running the image, a real build inside it (`/data/work`), the CI workflow, and installation on the real Home Assistant were never run. Do not treat the image as working until the first CI build and a first on-HA build succeed. Also unverified: `/data` mounted without `noexec` (cargo runs build scripts from `/data/work/target`), memory/time of the first build on aarch64, GHCR package visibility (new packages are private; make it public or the pull fails).
+- Still unverified from earlier tasks: DOM code of the UI in a browser, Web Serial flashing on a real ESP32-C6, ESP32-S3 build, firmware Wi-Fi/MQTT on hardware.
+- Review: `addon-reviewer` run; fixes applied (see below). Not committed yet.
 
-## Completed artifacts (task 07)
-- `crates/builder-server/src/static_files.rs` (router fallback serving `BUILDER_UI_DIR`, default `ui`; `AppState::with_ui_dir`), `main.rs` reads `BUILDER_UI_DIR`; test in `tests/api.rs` + unit test of path resolution.
-- `ui/`: `index.html`, `style.css`, `app.js` (DOM), `lib/model.js` (pure: field model, YAML, diagnostics mapping, masking, used pins), `lib/pinout.js` (SVG), `lib/api.js` (relative URLs, ws URL from `location`, polling fallback), `lib/flash.js` (Web Serial), `vendor/esptool-js.js` + licence + README, `package.json` (`"type":"module"`, test script), `test/model.test.js`, `README.md`.
-- `ARCHITECTURE.md` ("Web UI (task 07)"), `docs/tasks/00-index.md` (07 DONE, 08 added).
+## Completed artifacts (task 08)
+- `Dockerfile` (3 stages), `run.sh`, `.dockerignore`, `.gitattributes` (LF for sh/Dockerfile), `config.yaml` (0.1.0, `image:`, watchdog `/api/boards`, `backup_exclude`), `CHANGELOG.md`, `README.md`, `.gitignore` (`work/`), `.github/workflows/build-esp-rs-builder.yml` (amd64+arm64 to ghcr, gha cache, concurrency), `.claude/skills/addon-check/reference.md` row updated.
 
-## Decisions
-- **UI stack:** plain ES modules, no bundler, no framework, no npm install needed at runtime. One vendored dependency: `esptool-js` **0.7.1** (npm latest on 2026-11-27, Apache-2.0), the package's self-contained `bundle.js` copied unmodified to `ui/vendor/esptool-js.js` with its licence. Loaded lazily (`import()` on Flash click).
-- **Static files without `tower-http`:** a ~60-line handler (no new Rust dependency). Rejects empty/hidden/`..`/`:`/backslash path segments; `Cache-Control: no-cache`, `nosniff`.
-- **Flasher:** merged image at offset `0x0`, `flashMode/flashFreq/flashSize = "keep"` (the image header is already right), `compress: true`, baud 460800, `hard_reset` after. No MD5 callback.
-- **Model/YAML:** the UI model is `{board, name, sections}`; only values the user set are emitted (defaults are shown as placeholders, the server applies them). The YAML emitter is ~20 lines, block style, strings quoted when not plain. Section order in the YAML is the component-file order (alphabetical), which is irrelevant to the validator.
-- **Secrets:** never stored (`localStorage` unused); the preview masks `x-secret` values; the real YAML is only sent to the API. Test passwords are built at runtime (`'fake'.repeat(3)`) because the repo hook flags password-like literals.
-- **Pins by schema:** a property is a pin field if its key is a role in the component's `pins`; the pinout dims pins lacking the role's capabilities (still clickable; the validator reports misuse).
-- **Known limits:** YAML is read-only preview (no import); the Build button is disabled while the last validation has errors; ESP32-S3 is selectable and will probably fail to build.
-- Earlier decisions (tasks 04–06: espflash `save-image --merge`, work copy per job, WS protocol, dependency pins, redaction, limits) still hold.
-- **Concern (unchanged):** `generated.rs` must not be committed with real credentials.
+## Decisions (task 08)
+- **Base image `rust:1.100.0-slim-bookworm`** (Debian/glibc): rustup, espflash and firmware build scripts are tested on glibc; musl unverified. Toolchain = that stable version (the firmware has no `rust-toolchain` file; 1.100.0 is what it was verified with). Target `riscv32imac-unknown-none-elf` added with `rustup`.
+- **espflash 4.7.0 built from source** (`cargo install --locked --no-default-features --features cli`; no `update-check`, so no runtime network use) rather than a release binary: works for both arches from one Dockerfile. Needs `libudev1` at runtime.
+- **Env:** `RUSTUP_HOME` in the image, `CARGO_HOME=/data/cargo`, `BUILDER_WORK_DIR=/data/work`, `CARGO_BUILD_JOBS=2` (fat-LTO memory). No extra privileges; `init` left at default (tini, signals/zombie reaping, per review).
+- **Image published to ghcr** (`ghcr.io/dimabutenko/ha-addon-esp-rs-builder`) like the other add-ons: installs fail until CI has pushed the first image.
+- No new Rust dependencies.
+
+## Known limitations / follow-ups (no task yet)
+- API has no auth; reachable by other add-ons on the hassio network (and they could download firmware with credentials). Hardening: accept only 172.30.32.2 + loopback (axum `ConnectInfo`). Documented in README.
+- The last build ELF (with compiled-in credentials) stays in `/data/work/target`; excluded from backups only.
+- Build timeout kills only `cargo`, not its children.
+- CI rebuilds on any `esp_rs_builder/**` change (also docs).
 
 ## Environment notes / blockers
 - `cargo` is not on the Git Bash PATH by default: `export PATH="$PATH:/c/Users/Dima/.cargo/bin"`. `espflash 4.7.0` is in `~/.cargo/bin`.
@@ -32,9 +30,7 @@
 - Nothing is pushed (push needs explicit approval).
 
 ## Token / context assessment
-- Task 08 is infrastructure (Dockerfile, manifest, CI) — a different subsystem from task 07: start a **new chat**; the spec plus `CLAUDE.md`, `ARCHITECTURE.md` and this file are enough.
+- No next task is planned; the next step is for the user: review, commit approval, push (needs explicit approval), let CI build the image, install on Home Assistant, then try the UI in a browser. Open a new chat for any hardening work.
 
 ## Prompt for next session
-```
-Work in esp_rs_builder/. Read esp_rs_builder/CLAUDE.md, ARCHITECTURE.md and HANDOFF.md. Tasks 01–07 are DONE. Execute docs/tasks/08-addon-packaging.md only (follow its Scope/Constraints/Verification; run cargo with ~/.cargo/bin on PATH; use the addon-check skill and the addon-reviewer subagent). When done, update 00-index.md and HANDOFF.md; if no further task is planned, say so.
-```
+None: all planned tasks (01�08) are done. If hardening is wanted, create a new task spec first (e.g. API peer-IP allowlist).

@@ -1,0 +1,10 @@
+target/
+firmware/target/
+ui/node_modules/
+ui/test/
+work/
+.git/
+docs/
+*.md
+!README.md
+!CHANGELOG.md

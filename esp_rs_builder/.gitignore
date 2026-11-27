@@ -2,3 +2,4 @@ target/
 firmware/target/
 node_modules/
 ui/dist/
+work/

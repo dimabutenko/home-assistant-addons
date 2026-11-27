@@ -197,7 +197,7 @@ class LiveStream:
 
     def __init__(self, dev: dict, scene: LiveScene, name: str, fps: float = 8.0):
         self.dev, self.scene, self.name = dev, scene, name
-        self.interval = 1.0 / max(2.0, min(25.0, fps))
+        self.set_fps(fps)
         self.stop_evt = threading.Event()
         self.thread = threading.Thread(target=self._run, daemon=True)
         self.ping_thread = threading.Thread(target=self._ping_loop, daemon=True)
@@ -214,6 +214,10 @@ class LiveStream:
         self.prev_uid = ""
         self.ci = None
         self.started = None
+
+    def set_fps(self, fps: float):
+        self.fps = max(2.0, min(25.0, float(fps)))
+        self.interval = 1.0 / self.fps
 
     # -- control ------------------------------------------------------------------------------------------
     def start(self, inherit: tuple | None = None):

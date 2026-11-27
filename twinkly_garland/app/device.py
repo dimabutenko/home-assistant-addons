@@ -119,15 +119,27 @@ def device_shade(name: str) -> float:
     return max(0.0, min(1.0, float(device_settings(name).get("shade", 0.5))))
 
 
+LIVE_FPS_DEFAULT = 12.0
+
+
+def device_live_fps(name: str) -> float:
+    """Frames a second of a live scene on this garland (2..25)."""
+    try:
+        v = float(device_settings(name).get("live_fps", LIVE_FPS_DEFAULT))
+    except (TypeError, ValueError):
+        v = LIVE_FPS_DEFAULT
+    return max(2.0, min(25.0, v))
+
+
 def save_device_settings(name: str, **changes) -> None:
-    """Keys: aspect (float or None), shape ('wall' / 'tree'), shade (0..1, dimming of the far side of a tree), back (indexes of the LEDs on the far side of a tree, from a scan)."""
+    """Keys: live_fps (frames a second of a live scene), aspect (float or None), shape ('wall' / 'tree'), shade (0..1, dimming of the far side of a tree), back (indexes of the LEDs on the far side of a tree, from a scan)."""
     st = load_settings()
     dev = st.setdefault("devices", {}).setdefault(name, {})
     for k, v in changes.items():
         if v is None or (k == "shape" and v == "wall") or (k == "back" and not v):
             dev.pop(k, None)
         else:
-            dev[k] = float(v) if k in ("aspect", "shade") else v
+            dev[k] = float(v) if k in ("aspect", "shade", "live_fps") else v
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     _settings_path().write_text(json.dumps(st, indent=1))
 

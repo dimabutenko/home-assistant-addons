@@ -153,13 +153,25 @@ async function saveInsts(list) {
 }
 
 // ---- library -------------------------------------------------------------------------
+const fpsInput = d => h('label', { class: 'muted', title: 'Frames a second of a live scene on this garland (2-25). More is smoother, but the garland and the Wi-Fi have to keep up; a running scene takes the new value at once.' }, 'Live frames/s ',
+  h('input', { type: 'number', min: 2, max: 25, step: 1, style: 'width:60px', value: Math.round(d.live_fps || 12), onchange: e => saveLiveFps(d.name, Number(e.target.value)) }));
+
+async function saveLiveFps(name, v) {
+  try {
+    v = Math.max(2, Math.min(25, v || 12));
+    await send(`api/devices/${encodeURIComponent(name)}/settings`, { live_fps: v }, 'PUT');
+    toast(`Live scenes on ${name}: ${v} frames a second.`);
+    loadStatus();
+  } catch (e) { toast('Not saved: ' + e.message, true, 8000); }
+}
+
 function deviceCard(d) {
   if (!d.online) return h('div', { class: 'card' }, h('h2', {}, h('span', { class: 'dot' }), `${d.name} (${d.host})`), h('div', { class: 'bad' }, `Offline (${d.error || 'no answer'})`));
   if (d.live) return h('div', { class: 'card' },
     h('h2', {}, h('span', { class: 'dot on' }), `${d.name} (${d.host})`),
     h('div', {}, h('b', {}, `Live scene: ${d.live.scene}`), h('span', { class: 'muted' }, `  ·  ${d.live.fps} fps · ${d.live.seconds} s · frame ${d.live.compute_ms} ms · ${d.live.engine || ''}`)),
     h('div', { class: 'muted' }, 'The garland is streamed in real time. It goes back to how it was when you stop it; any other effect (not "random") also ends it.' + (d.live.relogins ? ` Re-logins: ${d.live.relogins}.` : '')),
-    h('div', { class: 'row', style: 'margin-top:8px' }, h('button', { class: 'primary', onclick: () => stopLive(d.name) }, 'Stop live scene')));
+    h('div', { class: 'row', style: 'margin-top:8px' }, h('button', { class: 'primary', onclick: () => stopLive(d.name) }, 'Stop live scene'), fpsInput(d)));
   const cap = d.capacity || 2245, want = d.desired_frames || 0, over = want > cap;
   const plan = d.plan, synced = plan && plan.action === 'ok';
   const playing = d.mode !== 'movie' ? `LEDs: ${d.mode}` : (d.playing_key ? `Playing: ${d.playing_key}` : 'Playing: unknown movie');
@@ -175,6 +187,7 @@ function deviceCard(d) {
       h('button', { class: synced ? '' : 'primary', disabled: synced || over, onclick: () => syncDevice(d.name) }, 'Sync now'),
       h('button', { onclick: () => loadStatus(true) }, 'Refresh')),
     h('div', { class: 'row', style: 'margin-top:8px' },
+      fpsInput(d),
       h('label', { class: 'muted', title: 'A tree (a cone): effects can be put on it with the centre on the tip. Enter the width of the tree at its base and its height as the real size.' }, 'Shape ',
         h('select', { class: 'small', onchange: e => saveShape(d.name, e.target.value) }, [['wall', 'wall / window'], ['tree', 'tree (cone)']].map(([v, t]) => h('option', { value: v, selected: (d.shape || 'wall') === v }, t)))),
       (d.shape === 'tree' ? h('label', { class: 'muted', title: 'The LEDs on the far side of the tree shine through it: this much dimmer (0 = as bright as the front, 100 = dark). It gives the picture a body.' }, 'Back dimming % ',

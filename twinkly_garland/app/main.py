@@ -358,29 +358,48 @@ def api_health():
     return {"ok": True}
 
 
-def start_live(scene_name: str, names: list, fps: float = 8.0, restart: bool = False) -> list:
+RANDOM_FOLLOW_S = 120  # a device that asks for live:random within this time after another one switched joins that scene
+
+
+def start_live(scene_name: str, names: list, fps: float | None = None, restart: bool = False) -> list:
     """Start the formula `scene_name` as a live scene on the devices. A running one on the same device is replaced,
     unless it already plays the same scene (then it just keeps running, so a periodic call does not restart it).
-    `random` picks one of the saved formulas that have inputs (live scenes), preferring another one than the current."""
+    `fps` None = the setting of each device. `random` picks one of the saved formulas that have inputs (live scenes),
+    preferring another one than the current, and the SAME one for all the devices (garlands that stand side by side
+    play one scene), when a scene is allowed on all of them."""
     running = {n: device.live_hosts.get(find_device(n)["host"]) for n in names}
     if scene_name == "random":
-        # one scene per kind of garland: a tree gets the scenes marked "tree" or "any", a wall those marked "wall" or "any"
         live_scenes = [f for f in formula.load() if f.get("inputs")]
         if not live_scenes:
             raise HTTPException(404, "no live scene is saved yet: save a formula with inputs in the Formulas tab")
-        groups: dict = {}
-        for n in names:
-            groups.setdefault(device.device_shape(n), []).append(n)
+        shape = {n: device.device_shape(n) for n in names}
+        allowed = {n: {f["name"] for f in live_scenes if f.get("shape", "any") in ("any", shape[n])} for n in names}
+        common = set.intersection(*allowed.values())
+        if common:
+            groups = [(sorted(common), list(names))]
+        else:  # no scene fits all of them (some are meant for a tree only): one scene per kind of garland
+            by_shape: dict = {}
+            for n in names:
+                by_shape.setdefault(shape[n], []).append(n)
+            groups = [(sorted(allowed[g[0]]), g) for g in by_shape.values()]
         out = []
-        for shape, group in groups.items():
-            pool = [f["name"] for f in live_scenes if f.get("shape", "any") in ("any", shape)]
+        for pool, group in groups:
             if not pool:
-                out += [{"device": n, "error": f"no live scene is meant for a {shape}"} for n in group]
+                out += [{"device": n, "error": f"no live scene is meant for a {shape[n]}"} for n in group]
+                continue
+            # a scene that another garland (not in this call) switched to a moment ago: join it, so that the garlands
+            # of one room change together even when the automation asks for them one by one
+            now = time.time()
+            recent = [st for h, st in device.live_hosts.items()
+                      if st.name in pool and st.started and now - st.started < RANDOM_FOLLOW_S
+                      and st.dev["name"] not in group and st.thread.is_alive()]
+            if recent:
+                out += start_live(max(recent, key=lambda st: st.started).name, group, fps, restart)
                 continue
             current = {running[n].name for n in group if running[n]}
             fresh = [p for p in pool if p not in current]
             if not fresh:  # nothing else to switch to
-                out += [{"device": n, "live": running[n].name, "fps": fps, "kept": True} for n in group if running[n]] or start_live(pool[0], group, fps, restart)
+                out += [{"device": n, "live": running[n].name, "fps": running[n].fps, "kept": True} for n in group if running[n]] or start_live(pool[0], group, fps, restart)
             else:
                 out += start_live(random.choice(fresh), group, fps, restart)
         return out
@@ -390,16 +409,17 @@ def start_live(scene_name: str, names: list, fps: float = 8.0, restart: bool = F
     out = []
     for n in names:
         dev = find_device(n)
+        dev_fps = fps if fps is not None else device.device_live_fps(n)
         if dev["host"] in device.scanning_hosts:
             out.append({"device": n, "error": "a position scan is running"})
             continue
         try:
             if running[n] is not None and running[n].name == scene_name and not restart:
-                out.append({"device": n, "live": scene_name, "fps": fps, "kept": True})
+                out.append({"device": n, "live": scene_name, "fps": running[n].fps, "kept": True})
                 continue
             layout = device.render_layout(dev, spec.get("mapping", "plane"))
             scene = live.LiveScene(spec, layout, {})  # built first (it fetches history), while the old scene keeps playing
-            stream = live.LiveStream(dev, scene, scene_name, fps)
+            stream = live.LiveStream(dev, scene, scene_name, dev_fps)
             old = running[n]
             if old is not None and old.thread.is_alive():
                 inherit = (old.prev_mode, old.prev_uid)
@@ -408,7 +428,7 @@ def start_live(scene_name: str, names: list, fps: float = 8.0, restart: bool = F
             else:
                 live.stop_for(dev)
                 stream.start()
-            out.append({"device": n, "live": scene_name, "fps": fps})
+            out.append({"device": n, "live": scene_name, "fps": stream.fps})
         except HTTPException:
             raise
         except (formula.FormulaError, ValueError) as exc:
@@ -422,7 +442,7 @@ def start_live(scene_name: str, names: list, fps: float = 8.0, restart: bool = F
 class LivePlay(BaseModel):
     scene: str  # a saved formula name, or "random"
     devices: list[str] = []
-    fps: float = 8.0
+    fps: float | None = None  # None = the "Live frames a second" setting of the device
     restart: bool = False  # start again even if this scene is already playing (e.g. after editing it)
 
 
@@ -657,7 +677,7 @@ def api_gallery(device_name: str = ""):
 # ---- API: devices ---------------------------------------------------------------
 
 def probe(dev: dict) -> dict:
-    return {**_probe(dev), "shape": device.device_shape(dev["name"]), "shade": device.device_shade(dev["name"])}
+    return {**_probe(dev), "shape": device.device_shape(dev["name"]), "shade": device.device_shade(dev["name"]), "live_fps": device.device_live_fps(dev["name"])}
 
 
 def _probe(dev: dict) -> dict:
@@ -744,6 +764,7 @@ class DevSettings(BaseModel):
     aspect: float | None = None  # real width / height of the area the garland covers
     shape: str | None = None     # "wall" or "tree"
     shade: float | None = None   # tree: how much the far side is dimmed, 0..1
+    live_fps: float | None = None  # frames a second of a live scene, 2..25
 
 
 @app.put("/api/devices/{name}/settings")
@@ -762,7 +783,14 @@ def api_device_settings(name: str, req: DevSettings):
         if not 0 <= req.shade <= 1:
             raise HTTPException(400, "shade must be between 0 and 1")
         changes["shade"] = req.shade
+    if req.live_fps is not None:
+        if not 2 <= req.live_fps <= 25:
+            raise HTTPException(400, "frames a second must be between 2 and 25")
+        changes["live_fps"] = req.live_fps
     device.save_device_settings(name, **changes)
+    st = device.live_hosts.get(find_device(name)["host"])
+    if st is not None and "live_fps" in changes:
+        st.set_fps(changes["live_fps"])  # a running scene takes the new rate at once
     _drop_status_cache()
     return {"aspect": req.aspect, "shape": device.device_shape(name)}
 

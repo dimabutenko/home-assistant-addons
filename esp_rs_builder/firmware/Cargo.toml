@@ -1,0 +1,44 @@
+[package]
+name = "firmware"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Standalone crate: not part of the host workspace.
+[workspace]
+
+[features]
+default = []
+# Chip features: names come from the board schema `feature` field.
+esp32c6 = [
+  "esp-hal/esp32c6", "esp-rtos/esp32c6", "esp-println/esp32c6",
+  "esp-backtrace/esp32c6", "esp-bootloader-esp-idf/esp32c6",
+]   # target riscv32imac-unknown-none-elf
+esp32s3 = [
+  "esp-hal/esp32s3", "esp-rtos/esp32s3", "esp-println/esp32s3",
+  "esp-backtrace/esp32s3", "esp-bootloader-esp-idf/esp32s3",
+]   # target xtensa-esp32s3-none-elf (esp toolchain, `espup`)
+
+# Versions verified against crates.io on 2026-11-27 (see HANDOFF "Decisions").
+[dependencies]
+esp-hal = { version = "~1.2", features = ["unstable"] }
+esp-rtos = { version = "0.4", features = ["embassy"] }
+esp-bootloader-esp-idf = "0.6"
+esp-println = { version = "0.18", features = ["log-04"] }
+esp-backtrace = { version = "0.20", features = ["panic-handler", "println"] }
+log = "0.4"
+embassy-executor = "0.10"
+embassy-time = "0.5"
+embassy-sync = "0.8"
+embassy-embedded-hal = "0.6"
+embedded-hal-async = "1.0"
+static_cell = "2.1"
+
+[profile.dev]
+opt-level = "s"   # debug builds of esp-hal are too slow / large
+
+[profile.release]
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+debug = 2

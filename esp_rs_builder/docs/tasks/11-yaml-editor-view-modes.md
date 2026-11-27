@@ -10,7 +10,7 @@ The builder UI works like the ESPHome editor: a **code editor** for the device Y
 - **View-mode switch** (three buttons in the header) remembered per browser (`localStorage`, mode only — never YAML or secrets). Layout responsive (stacked on narrow screens).
 - **Diagnostics -> code:** map `path` (`sensor[0].i2c_id`) to a line range in the text (via the parser's source positions, or a path lookup helper in `ui/lib/`) and show markers; pure logic covered by `node --test`.
 - Keep **Build / Download / Flash** and the log panel working in every mode.
-- **Out of scope:** secrets UI and `!secret` autocomplete (task 12), custom boards (task 13), multi-file configs/includes.
+- **Out of scope:** secrets UI and `!secret` autocomplete (task 12), custom boards (dropped), multi-file configs/includes.
 
 ## Constraints
 - Ingress: relative URLs only; no secrets or YAML in `localStorage`.

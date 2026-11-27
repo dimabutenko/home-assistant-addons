@@ -16,4 +16,3 @@ Statuses: `TODO`, `IN_PROGRESS`, `DONE`, `BLOCKED`.
 | 10 | [Secrets backend: `!secret` + secrets.yaml](10-secrets-backend.md) | TODO |
 | 11 | [YAML editor + Code/Split/Visual modes](11-yaml-editor-view-modes.md) | TODO |
 | 12 | [Secrets UI: editor, autocomplete, pickers](12-secrets-ui.md) | TODO |
-| 13 | [User-defined boards](13-custom-boards.md) | TODO |

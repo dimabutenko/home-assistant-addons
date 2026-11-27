@@ -23,4 +23,4 @@ The user manages secrets from the UI like in ESPHome. A **Secrets** button opens
 - Manual with a browser (say honestly if not run): create a secret in the dialog, complete it in the code editor, pick it in the Wi-Fi password field, build, confirm the log has no value. Edit the raw secrets file and save.
 
 ## Definition of Done
-- Secrets editor, completion, form picker and "move to secrets" implemented, tests pass, docs/CHANGELOG/version updated, `00-index.md` + `HANDOFF.md` updated (next: task 13, or "none").
+- Secrets editor, completion, form picker and "move to secrets" implemented, tests pass, docs/CHANGELOG/version updated, `00-index.md` + `HANDOFF.md` updated (next: none).

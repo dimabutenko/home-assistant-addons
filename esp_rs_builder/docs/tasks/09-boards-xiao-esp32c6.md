@@ -9,7 +9,7 @@ The editor offers real development boards, not only bare chips. After this task 
 - `schemas/boards/xiao_esp32c6.json`. Pin facts (Seeed XIAO ESP32-C6, from the Seeed wiki/datasheet — **verify before writing**, e.g. with the `hobby-kit:researcher` agent; do not rely on memory): D0=GPIO0, D1=GPIO1, D2=GPIO2, D3=GPIO21, D4=GPIO22 (SDA), D5=GPIO23 (SCL), D6=GPIO16 (TX), D7=GPIO17 (RX), D8=GPIO19 (SCK), D9=GPIO20 (MISO), D10=GPIO18 (MOSI), user LED GPIO15 (active low), BOOT GPIO9, RF switch GPIO3/GPIO14. Record the source URL in the schema `description` field.
 - `ui/`: board `<select>` shows `label`; the pinout draws the board's own pins (`ui` coordinates) with their `label` next to the GPIO number; pin fields accept/show the label (`D4`) — YAML stores the GPIO number (or the label if the validator supports `aliases`; pick one and keep it consistent). Update `ui/lib/pinout.js` and its tests; do not hard-code any XIAO fact in `ui/`.
 - Docs: `ARCHITECTURE.md` (board schema section), add-on `README.md` (supported boards).
-- **Out of scope:** user-defined boards (task 13), ESP32-S3 boards beyond the existing entry (it already matches the user's S3 DevKit), new components.
+- **Out of scope:** user-defined boards (dropped), ESP32-S3 boards beyond the existing entry (it already matches the user's S3 DevKit), new components.
 
 ## Constraints
 - Single source of truth = `schemas/` (add-on `CLAUDE.md`); no board facts in code.

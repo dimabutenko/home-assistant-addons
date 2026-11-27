@@ -1,7 +1,7 @@
 # HANDOFF
 
 ## Status
-- **Tasks 01–08 — DONE** (08 = add-on packaging; image builds in CI and installs on Home Assistant, version 0.1.1 + icon/logo). **Tasks 09–13 are specified (TODO)** after the first real use: boards (XIAO ESP32-C6), `!secret` backend, YAML editor with view modes, secrets UI, user-defined boards. Order: 09 -> 10 -> 11 -> 12 -> 13.
+- **Tasks 01–08 — DONE** (08 = add-on packaging; image builds in CI and installs on Home Assistant, version 0.1.1 + icon/logo). **Tasks 09–12 are specified (TODO; the user dropped the custom-boards task 13: new boards are added as schema files)** after the first real use: boards (XIAO ESP32-C6), `!secret` backend, YAML editor with view modes, secrets UI. Order: 09 -> 10 -> 11 -> 12. Open question for 11/12: fork/vendor the ESPHome frontend instead of our own editor (research in progress).
 - Verified: `cargo test --workspace` passes; the server run locally with `BUILDER_UI_DIR` serves `/`, `api/boards`, `style.css` (200). The UI uses relative URLs and a `location`-derived `ws:`/`wss:` URL, so it is ingress-prefix safe by inspection only (no real ingress run).
 - **NOT verified: Docker is not installed here.** `docker build`, running the image, a real build inside it (`/data/work`), the CI workflow, and installation on the real Home Assistant were never run. Do not treat the image as working until the first CI build and a first on-HA build succeed. Also unverified: `/data` mounted without `noexec` (cargo runs build scripts from `/data/work/target`), memory/time of the first build on aarch64, GHCR package visibility (new packages are private; make it public or the pull fails).
 - Still unverified from earlier tasks: DOM code of the UI in a browser, Web Serial flashing on a real ESP32-C6, ESP32-S3 build, firmware Wi-Fi/MQTT on hardware.
@@ -30,7 +30,7 @@
 - Nothing is pushed (push needs explicit approval).
 
 ## Token / context assessment
-- Task 09 (boards) is a different subsystem from the packaging work: start a **new chat**; the spec, `CLAUDE.md`, `ARCHITECTURE.md` and this file are enough. Each of 09–13 should be its own chat.
+- Task 09 (boards) is a different subsystem from the packaging work: start a **new chat**; the spec, `CLAUDE.md`, `ARCHITECTURE.md` and this file are enough. Each of 09–12 should be its own chat.
 
 ## Prompt for next session
 ```

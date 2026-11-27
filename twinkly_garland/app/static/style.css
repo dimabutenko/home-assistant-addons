@@ -79,7 +79,7 @@ button.small, select.small { padding: 2px 8px; font-size: .85rem; }
 .fm-funcs { columns: 1; font-family: ui-monospace, Consolas, monospace; font-size: .8rem; }
 @media (min-width: 900px) { .fm-funcs { columns: 2; } }
 
-.fm-input { display: grid; grid-template-columns: 70px minmax(120px, 1.4fr) minmax(80px, 1fr) 62px 62px 52px 52px 34px 54px minmax(60px, .8fr) auto; gap: 6px; align-items: center; margin-bottom: 6px; font-size: .85rem; }
+.fm-input { display: grid; grid-template-columns: 90px minmax(140px, 1fr) minmax(160px, 2fr) minmax(70px, .6fr) auto auto; gap: 6px; align-items: center; margin-bottom: 6px; font-size: .85rem; }
 .fm-input input { min-width: 0; width: 100%; padding: 3px 6px; }
 @media (max-width: 899px) { .fm-input { grid-template-columns: 1fr 1fr; } }
 
@@ -90,3 +90,14 @@ button.small, select.small { padding: 2px 8px; font-size: .85rem; }
 @media (max-width: 899px) { .fm-try { grid-template-columns: 1fr 1fr; } }
 
 .devpick { display: flex; gap: 6px; align-items: center; font-size: .9rem; color: var(--muted); }
+
+/* channels */
+.ch-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(70px, 1fr)); gap: 6px; align-items: end; }
+.ch-grid label { display: flex; flex-direction: column; gap: 2px; font-size: .78rem; color: var(--muted); }
+.ch-grid input, .ch-grid select { min-width: 0; width: 100%; padding: 3px 6px; }
+.ch-grid .wide { grid-column: span 2; }
+.ch-card { margin-bottom: 10px; }
+.ch-card.dirty { border-color: var(--acc); }
+.ch-merge { border: 1px dashed var(--line); border-radius: 8px; padding: 8px; margin-top: 8px; }
+.ch-merge table { border-collapse: collapse; font-size: .85rem; }
+.ch-merge td, .ch-merge th { padding: 2px 8px; text-align: left; border-bottom: 1px solid var(--line); }

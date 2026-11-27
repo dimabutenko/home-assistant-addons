@@ -67,16 +67,39 @@ radiator valve and the load of two PCs).
 
 ### Inputs from Home Assistant and live preview
 
-A formula can have **inputs**: a name, an entity (and optionally an attribute, e.g. `sun.sun` / `elevation`), the value that maps to
-0 and to 1, a smoothing time in seconds and a default. The input is then an ordinary variable 0..1 in the formula, for example
+A formula can have **inputs**: a name (the variable used in the code) and the **channel** it reads (see "Channels" below). The input is
+then an ordinary variable 0..1 in the formula, for example
 
     glow = smoothstep(valve * 0.9, 0, y) * valve      # a warm glow as high as the radiator valve is open
 
 Non-numeric states count as 1 when they are "on", "home", "playing", "cleaning", "heat", "heating", "open", "detected", else 0.
-Unavailable values keep the last one. "Live preview" computes frames on the server from the current values of Home Assistant; a
+A channel that is not bound to an entity, or whose entity is not available, gives its default value. "Live preview" computes frames on the server from the current values of Home Assistant; a
 stored effect (movie on the garland) uses the default values, so it stays deterministic and keeps working without Home Assistant.
 Access to Home Assistant uses the Supervisor (`homeassistant_api: true`). For development without the Supervisor set
 `TWINKLY_HA_BASE` and `TWINKLY_HA_TOKEN` to a Home Assistant URL and a long-lived token.
+
+### Channels
+
+The **Channels** tab holds every signal that scenes read, set up once. A channel is an entity (optionally an attribute, e.g. `sun.sun` /
+`elevation`), the value that maps to 0 and to 1, a smoothing time in seconds, the event threshold, the auto range and a default value (0..1).
+A formula input is only a name and a reference to a channel, so the same sensor is not typed again in every scene: change the channel and
+every scene that reads it follows. Channels are stored in `/data/channels.json`.
+
+- Each channel shows **how many scenes and effects use it** (with the list) and is marked **personal** when only one scene needs it. A channel can be
+  renamed (names are made from the entity at first), and one that nothing uses can be deleted.
+- **Merge:** pick another channel in "Merge into..." and the tab shows which scenes and stored effects are affected and which settings differ before
+  anything changes; the merged channel is deleted and its scenes read the other one. Channels are never merged by themselves except by the
+  update (below).
+- **Theme channels:** `pace` and the theme palette of a live round are channels too, with the source **random** (as before: `live:random` picks them for every
+  round), **fixed**, or **Home Assistant** (an entity mapped onto 0.6..1.6 / onto the list of the palettes, read when a scene starts; the value of the channel
+  is used while the entity is not available). A fixed or Home Assistant theme is also used by a scene started by name and by the live preview.
+- A stored effect (movie on the garland) uses the default value of its channels; the history charts and the replay of the editor read the history of the
+  channel's entity (`hadata.history_points`).
+- Taking an example on the Formulas tab gives its inputs real channels: an existing channel that behaves exactly the same, or a new one.
+- **The update to 0.22.0** moves every input of every saved formula into a channel, once, on the first start: `/data` is copied to
+  `/data/backup-0.21-<date>/` first (without `scans/`). Inputs with exactly the same settings (entity, attribute, min, max, smooth, event threshold, **and**
+  auto, minimum span, "on" states and default value, because each of them changes the picture) share one channel; any difference keeps them apart, so
+  every scene looks exactly as before. Names are made from the entity (a second one with the same name gets " 2"). Merge channels by hand if you want fewer.
 
 ### Auto range and events
 
@@ -137,7 +160,7 @@ says in the result what it could lock.
 
 - `POST api/play` with `{"effect": "<key>", "devices": ["<name>", ...]}` (empty list = all devices). `effect` may be `"random"`: one effect that is on every target device and in the rotation is picked (weighted). Returns 502 if no device could play it.
 - `POST api/ensure`, `POST api/devices/<name>/ensure`, `GET api/devices/<name>/plan`
-- `GET|PUT api/instances`, `GET|PUT api/formulas`, `GET api/ha/status|entities`, `POST api/ha/read`, `POST api/live/preview/start|<id>/stop`, `GET api/live/preview/<id>/frame`, `POST api/formulas/check`, `GET|PUT api/palettes`, `POST api/preview`, `GET api/gallery`, `GET api/status`, `POST api/scan/start|pattern|stop|apply`, `GET api/devices`, `GET api/effects`
+- `GET|PUT api/instances`, `GET|PUT api/formulas`, `GET|POST api/channels`, `PUT|DELETE api/channels/<id>`, `POST api/channels/<id>/merge/preview|merge`, `POST api/channels/adopt`, `GET api/ha/status|entities`, `POST api/ha/read|history` (inputs `[{"name", "channel"}]`), `POST api/live/preview/start|<id>/stop`, `GET api/live/preview/<id>/frame`, `POST api/formulas/check`, `GET|PUT api/palettes`, `POST api/preview`, `GET api/gallery`, `GET api/status`, `POST api/scan/start|pattern|stop|apply`, `GET api/devices`, `GET api/effects`
 
 ## Known issues / tech debt
 

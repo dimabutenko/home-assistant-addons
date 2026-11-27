@@ -72,7 +72,11 @@ class InputTracker:
             self.raw = inp["min"] + target * (inp["max"] - inp["min"])
             a = 1.0 if inp["smooth"] <= 0.01 else 1 - math.exp(-dt / inp["smooth"])
             self.value += (target - self.value) * a
-        elif raw is not None:
+        elif raw is None:  # the channel is not bound or its entity is not available: the default value of the channel
+            self.raw = None
+            a = 1.0 if inp["smooth"] <= 0.01 else 1 - math.exp(-dt / inp["smooth"])
+            self.value += (float(inp["default"]) - self.value) * a
+        else:
             self.raw = raw
             if self.auto and now - self.last_sample >= 1.0:
                 self.last_sample = now
@@ -111,7 +115,7 @@ class LiveScene:
         self.theme = {**palettes.DEFAULT_THEME, **(theme or {})}  # palette("theme", v) and `pace`: the round this scene belongs to
         self.spec = formula.validate_item({"name": "live", **spec})
         self.params = dict(params or {})
-        defs, self.inputs = self.spec["params"], self.spec["inputs"]
+        defs, self.inputs = self.spec["params"], formula.expand_inputs(self.spec)  # the channels are filled in here: the engine never sees them
         self.fn = formula.compile_formula(self.spec["code"], formula.all_names(defs, self.inputs))
         self.prep = formula.Prepared(layout)
         self.shade = getattr(layout, "shade", None)  # the far side of a tree dimmer

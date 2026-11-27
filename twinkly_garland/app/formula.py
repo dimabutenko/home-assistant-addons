@@ -26,7 +26,7 @@ from pathlib import Path
 
 import numpy as np
 
-from . import palettes, vformula
+from . import channels, palettes, vformula
 from .effects import Rendered
 
 TAU = 2 * math.pi
@@ -102,7 +102,7 @@ REFERENCE = {
         "<input>_phase: for every input its running total over time (value * seconds): use it as a speed that follows data without jumps, e.g. cos(tau * (a + wind_phase * 0.1))",
         "<input>_kick: 1 at the moment the input jumps (a kettle is switched on, a CPU spike) and fading to 0 in about 1.5 s; <input>_age: seconds since the last jump; <input>_count: number of jumps so far (a seed for random places: hash(power_count, 1)); <input>_dir: +1 / -1 for a rise / fall; <input>_delta: how fast it is changing",
         "an input with auto = on maps the range of the last 30 minutes to 0..1 (so any sensor uses its whole range); the jump threshold is set per input",
-        "inputs from Home Assistant: 0..1 numbers named by you (a temperature, a power, a valve...); a stored effect uses their default value, a live scene the real value",
+        "inputs from Home Assistant: 0..1 numbers named by you (a temperature, a power, a valve...). An input is a name and a channel (Channels tab: the entity, its range, smoothing and default value); a stored effect uses the default value of the channel, a live scene the real value, and a channel that is not bound or not available gives its default value",
         "w, h: width and height of the area; seed: the Seed slider; tau, pi",
         "your own parameters (they become sliders) and any name you assign: speed = 2",
     ],
@@ -278,13 +278,11 @@ def clean_params(defs) -> list:
     return out
 
 
-ENTITY_RE = re.compile(r"^[a-z0-9_]+\.[a-z0-9_]+$")
-DEFAULT_ON_STATES = ["on", "home", "playing", "cleaning", "heat", "heating", "open", "detected"]
 MAX_INPUTS = 8
 
 
 def clean_inputs(inputs, taken: set) -> list:
-    """Bindings of formula variables to Home Assistant entities (the value is mapped to 0..1)."""
+    """Inputs of a formula: an alias (the variable of the code) and the channel it reads: `{"name", "channel"}`."""
     out = []
     if len(inputs) > MAX_INPUTS:
         raise FormulaError(f"at most {MAX_INPUTS} inputs")
@@ -300,20 +298,11 @@ def clean_inputs(inputs, taken: set) -> list:
             raise FormulaError(f"input name '{name}' clashes with another name")
         seen.add(name)
         seen.update(f"{name}_{s}" for s in INPUT_SUFFIXES)
-        entity = str(d.get("entity", "")).strip()
-        if not ENTITY_RE.match(entity):
-            raise FormulaError(f"input '{name}': entity must look like sensor.power_total")
-        lo, hi = float(d.get("min", 0)), float(d.get("max", 1))
-        if lo == hi:
-            raise FormulaError(f"input '{name}': min and max must differ")
-        on_states = d.get("on_states") or DEFAULT_ON_STATES
-        if isinstance(on_states, str):
-            on_states = [x.strip().lower() for x in on_states.split(",") if x.strip()]
-        out.append({"name": name, "entity": entity, "attribute": str(d.get("attribute") or "").strip(), "min": lo, "max": hi,
-                    "smooth": min(120.0, max(0.0, float(d.get("smooth", 2)))), "default": min(1.0, max(0.0, float(d.get("default", 0.5)))),
-                    "auto": bool(d.get("auto", False)), "span": max(0.0, float(d.get("span") or 0.0)),
-                    "kick": min(0.5, max(0.02, float(d.get("kick") or 0.12))),
-                    "on_states": [str(x).lower() for x in on_states]})
+        cid = str(d.get("channel", "")).strip()
+        ch = channels.get(cid)
+        if ch is None or ch.get("kind", "value") != "value":
+            raise FormulaError(f"input '{name}': pick a channel (Channels tab)" + (" - take the example again from the list" if cid.startswith(channels.EXAMPLE_PREFIX) else ""))
+        out.append({"name": name, "channel": cid})
     return out
 
 
@@ -343,8 +332,25 @@ def load() -> list:
             _items = json.loads(_path().read_text())
         except (OSError, ValueError):
             _items = []
+        if channels.needs_backup(_path().exists()):  # 0.22.0: the inputs become channels, once, after a copy of /data
+            try:
+                channels.backup("0.21")
+            except OSError as exc:
+                _items = None
+                raise FormulaError(f"the move of the inputs to channels is not started: the backup of {DATA_DIR} failed ({exc})") from None
         migrate_saved(_items)
+        if channels.migrate_inputs(_items):
+            _write_items(_items)
     return _items
+
+
+def _write_items(items: list) -> None:
+    global VERSION
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = _path().with_name("formulas.json.tmp")
+    tmp.write_text(json.dumps(items, indent=1))
+    os.replace(tmp, _path())
+    VERSION += 1
 
 
 def migrate_saved(items: list) -> int:
@@ -376,6 +382,14 @@ def migrate_saved(items: list) -> int:
     return changed
 
 
+def expand_inputs(spec: dict) -> list:
+    """The inputs of a formula with their channels filled in (what the live scene and the renderer use)."""
+    try:
+        return channels.expand(spec.get("inputs", []))
+    except channels.ChannelError as exc:
+        raise FormulaError(str(exc)) from None
+
+
 def save(items: list) -> None:
     global _items, VERSION
     clean = [validate_item(i) for i in items]
@@ -385,6 +399,14 @@ def save(items: list) -> None:
     VERSION += 1
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     _path().write_text(json.dumps(clean, indent=1))
+
+
+def _channels_changed() -> None:
+    global VERSION
+    VERSION += 1
+
+
+channels.on_change(_channels_changed)
 
 
 THEME_USE = re.compile(r'"theme"|(?<![A-Za-z0-9_])pace(?![A-Za-z0-9_])')
@@ -490,7 +512,8 @@ def eval_frame(fn, prep: Prepared, t: float, now: float, seed: float, vals: list
 
 def render_spec(layout: list, params: dict, spec: dict) -> Rendered:
     """A looping movie. Inputs use their default value (a stored effect does not follow live data)."""
-    defs, inputs = spec["params"], spec.get("inputs", [])
+    defs = spec["params"]
+    inputs = expand_inputs(spec)
     fn = compile_formula(spec["code"], all_names(defs, inputs))
     base = [float(params.get(d["name"], d["default"])) for d in defs] + [float(i["default"]) for i in inputs]
     k = float(params.get("intensity", 0.9))

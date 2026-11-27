@@ -126,6 +126,8 @@ WATCHER = Watcher()
 
 def read_input(inp: dict):
     """(raw, normalized) for an input binding; (None, None) when the value is not available."""
+    if not inp.get("entity"):  # a channel that is not bound to an entity
+        return None, None
     st = WATCHER.get(inp["entity"])
     raw = raw_value(st, inp.get("attribute", ""), inp.get("on_states", []))
     if raw is None:
@@ -196,7 +198,7 @@ class ReplaySource:
         self.seconds = max(5.0, float(seconds))
         self.series, self.missing = {}, []
         for inp in inputs:
-            if inp.get("attribute"):
+            if inp.get("attribute") or not inp.get("entity"):
                 self.missing.append(inp["name"])
                 continue
             try:

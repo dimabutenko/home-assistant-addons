@@ -4,17 +4,25 @@
 
 const FM = { items: [], examples: [], reference: null, cur: null, orig: null, vals: {}, previewTimer: null,
   tok: 0, anim: null, info: '', status: null, seam: null, previewData: null, loaded: false,
-  ha: null, live: null, readTimer: null, entTimer: null, streams: [], hist: {}, histTimer: null, raw: {}, manual: {}, replaySec: 90 };
+  ha: null, live: null, readTimer: null, channels: [], streams: [], hist: {}, histTimer: null, raw: {}, manual: {}, replaySec: 90 };
 
 async function loadFormulas() {
   const r = await api('api/formulas');
   FM.items = r.items; FM.examples = r.examples; FM.reference = r.reference; FM.loaded = true;
+  try { FM.channels = (await api('api/channels')).items.filter(c => (c.kind || 'value') === 'value'); } catch { FM.channels = []; }
   try { FM.ha = await api('api/ha/status'); } catch { FM.ha = { available: false, error: 'status failed' }; }
 }
 
 function fmCopy(src) { return { name: src.name, code: src.code, params: clone(src.params || []), inputs: clone(src.inputs || []), mapping: src.mapping || 'plane', shape: src.shape || 'any' }; }
 
-function fmNew(from) {
+async function fmNew(from) {
+  if (from && (from.inputs || []).some(i => String(i.channel).startsWith('ex:'))) {  // an example: its inputs get real channels (an equal one, or a new one)
+    try {
+      const r = await send('api/channels/adopt', { inputs: from.inputs });
+      from = { ...from, inputs: r.inputs };
+      FM.channels = (await api('api/channels')).items.filter(c => (c.kind || 'value') === 'value');
+    } catch (e) { toast('Cannot take the example: ' + e.message, true, 9000); return; }
+  }
   const src = from || { name: '', code: 'palette("fire", y)', params: [], inputs: [], mapping: 'plane', shape: 'any' };
   fmLiveStop();
   FM.cur = fmCopy(src); FM.cur.name = fmUniqueName(src.name || 'my formula');
@@ -40,11 +48,13 @@ function fmDefs() {  // parameters as the server wants them (half-filled rows ar
     .map(p => ({ name: p.name.trim(), label: p.label || p.name, min: Number(p.min), max: Number(p.max), default: Number(p.default) }));
 }
 
-function fmInputs() {
-  return FM.cur.inputs.filter(i => i.name && i.entity && Number.isFinite(Number(i.min)) && Number.isFinite(Number(i.max)) && Number(i.min) !== Number(i.max))
-    .map(i => ({ name: i.name.trim(), entity: i.entity.trim(), attribute: (i.attribute || '').trim(), min: Number(i.min), max: Number(i.max),
-      smooth: Number(i.smooth === '' || i.smooth === undefined ? 2 : i.smooth), default: Number(i.default === '' || i.default === undefined ? 0.5 : i.default),
-      auto: !!i.auto, kick: Number(i.kick === '' || i.kick === undefined ? 0.12 : i.kick) }));
+function fmInputs() {  // the inputs as the server wants them: an alias and a channel
+  return FM.cur.inputs.filter(i => i.name && FM.channels.some(c => c.id === i.channel)).map(i => ({ name: i.name.trim(), channel: i.channel }));
+}
+
+function fmFull(p) {  // an input with the settings of its channel (the charts and the values use them)
+  const c = FM.channels.find(x => x.id === p.channel) || {};
+  return { ...c, name: (p.name || '').trim(), channel: p.channel };
 }
 
 function fmSpec() { return { code: FM.cur.code, params: fmDefs(), inputs: fmInputs() }; }
@@ -231,26 +241,13 @@ function fmParamRow(p, i) {
     h('button', { class: 'small danger', onclick: () => { FM.cur.params.splice(i, 1); renderFormulas(); fmSchedule(); } }, 'Remove'));
 }
 
-// entity suggestions for the datalist
-function fmSuggest(q) {
-  clearTimeout(FM.entTimer);
-  FM.entTimer = setTimeout(async () => {
-    if (!FM.ha || !FM.ha.available || q.length < 2) return;
-    try {
-      const list = await api('api/ha/entities?q=' + encodeURIComponent(q));
-      const dl = document.getElementById('fm-ents'); if (!dl) return;
-      dl.replaceChildren(...list.map(e => h('option', { value: e.entity_id }, `${e.name || ''} · ${e.state} ${e.unit}${e.attributes.length ? ' · attrs: ' + e.attributes.join(', ') : ''}`)));
-    } catch { /* ignore */ }
-  }, 300);
-}
-
 // ---- charts and manual values of the inputs ---------------------------------------------------------------------------------------
 async function fmLoadHist(force) {
   if (!FM.cur || !FM.ha || !FM.ha.available) return;
-  const need = fmInputs().filter(i => { const k = `${i.entity}|${i.attribute}`, h0 = FM.hist[k]; return force || !h0 || Date.now() - h0.at > 120000; });
+  const need = fmInputs().map(fmFull).filter(i => i.entity && !i.attribute).filter(i => { const k = `${i.entity}|${i.attribute}`, h0 = FM.hist[k]; return force || !h0 || Date.now() - h0.at > 120000; });
   if (!need.length) { fmDrawCharts(); return; }
   try {
-    const res = await send('api/ha/history', { inputs: need, minutes: 30 });
+    const res = await send('api/ha/history', { inputs: need.map(i => ({ name: i.name, channel: i.channel })), minutes: 30 });
     for (const r of res) { const i = need.find(x => x.name === r.name); if (i) FM.hist[`${i.entity}|${i.attribute}`] = { ...r, at: Date.now() }; }
   } catch { /* the charts stay as they were */ }
   fmDrawCharts();
@@ -274,7 +271,7 @@ function fmDrawChart(cv, p, hist) {
   ctx.font = '11px system-ui, sans-serif'; ctx.textBaseline = 'middle';
   const msg = t => { ctx.fillStyle = col('--muted'); ctx.fillText(t, 8, H / 2); };
   if (!FM.ha || !FM.ha.available) return msg('Home Assistant data is not available here.');
-  if (!p.entity) return msg('Pick an entity to see its last 30 minutes.');
+  if (!p.entity) return msg(p.channel ? 'The channel is not bound to an entity (Channels tab): its default value is used.' : 'Pick a channel to see its last 30 minutes.');
   if (!hist) return msg('Loading the history...');
   if (hist.error || !hist.values || !hist.values.length) return msg(hist.error || 'No history.');
   const vals = hist.values, n = vals.length, mn = Number(p.min), mx = Number(p.max), thr = Number(p.kick === '' || p.kick === undefined ? 0.12 : p.kick);
@@ -313,7 +310,8 @@ function fmDrawCharts() {
   if (!FM.cur) return;
   FM.cur.inputs.forEach((p, i) => {
     const cv = document.getElementById(`fm-ch-${i}`); if (!cv) return;
-    fmDrawChart(cv, p, FM.hist[`${(p.entity || '').trim()}|${(p.attribute || '').trim()}`]);
+    const f = fmFull(p);
+    fmDrawChart(cv, f, FM.hist[`${f.entity || ''}|${f.attribute || ''}`]);
   });
 }
 
@@ -345,23 +343,22 @@ function fmMonitor(c) {
   if (!c.inputs.length) return null;
   return h('div', { class: 'card', style: 'margin-bottom:10px' },
     h('h3', {}, 'Watch and try the inputs'),
-    h('div', { class: 'muted', style: 'margin-bottom:8px' }, 'Each chart shows the last 30 minutes of the sensor in its own units. The shaded band is the range that becomes 0..1 (the "→ 0" and "→ 1" values, or the auto range): change them above and the chart follows at once. The dot at the right edge is the value now. Below each chart you can take the input into your own hands: move the slider (or press the event button) and the preview shows what the formula does, whatever the sensor says. The preview starts by itself. "Replay the last 24 h" under the preview plays the whole past day back fast.'),
+    h('div', { class: 'muted', style: 'margin-bottom:8px' }, 'Each chart shows the last 30 minutes of the sensor in its own units. The shaded band is the range that becomes 0..1 (the "→ 0" and "→ 1" values, or the auto range): change them on the Channels tab (they belong to the channel). The dot at the right edge is the value now. Below each chart you can take the input into your own hands: move the slider (or press the event button) and the preview shows what the formula does, whatever the sensor says. The preview starts by itself. "Replay the last 24 h" under the preview plays the whole past day back fast.'),
     c.inputs.map((p, i) => h('div', { style: 'margin-bottom:12px' },
       h('canvas', { id: `fm-ch-${i}`, class: 'fm-chart', width: 640, height: 96 }), fmTryRow(p, i))));
 }
 
 function fmInputRow(p, i) {
+  const ch = FM.channels.find(c => c.id === p.channel);
+  const sum = !ch ? 'pick a channel' : `${ch.entity || 'not bound'}${ch.attribute ? ' · ' + ch.attribute : ''} · ${ch.min} → ${ch.max}${ch.auto ? ' (auto)' : ''}` +
+    (ch.personal ? ' · personal' : ` · used in ${ch.count}`);
   return h('div', { class: 'fm-input' },
-    h('input', { type: 'text', placeholder: 'name', value: p.name, size: 6, oninput: e => { p.name = e.target.value; fmSchedule(); } }),
-    h('input', { type: 'text', placeholder: 'sensor.entity_id', list: 'fm-ents', value: p.entity, oninput: e => { p.entity = e.target.value; fmSuggest(e.target.value); }, onchange: () => { fmSchedule(); fmLoadHist(); } }),
-    h('input', { type: 'text', placeholder: 'attribute (optional)', value: p.attribute || '', onchange: e => { p.attribute = e.target.value; fmSchedule(); fmLoadHist(); } }),
-    h('input', { type: 'number', step: 'any', value: p.min, title: 'value mapped to 0', onchange: e => { p.min = e.target.value; fmSchedule(); } }),
-    h('input', { type: 'number', step: 'any', value: p.max, title: 'value mapped to 1', onchange: e => { p.max = e.target.value; fmSchedule(); } }),
-    h('input', { type: 'number', step: 'any', value: p.smooth === undefined ? 2 : p.smooth, title: 'smoothing, seconds', onchange: e => { p.smooth = e.target.value; fmSchedule(); } }),
-    h('input', { type: 'number', step: 'any', min: 0, max: 1, value: p.default === undefined ? 0.5 : p.default, title: 'value 0..1 used when the effect is stored on the garland', onchange: e => { p.default = e.target.value; fmSchedule(); } }),
-    h('input', { type: 'checkbox', checked: !!p.auto, title: 'auto range: the last 30 minutes of this sensor are mapped to 0..1 (the "to 0" / "to 1" values are only the starting guess)', onchange: e => { p.auto = e.target.checked; fmSchedule(); } }),
-    h('input', { type: 'number', step: 'any', min: 0.02, max: 0.5, value: p.kick === undefined ? 0.12 : p.kick, title: 'event threshold: a jump of this share of the 0..1 range fires <name>_kick / _count', onchange: e => { p.kick = e.target.value; fmSchedule(); } }),
+    h('input', { type: 'text', placeholder: 'name', value: p.name, size: 6, title: 'the variable of the formula', oninput: e => { p.name = e.target.value; fmSchedule(); } }),
+    h('select', { title: 'the channel this input reads', onchange: e => { p.channel = e.target.value; renderFormulas(); fmSchedule(); } },
+      h('option', { value: '' }, '(pick a channel)'), FM.channels.map(c => h('option', { value: c.id, selected: c.id === p.channel }, c.name))),
+    h('span', { class: 'muted' }, sum),
     h('span', { class: 'muted', id: `fm-now-${i}` }, ''),
+    h('button', { class: 'small', disabled: !ch, title: 'open this channel on the Channels tab', onclick: () => chOpen(p.channel) }, 'Edit channel'),
     h('button', { class: 'small danger', onclick: () => { FM.cur.inputs.splice(i, 1); renderFormulas(); fmSchedule(); } }, 'Remove'));
 }
 
@@ -437,12 +434,13 @@ function renderFormulas() {
         c.params.map(fmParamRow),
         h('button', { class: 'small', disabled: c.params.length >= 8, onclick: () => { c.params.push({ name: 'p' + (c.params.length + 1), label: '', min: 0, max: 1, default: 0.5 }); renderFormulas(); } }, '+ parameter')),
       h('div', { class: 'card', style: 'margin-bottom:10px' },
-        h('h3', {}, 'Inputs from Home Assistant'),
-        h('div', { class: 'muted', style: 'margin-bottom:6px' }, 'Each input is a variable 0..1 in the formula. "min" is the value that maps to 0, "max" to 1 (attribute: e.g. elevation of sun.sun). Smoothing in seconds makes the value glide (use 0.3 to 0.5 for fast signals). "auto" maps the last 30 minutes of the sensor to 0..1, so every sensor uses its whole range. "event" is the size of a jump (share of the range) that fires name_kick, name_age and name_count. "default" is used when the effect is stored on the garland.'),
-        h('div', { class: 'fm-input muted' }, h('span', {}, 'name'), h('span', {}, 'entity'), h('span', {}, 'attribute'), h('span', {}, '→ 0'), h('span', {}, '→ 1'), h('span', {}, 'smooth s'), h('span', {}, 'default'), h('span', {}, 'auto'), h('span', {}, 'event'), h('span', {}, 'now'), h('span', {})),
+        h('h3', {}, 'Inputs (channels from Home Assistant)'),
+        h('div', { class: 'muted', style: 'margin-bottom:6px' }, 'Each input is a variable 0..1 in the formula: a name for the code and the channel it reads. The entity, the range that becomes 0..1, the smoothing, the event threshold and the default value belong to the channel (Channels tab), so the same signal is set up once and shared by every scene that uses it. Changing a channel changes every scene that uses it.'),
+        h('div', { class: 'fm-input muted' }, h('span', {}, 'name'), h('span', {}, 'channel'), h('span', {}, 'settings of the channel'), h('span', {}, 'now'), h('span', {}), h('span', {})),
         c.inputs.map(fmInputRow),
-        h('datalist', { id: 'fm-ents' }),
-        h('button', { class: 'small', disabled: c.inputs.length >= 8, onclick: () => { c.inputs.push({ name: 'in' + (c.inputs.length + 1), entity: '', attribute: '', min: 0, max: 100, smooth: 0.4, default: 0.5, auto: true, kick: 0.12 }); renderFormulas(); } }, '+ input')),
+        h('div', { class: 'row' },
+          h('button', { class: 'small', disabled: c.inputs.length >= 8, onclick: () => { c.inputs.push({ name: 'in' + (c.inputs.length + 1), channel: FM.channels.length ? FM.channels[0].id : '' }); renderFormulas(); } }, '+ input'),
+          h('button', { class: 'small', title: 'make a new channel on the Channels tab', onclick: () => chOpen(null, true) }, '+ new channel'))),
       fmMonitor(c),
       h('div', { class: 'row', style: 'margin-bottom:10px' },
         h('button', { class: 'primary', onclick: fmSave }, 'Save'),

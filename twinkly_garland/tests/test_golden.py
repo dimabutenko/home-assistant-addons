@@ -18,7 +18,6 @@ for name, ex in specs:
     for kind, lay in lays.items():
         for sc in range(3):
             g = gold[f"{name}|{kind}|{sc}"]
-            sp = formula.validate_item({"name": "t", **ex})
             try:
                 got = run(ex, kind, lay, sc, prev_frames=[g[f].tobytes() for f in range(N_FRAMES)])
             except Exception as e:

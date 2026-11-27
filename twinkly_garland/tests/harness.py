@@ -3,12 +3,13 @@ import math
 import os
 import random
 import sys
+import tempfile
 from pathlib import Path
 
-os.environ.setdefault("DATA_DIR", str(Path(__file__).parent / "_data"))
+os.environ["DATA_DIR"] = tempfile.mkdtemp(prefix="twinkly_test_")  # formulas.json, channels.json: never the real /data
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app import formula  # noqa: E402
+from app import channels, formula  # noqa: E402
 
 N_FRAMES = 5
 
@@ -49,11 +50,26 @@ def frame_vals(defs: list, inputs: list, T: list) -> list:
             + [t[4] for t in T] + [t[5] for t in T] + [t[6] for t in T])
 
 
+def to_refs(spec: dict) -> dict:
+    """The spec with its inputs as references to channels: an inline input (the form of 0.21 and the golden examples) goes through the same
+    migration as the saved formulas (equal inputs share a channel); the `ex:` ids of the shipped examples are adopted."""
+    ins = spec.get("inputs", [])
+    if any(i.get("channel", "").startswith(channels.EXAMPLE_PREFIX) for i in ins):
+        ins = channels.adopt(ins)
+    ins = [i if "channel" in i else {"name": i["name"], "channel": channels.import_input(i)} for i in ins]
+    return {**spec, "inputs": ins}
+
+
 def run(spec: dict, kind: str, lay: Layout, scen: int, prev_frames: list | None = None) -> list:
     """The frames of one scene. With prev_frames (the golden sequence) every frame is computed from the golden previous
     frame, so one rounding step cannot grow through the feedback of prev()."""
-    spec = formula.validate_item({"name": "t", **spec})
-    defs, inputs = spec["params"], spec["inputs"]
+    spec = formula.validate_item({"name": "t", **to_refs(spec)})
+    return run_expanded(spec, formula.expand_inputs(spec), kind, lay, scen, prev_frames)
+
+
+def run_expanded(spec: dict, inputs: list, kind: str, lay: Layout, scen: int, prev_frames: list | None = None) -> list:
+    """The frames of a scene whose inputs are already full dicts (name, default, ...): the part that does not know about channels."""
+    defs = spec["params"]
     fn = formula.compile_formula(spec["code"], formula.all_names(defs, inputs))
     prep = formula.Prepared(lay)
     k = 0.9

@@ -20,7 +20,7 @@ from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import compose, device, effects, formula, hadata, live, mqtt_bridge, palettes, rounds, scan
+from . import channels, compose, device, effects, formula, hadata, live, mqtt_bridge, palettes, rounds, scan
 
 OPTIONS_PATH = Path(os.environ.get("OPTIONS_PATH", "/data/options.json"))
 STATIC = Path(__file__).parent / "static"
@@ -161,6 +161,10 @@ def _changed():
 async def lifespan(_app):
     global bridge
     task = asyncio.create_task(_auto_loop())
+    try:
+        formula.load()  # 0.22.0: the first start moves the inputs of the saved formulas into channels (after a backup of /data)
+    except Exception:
+        log.exception("the formulas could not be loaded (the move of the inputs to channels failed)")
     asyncio.get_running_loop().run_in_executor(None, _recover_rt)
     opts = options()
     if opts.get("mqtt_host"):
@@ -300,21 +304,24 @@ def api_ha_entities(q: str = ""):
 
 
 class HAReadReq(BaseModel):
-    inputs: list[dict]
+    inputs: list[dict]  # [{"name": alias, "channel": channel id}]
+
+
+def _expand_or_400(inputs: list) -> list:
+    try:
+        return channels.expand([{"name": str(i.get("name") or i.get("channel")), "channel": str(i.get("channel", ""))} for i in inputs])
+    except channels.ChannelError as exc:
+        raise HTTPException(400, str(exc))
 
 
 @app.post("/api/ha/read")
 def api_ha_read(req: HAReadReq):
-    """Current value of each input binding (raw and mapped to 0..1)."""
+    """Current value of each channel (raw and mapped to 0..1)."""
     out = []
-    try:
-        clean = formula.clean_inputs(req.inputs, set())
-    except formula.FormulaError as exc:
-        raise HTTPException(400, str(exc))
-    for inp in clean:
+    for inp in _expand_or_400(req.inputs):
         try:
             raw, norm = hadata.read_input(inp)
-            err = hadata.WATCHER.error(inp["entity"]) if raw is None else None
+            err = hadata.WATCHER.error(inp["entity"]) if raw is None and inp["entity"] else None
         except hadata.HAError as exc:
             raw, norm, err = None, None, str(exc)
         out.append({"name": inp["name"], "raw": raw, "value": None if norm is None else round(norm, 3), "error": err})
@@ -322,22 +329,20 @@ def api_ha_read(req: HAReadReq):
 
 
 class HAHistoryReq(BaseModel):
-    inputs: list[dict]
+    inputs: list[dict]  # [{"name": alias, "channel": channel id}]
     minutes: float = 30.0
 
 
 @app.post("/api/ha/history")
 def api_ha_history(req: HAHistoryReq):
-    """The recent course of each input (raw numbers, evenly spaced) for the charts of the editor."""
+    """The recent course of each channel (raw numbers, evenly spaced) for the charts of the editor."""
     minutes = max(5.0, min(1440.0, req.minutes))
-    try:
-        clean = formula.clean_inputs(req.inputs, set())
-    except formula.FormulaError as exc:
-        raise HTTPException(400, str(exc))
     out, t1 = [], time.time()
-    for inp in clean:
+    for inp in _expand_or_400(req.inputs):
         item = {"name": inp["name"], "t0": t1 - minutes * 60, "t1": t1}
-        if inp.get("attribute"):
+        if not inp["entity"]:
+            item["error"] = "the channel is not bound to an entity"
+        elif inp.get("attribute"):
             item["error"] = "no history for attributes"
         else:
             try:
@@ -350,6 +355,90 @@ def api_ha_history(req: HAHistoryReq):
                 item["error"] = str(exc)
         out.append(item)
     return out
+
+
+# ---- API: channels -------------------------------------------------------------------------------------------
+
+def _users() -> dict:
+    return channels.usage(formula.load(), load_instances())
+
+
+@app.get("/api/channels")
+def api_channels():
+    formula.load()  # the first call after the update moves the old inputs into channels
+    return {"items": channels.describe(_users()), "palettes": palettes.theme_names(), "pace_range": list(palettes.PACE_RANGE),
+            "ha": hadata.available()}
+
+
+class ChannelIn(BaseModel):
+    name: str | None = None
+    entity: str | None = None
+    attribute: str | None = None
+    min: float | None = None
+    max: float | None = None
+    smooth: float | None = None
+    default: float | None = None
+    auto: bool | None = None
+    span: float | None = None
+    kick: float | None = None
+    on_states: list[str] | str | None = None
+    source: str | None = None  # the system channels only: random / fixed / ha
+    fixed: float | str | None = None
+
+
+def _channel_call(fn, *args):
+    try:
+        return fn(*args)
+    except (channels.ChannelError, formula.FormulaError) as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.post("/api/channels")
+def api_channel_create(req: ChannelIn):
+    return _channel_call(channels.create, req.model_dump(exclude_none=True))
+
+
+@app.put("/api/channels/{cid}")
+def api_channel_update(cid: str, req: ChannelIn):
+    out = _channel_call(channels.update, cid, req.model_dump(exclude_none=True))
+    _changed()
+    return out
+
+
+@app.delete("/api/channels/{cid}")
+def api_channel_delete(cid: str):
+    _channel_call(channels.delete, cid, _users())
+    return {"deleted": cid}
+
+
+class ChannelMerge(BaseModel):
+    into: str
+
+
+@app.post("/api/channels/{cid}/merge/preview")
+def api_channel_merge_preview(cid: str, req: ChannelMerge):
+    """What merging `cid` into another channel would change: which scenes and effects are affected and which settings differ."""
+    return _channel_call(channels.merge_preview, cid, req.into, _users())
+
+
+@app.post("/api/channels/{cid}/merge")
+def api_channel_merge(cid: str, req: ChannelMerge):
+    _channel_call(channels.merge_preview, cid, req.into, _users())  # the checks
+    items = channels.merge(cid, req.into, formula.load())
+    _channel_call(formula.save, items)
+    _channel_call(channels.delete, cid, _users())
+    _changed()
+    return {"merged": cid, "into": req.into}
+
+
+class AdoptReq(BaseModel):
+    inputs: list[dict]
+
+
+@app.post("/api/channels/adopt")
+def api_channel_adopt(req: AdoptReq):
+    """The inputs of an example with real channels (an existing one that behaves the same, or a new one)."""
+    return {"inputs": _channel_call(channels.adopt, req.inputs)}
 
 
 @app.get("/api/health")
@@ -375,7 +464,7 @@ def start_random(names: list, fps: float | None, restart: bool) -> list:
                      and st.dev["name"] not in names and st.thread.is_alive()), key=lambda st: st.started, reverse=True)
     avoid = {st.scene.theme["palette"] for st in device.live_hosts.values()}
     rnd = rounds.plan(live_scenes, {n: device.device_shape(n) for n in names}, {n: running[n].name if running[n] else None for n in names},
-                      [(st.name, st.scene.theme) for st in recent], avoid)
+                      [(st.name, st.scene.theme) for st in recent], avoid, channels.theme_override())
     out = []
     for g in rnd["groups"]:
         if g["error"]:
@@ -411,7 +500,7 @@ def start_live(scene_name: str, names: list, fps: float | None = None, restart: 
                 out.append({"device": n, "live": scene_name, "fps": running[n].fps, "kept": True})
                 continue
             layout = device.render_layout(dev, spec.get("mapping", "plane"))
-            scene = live.LiveScene(spec, layout, {}, theme=theme)  # built first (it fetches history), while the old scene keeps playing
+            scene = live.LiveScene(spec, layout, {}, theme=theme or channels.theme_override())  # built first (it fetches history), while the old scene keeps playing
             stream = live.LiveStream(dev, scene, scene_name, dev_fps, in_round)
             old = running[n]
             if old is not None and old.thread.is_alive():
@@ -488,10 +577,10 @@ def api_live_preview_start(req: LiveStart):
         if req.replay is not None:
             spec = formula.validate_item({"name": "live", **req.formula})
             hours = max(1.0, min(168.0, float(req.replay.get("hours", 24))))
-            replay = hadata.ReplaySource(spec["inputs"], hours, float(req.replay.get("seconds", 90)))
-            scene = live.LiveScene(req.formula, layout, req.params, source=replay, history=replay.history)
+            replay = hadata.ReplaySource(formula.expand_inputs(spec), hours, float(req.replay.get("seconds", 90)))
+            scene = live.LiveScene(req.formula, layout, req.params, source=replay, history=replay.history, theme=channels.theme_override())
         else:
-            scene = live.LiveScene(req.formula, layout, req.params)
+            scene = live.LiveScene(req.formula, layout, req.params, theme=channels.theme_override())
     except hadata.HAError as exc:
         raise HTTPException(502, str(exc))
     except (formula.FormulaError, ValueError) as exc:

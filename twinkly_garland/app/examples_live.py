@@ -429,6 +429,21 @@ TREE_ONLY = ["Live DNA ladder", "Live christmas spiral", "Live frosted candy", "
 for _e in LIVE_EXAMPLES:
     _e["shape"] = "wall" if _e["name"] in WALL_ONLY else ("tree" if _e["name"] in TREE_ONLY else "any")
 
+# The inputs above are written as full definitions for readability. What the examples carry is an alias and a reference to a channel:
+# the id `ex:<hash>` stands for the channel with exactly this behaviour; taking an example in the editor (channels.adopt) replaces it by
+# the real channel that behaves the same, or creates one. Equal definitions in different examples are one channel.
+from . import channels  # noqa: E402
+
+EXAMPLE_CHANNELS: dict = {}  # "ex:<hash>" -> the definition (the fields of a channel)
+for _e in LIVE_EXAMPLES:
+    _refs = []
+    for _i in _e.get("inputs", []):
+        _d = channels.clean(_i)
+        _cid = channels.EXAMPLE_PREFIX + channels.key_hash(_d)
+        EXAMPLE_CHANNELS[_cid] = _d
+        _refs.append({"name": _i["name"], "channel": _cid})
+    _e["inputs"] = _refs
+
 # sha1 (first 16 hex digits) of the code these scenes had before 0.21.0 (no theme, no pace): a saved formula of the same name whose
 # code is still exactly that is replaced by the new one on the first start (see formula.migrate_saved); an edited one is left alone.
 LEGACY_CODE = {

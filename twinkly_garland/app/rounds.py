@@ -7,13 +7,14 @@ from . import formula, palettes
 THEMED_WEIGHT = 3  # a scene that uses the theme is this many times more likely than one that does not
 
 
-def plan(scenes: list, shapes: dict, running: dict, recent: list, avoid: set = frozenset(), rng=random) -> dict:
+def plan(scenes: list, shapes: dict, running: dict, recent: list, avoid: set = frozenset(), override: dict | None = None, rng=random) -> dict:
     """scenes: the saved live scenes (specs); shapes: {device: "wall" | "tree"}; running: {device: name of its live scene or None};
     recent: [(scene name, theme)] of the round that another garland (not in this call) started a moment ago, newest first;
     avoid: palettes of the themes playing now (a new round takes another palette).
+    override: the fields of the theme that the channels `pace` / `theme` fix (source fixed or Home Assistant); the rest is random.
     A garland takes a scene meant for its shape or for any; garlands share a scene where the pools allow it and share the theme always.
     Returns {"theme": {...}, "groups": [{"devices": [...], "scene": name | None, "kept": bool, "error": str | None}]}."""
-    theme = dict(recent[0][1]) if recent else palettes.pick_theme(avoid, rng)
+    theme = dict(recent[0][1]) if recent else {**palettes.pick_theme(avoid, rng), **(override or {})}
     by_shape: dict = {}
     for n, shp in shapes.items():
         by_shape.setdefault(shp, []).append(n)

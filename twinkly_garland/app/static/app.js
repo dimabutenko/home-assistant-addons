@@ -95,7 +95,7 @@ requestAnimationFrame(tick);
 function showTab(t) {
   S.tab = t;
   for (const b of document.querySelectorAll('.tab')) b.classList.toggle('active', b.dataset.tab === t);
-  for (const v of ['library', 'editor', 'palettes', 'formulas', 'scan']) $('#view-' + v).hidden = v !== t;
+  for (const v of ['library', 'editor', 'palettes', 'formulas', 'channels', 'scan']) $('#view-' + v).hidden = v !== t;
   if (t !== 'scan' && typeof scanStopCamera === 'function' && !SC.running) scanStopCamera();
   if (t !== 'formulas' && typeof fmLiveStop === 'function') fmLiveStop();
   if (t === 'library') { renderLibrary(); loadStatus(); }
@@ -103,6 +103,7 @@ function showTab(t) {
   if (t === 'palettes') renderPalettes();
   if (t === 'scan') renderScan();
   if (t === 'formulas') renderFormulas();
+  if (t === 'channels') { CH.loaded = false; renderChannels(); }  // always fresh: the counts follow the formulas
 }
 for (const b of document.querySelectorAll('.tab')) b.onclick = () => showTab(b.dataset.tab);
 

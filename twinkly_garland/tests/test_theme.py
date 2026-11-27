@@ -7,7 +7,7 @@ import tempfile
 from pathlib import Path
 
 from harness import *  # noqa
-from app import formula, palettes, rounds
+from app import channels, formula, palettes, rounds
 
 bad = []
 lay = layouts()["wall"]
@@ -15,8 +15,8 @@ old = {e["name"]: e for e in json.loads((Path(__file__).parent / "golden" / "exa
 
 
 def frames(spec, theme=None, pace=1.0):
-    spec = formula.validate_item({"name": "t", **spec})
-    defs, inputs = spec["params"], spec["inputs"]
+    spec = formula.validate_item({"name": "t", **to_refs(spec)})
+    defs, inputs = spec["params"], formula.expand_inputs(spec)
     fn = formula.compile_formula(spec["code"], formula.all_names(defs, inputs))
     prep = formula.Prepared(lay)
     prevfn, state = formula.make_prev(prep, 0.9)
@@ -122,7 +122,8 @@ for k in range(50):
 
 # 4. saved formulas: an example as it was shipped moves to the new code, an edited one stays; the old file is kept
 with tempfile.TemporaryDirectory() as tmp:
-    formula.DATA_DIR = Path(tmp)
+    formula.DATA_DIR = channels.DATA_DIR = Path(tmp)
+    channels.reset_cache()
     edited = {**old["Live rain"], "code": old["Live rain"]["code"] + "\n"}
     other = {**old["Live candy"], "name": "Candy copy"}
     (Path(tmp) / "formulas.json").write_text(json.dumps([old["Live twinkle"], edited, other, old["Live helix"]]))

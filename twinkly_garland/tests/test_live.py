@@ -13,7 +13,7 @@ for ex in formula.EXAMPLES:
         v = vals.setdefault(inp["name"], 0.2)
         vals[inp["name"]] = (v + 0.173) % 1.0
         return inp["min"] + v * (inp["max"] - inp["min"]), v
-    sc = live.LiveScene(ex, lay, source=source, history=lambda inp: [0.3 + 0.2 * ((j * 7) % 5) / 5 for j in range(60)])
+    sc = live.LiveScene(to_refs(ex), lay, source=source, history=lambda inp: [0.3 + 0.2 * ((j * 7) % 5) / 5 for j in range(60)])
     frames = [sc.frame(now=sc.t0 + 0.1 * (f + 1)) for f in range(12)]
     if any(len(f) != 3 * len(lay) for f in frames) or len({f for f in frames}) < 2:
         bad.append(f"{ex['name']}: frames wrong or static")

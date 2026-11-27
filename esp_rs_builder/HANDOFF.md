@@ -1,7 +1,7 @@
 # HANDOFF
 
 ## Status
-- **Tasks 01–08 — DONE; no further task is planned.** (Task 08 = add-on packaging, version 0.1.0.)
+- **Tasks 01–08 — DONE** (08 = add-on packaging; image builds in CI and installs on Home Assistant, version 0.1.1 + icon/logo). **Tasks 09–13 are specified (TODO)** after the first real use: boards (XIAO ESP32-C6), `!secret` backend, YAML editor with view modes, secrets UI, user-defined boards. Order: 09 -> 10 -> 11 -> 12 -> 13.
 - Verified: `cargo test --workspace` passes; the server run locally with `BUILDER_UI_DIR` serves `/`, `api/boards`, `style.css` (200). The UI uses relative URLs and a `location`-derived `ws:`/`wss:` URL, so it is ingress-prefix safe by inspection only (no real ingress run).
 - **NOT verified: Docker is not installed here.** `docker build`, running the image, a real build inside it (`/data/work`), the CI workflow, and installation on the real Home Assistant were never run. Do not treat the image as working until the first CI build and a first on-HA build succeed. Also unverified: `/data` mounted without `noexec` (cargo runs build scripts from `/data/work/target`), memory/time of the first build on aarch64, GHCR package visibility (new packages are private; make it public or the pull fails).
 - Still unverified from earlier tasks: DOM code of the UI in a browser, Web Serial flashing on a real ESP32-C6, ESP32-S3 build, firmware Wi-Fi/MQTT on hardware.
@@ -30,7 +30,9 @@
 - Nothing is pushed (push needs explicit approval).
 
 ## Token / context assessment
-- No next task is planned; the next step is for the user: review, commit approval, push (needs explicit approval), let CI build the image, install on Home Assistant, then try the UI in a browser. Open a new chat for any hardening work.
+- Task 09 (boards) is a different subsystem from the packaging work: start a **new chat**; the spec, `CLAUDE.md`, `ARCHITECTURE.md` and this file are enough. Each of 09–13 should be its own chat.
 
 ## Prompt for next session
-None: all planned tasks (01–08) are done. If hardening is wanted, create a new task spec first (e.g. API peer-IP allowlist).
+```
+Work in esp_rs_builder/. Read esp_rs_builder/CLAUDE.md, ARCHITECTURE.md and HANDOFF.md. Tasks 01–08 are DONE. Execute docs/tasks/09-boards-xiao-esp32c6.md only (follow its Scope/Constraints/Verification; verify the XIAO ESP32-C6 pinout against the Seeed wiki/datasheet before writing the schema; run cargo with ~/.cargo/bin on PATH; use the addon-check skill and the addon-reviewer subagent). When done, update 00-index.md and HANDOFF.md with the prompt for task 10.
+```

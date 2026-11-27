@@ -69,3 +69,8 @@ Defined in `crates/builder-engine/src/codegen.rs` (module doc); the component sc
 - Output via `quote!` + `prettyplease::unparse`; no string templates.
 - Generated code is deterministic (stable ordering) and contains a "generated, do not edit" header.
 - Every validation error carries a YAML path (for UI highlighting).
+
+## Planned (tasks 09–13, not built yet)
+- **Boards vs chips (09, 13):** a board schema may inherit a chip-level schema (`chip_base`) and list only the broken-out pins with labels, on-board pins and reserved pins; `board:` in the YAML is a board id. First new board: Seeed XIAO ESP32-C6. User-defined boards (13) live under `/data/boards` and use the same schema.
+- **Secrets (10, 12):** ESPHome-style `!secret name` in the device YAML, resolved by `builder-engine` from a flat `secrets.yaml` in `/data` (managed through `/api/secrets*`, names-only listing, values never logged or put in responses except the raw-file endpoint used by the editor).
+- **Editor (11):** the YAML text is the source of truth; `POST /api/parse` (serde_yaml) feeds the visual model; three view modes (Code / Split / Visual).

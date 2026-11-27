@@ -16,7 +16,6 @@ w h (width and height of the area), seed, the user's own parameters and names as
 Use whole numbers of cycles of t (sin(tau*2*t)) or the looping helpers (tnoise, rise) and the loop is seamless.
 """
 import ast
-import colorsys
 import json
 import math
 import os
@@ -24,7 +23,9 @@ import re
 import time
 from pathlib import Path
 
-from . import palettes
+import numpy as np
+
+from . import palettes, vformula
 from .effects import Rendered
 
 TAU = 2 * math.pi
@@ -48,251 +49,44 @@ class FormulaError(ValueError):
         return f"line {self.line}: {self.msg}" if self.line else self.msg
 
 
-# ---- colour vector ----------------------------------------------------------------------------
-
-class Vec:
-    """RGB in 0..1; supports + - * with numbers and other colours."""
-    __slots__ = ("r", "g", "b")
-
-    def __init__(self, r, g, b):
-        self.r, self.g, self.b = r, g, b
-
-    def __add__(self, o):
-        if o.__class__ is Vec:
-            return Vec(self.r + o.r, self.g + o.g, self.b + o.b)
-        return Vec(self.r + o, self.g + o, self.b + o)
-    __radd__ = __add__
-
-    def __sub__(self, o):
-        if o.__class__ is Vec:
-            return Vec(self.r - o.r, self.g - o.g, self.b - o.b)
-        return Vec(self.r - o, self.g - o, self.b - o)
-
-    def __rsub__(self, o):
-        return Vec(o - self.r, o - self.g, o - self.b)
-
-    def __mul__(self, o):
-        if o.__class__ is Vec:
-            return Vec(self.r * o.r, self.g * o.g, self.b * o.b)
-        return Vec(self.r * o, self.g * o, self.b * o)
-    __rmul__ = __mul__
-    def __neg__(self): return Vec(-self.r, -self.g, -self.b)
-
-
-def _num(x):
-    if x.__class__ is Vec:
-        raise TypeError("a colour cannot be used here, only a number")
-    return x
-
-
-def _div(a, b):
-    if isinstance(b, Vec):
-        return Vec(_div(a.r if isinstance(a, Vec) else a, b.r), _div(a.g if isinstance(a, Vec) else a, b.g),
-                   _div(a.b if isinstance(a, Vec) else a, b.b))
-    if b == 0:
-        return 0.0
-    if isinstance(a, Vec):
-        return Vec(a.r / b, a.g / b, a.b / b)
-    return a / b
-
-
-def _mod(a, b):
-    a, b = _num(a), _num(b)
-    return 0.0 if b == 0 else a % b
-
-
-def _pow(a, b):
-    a, b = _num(a), _num(b)
-    b = max(-12.0, min(12.0, b))
-    if a < 0 and b != int(b):
-        return 0.0
-    try:
-        return a ** b
-    except (OverflowError, ZeroDivisionError):
-        return 0.0
-
-
-# ---- functions available to formulas ----------------------------------------------------------------
-
-def _fract(x): x = _num(x); return x - math.floor(x)
-def _clamp(x, a, b): return max(a, min(b, _num(x)))
-def _sstep(a, b, x):
-    if a == b:
-        return 1.0 if x >= a else 0.0
-    t = max(0.0, min(1.0, (x - a) / (b - a)))
-    return t * t * (3 - 2 * t)
-
-
-def _mix(a, b, t):
-    if isinstance(a, Vec) or isinstance(b, Vec):
-        return a * (1 - t) + b * t
-    return a + (b - a) * t
-
-
-def _h3(ix, iy, iz):
-    n = (ix * 374761393 + iy * 668265263 + iz * 1274126177) & 0xFFFFFFFF
-    n = ((n ^ (n >> 13)) * 1274126177) & 0xFFFFFFFF
-    n ^= n >> 16
-    return n / 0xFFFFFFFF
-
-
-_H_INV = 1.0 / 0xFFFFFFFF
-
-
-def _sm(t): return t * t * (3 - 2 * t)
-
-
-def _clean(x):
-    if x.__class__ is Vec:
-        raise TypeError("a colour cannot be used here, only a number")
-    if x != x:
-        return 0.0
-    return -1e6 if x < -1e6 else (1e6 if x > 1e6 else x)
-
-
-def _noise2(x, y):
-    x, y = _clean(x), _clean(y)
-    ix, iy = math.floor(x), math.floor(y)
-    fx, fy = x - ix, y - iy
-    fx, fy = fx * fx * (3 - 2 * fx), fy * fy * (3 - 2 * fy)
-    # the four corners of the cell, the hash written out (the same numbers as _h3(ix, iy, 0) and so on)
-    px, py = ix * 374761393, iy * 668265263
-    px1, py1 = px + 374761393, py + 668265263
-    n = (px + py) & 0xFFFFFFFF;  n = ((n ^ (n >> 13)) * 1274126177) & 0xFFFFFFFF;  a = (n ^ (n >> 16)) * _H_INV
-    n = (px1 + py) & 0xFFFFFFFF; n = ((n ^ (n >> 13)) * 1274126177) & 0xFFFFFFFF;  b = (n ^ (n >> 16)) * _H_INV
-    n = (px + py1) & 0xFFFFFFFF; n = ((n ^ (n >> 13)) * 1274126177) & 0xFFFFFFFF;  c = (n ^ (n >> 16)) * _H_INV
-    n = (px1 + py1) & 0xFFFFFFFF; n = ((n ^ (n >> 13)) * 1274126177) & 0xFFFFFFFF; d = (n ^ (n >> 16)) * _H_INV
-    return (a + (b - a) * fx) * (1 - fy) + (c + (d - c) * fx) * fy
-
-
-def _noise3(x, y, z, pz=0):
-    """3D value noise; pz > 0 makes the z lattice repeat every pz cells."""
-    x, y, z = _clean(x), _clean(y), _clean(z)
-    x0, y0, z0 = math.floor(x), math.floor(y), math.floor(z)
-    fx, fy, fz = _sm(x - x0), _sm(y - y0), _sm(z - z0)
-    ix, iy, iz = int(x0), int(y0), int(z0)
-    iz0, iz1 = (iz % pz, (iz + 1) % pz) if pz else (iz, iz + 1)
-    def plane(zz):
-        a, b, c, d = _h3(ix, iy, zz), _h3(ix + 1, iy, zz), _h3(ix, iy + 1, zz), _h3(ix + 1, iy + 1, zz)
-        return (a + (b - a) * fx) * (1 - fy) + (c + (d - c) * fx) * fy
-    p0, p1 = plane(iz0), plane(iz1)
-    return p0 + (p1 - p0) * fz
-
-
-def _tnoise(x, y, t, k):
-    """Noise that changes over time and repeats exactly every loop (k whole cycles of the lattice)."""
-    k = max(1, min(16, int(round(_clean(k)))))
-    return _noise3(x, y, (_clean(t) % 1.0) * k, k)
-
-
-def _rise(x, y, t, k):
-    """Noise that drifts upward by |k| lattice cells per loop (k < 0: downward); exactly looping."""
-    k = _clean(k)
-    p = max(2, min(24, abs(int(round(k)))))
-    x, y = _clean(x), _clean(y)
-    ny = y - (1 if k >= 0 else -1) * (_clean(t) % 1.0) * p
-    y0, x0 = math.floor(ny), math.floor(x)
-    fx, fy = _sm(x - x0), _sm(ny - y0)
-    ix, iy0 = int(x0), int(y0) % p
-    iy1 = (int(y0) + 1) % p
-    a, b, c, d = _h3(ix, iy0, 5), _h3(ix + 1, iy0, 5), _h3(ix, iy1, 5), _h3(ix + 1, iy1, 5)
-    return (a + (b - a) * fx) * (1 - fy) + (c + (d - c) * fx) * fy
-
-
-def _hash(a, b=0):
-    return _h3(int(math.floor(_clean(a))), int(math.floor(_clean(b))), 7)
-
-
-def _palette(name, v):
-    c = palettes.get(name).at(_clean(v))
-    return Vec(c[0] / 255, c[1] / 255, c[2] / 255)
-
-
-def _cpalette(name, v):
-    c = palettes.get(name).cyc(_clean(v))
-    return Vec(c[0] / 255, c[1] / 255, c[2] / 255)
-
-
-def _hsv(h, s, v):
-    h = _num(h); h -= math.floor(h)
-    s = max(0, min(1, _num(s))); v = max(0, min(1, _num(v)))
-    if s == 0:
-        return Vec(v, v, v)
-    i = int(h * 6.0); f = h * 6.0 - i
-    p, q, t = v * (1.0 - s), v * (1.0 - s * f), v * (1.0 - s * (1.0 - f))
-    i %= 6
-    if i == 0: return Vec(v, t, p)
-    if i == 1: return Vec(q, v, p)
-    if i == 2: return Vec(p, v, t)
-    if i == 3: return Vec(p, q, v)
-    if i == 4: return Vec(t, p, v)
-    return Vec(v, p, q)
-
-
-def _prev_unbound(x, y):
-    """Replaced per scene by bind_prev(); a formula that is only checked sees black."""
-    return Vec(0.0, 0.0, 0.0)
-
-
-def _rotx(x, y, ang):
-    c, s = math.cos(TAU * _clean(ang)), math.sin(TAU * _clean(ang))
-    return _clean(x) * c - _clean(y) * s
-
-
-def _roty(x, y, ang):
-    c, s = math.cos(TAU * _clean(ang)), math.sin(TAU * _clean(ang))
-    return _clean(x) * s + _clean(y) * c
-
-
-def _mirror(a, n):
-    n = max(1.0, min(64.0, _clean(n)))
-    return abs(_fract(_clean(a) * n) - 0.5) / n
-
-
-def _wrap(x, p):
-    p = _clean(p)
-    return 0.0 if p == 0 else _clean(x) - p * math.floor(_clean(x) / p)
-
-
-# name -> (callable, min args, max args, description)
+# ---- functions available to formulas -----------------------------------------------------------------
+# name -> (min args, max args, description). The implementations (numpy) are in vformula.IMPL; prev(x, y) is passed in per scene.
 FUNCS = {
-    "sin": (lambda a: math.sin(_clean(a)), 1, 1, "sin(a): sine, a in radians (use tau*cycles*t)"),
-    "cos": (lambda a: math.cos(_clean(a)), 1, 1, "cos(a)"),
-    "atan2": (lambda a, b: math.atan2(_clean(a), _clean(b)), 2, 2, "atan2(y, x): angle in radians"),
-    "abs": (lambda a: abs(_num(a)), 1, 1, "abs(a)"),
-    "sqrt": (lambda a: math.sqrt(max(0.0, _num(a))), 1, 1, "sqrt(a), 0 for negatives"),
-    "exp": (lambda a: math.exp(max(-50.0, min(50.0, _num(a)))), 1, 1, "exp(a)"),
-    "floor": (lambda a: float(math.floor(_clean(a))), 1, 1, "floor(a)"),
-    "fract": (_fract, 1, 1, "fract(a): fractional part, 0..1"),
-    "sign": (lambda a: (_num(a) > 0) - (_num(a) < 0), 1, 1, "sign(a): -1, 0 or 1"),
-    "min": (lambda a, b: min(_num(a), _num(b)), 2, 2, "min(a, b)"),
-    "max": (lambda a, b: max(_num(a), _num(b)), 2, 2, "max(a, b)"),
-    "clamp": (_clamp, 3, 3, "clamp(a, lo, hi)"),
-    "step": (lambda a, x: 1.0 if _num(x) >= _num(a) else 0.0, 2, 2, "step(edge, a): 1 when a >= edge else 0"),
-    "smoothstep": (_sstep, 3, 3, "smoothstep(lo, hi, a): smooth 0..1 ramp"),
-    "mix": (_mix, 3, 3, "mix(a, b, k): a*(1-k) + b*k, works with colours too"),
-    "tri": (lambda a: 1 - abs(2 * _fract(a) - 1), 1, 1, "tri(a): triangle wave 0..1, period 1"),
-    "dist": (lambda a, b, c, d: math.hypot(_num(a) - _num(c), _num(b) - _num(d)), 4, 4, "dist(x1, y1, x2, y2)"),
-    "noise": (_noise2, 2, 2, "noise(x, y): smooth random 0..1"),
-    "noise3": (lambda a, b, c: _noise3(a, b, c), 3, 3, "noise3(x, y, z): 3D noise 0..1"),
-    "tnoise": (_tnoise, 4, 4, "tnoise(x, y, t, k): noise that evolves over the loop and repeats exactly (k = whole cycles, 1..16)"),
-    "rise": (_rise, 4, 4, "rise(x, y, t, k): noise drifting upward |k| cells per loop (negative k: down), exactly looping"),
-    "hash": (_hash, 1, 2, "hash(a, b): fixed random number 0..1 for the pair, e.g. hash(i, seed) per LED"),
-    "palette": (_palette, 2, 2, 'palette("name", v): colour at v (0..1) of a palette, clamped'),
-    "cpalette": (_cpalette, 2, 2, 'cpalette("name", v): the same but v wraps around (for cycling colours)'),
-    "hsv": (_hsv, 3, 3, "hsv(h, s, v): colour from hue, saturation, value (0..1)"),
-    "rgb": (lambda a, b, c: Vec(_clamp(a, 0, 1), _clamp(b, 0, 1), _clamp(c, 0, 1)), 3, 3, "rgb(r, g, b): colour, 0..1 each"),
-    "gray": (lambda a: Vec(_clamp(a, 0, 1), _clamp(a, 0, 1), _clamp(a, 0, 1)), 1, 1, "gray(a): grey colour"),
-    "rotx": (_rotx, 3, 3, "rotx(x, y, turns): x of the point (x, y) rotated by an angle in turns (use with roty)"),
-    "roty": (_roty, 3, 3, "roty(x, y, turns): y of the point (x, y) rotated by an angle in turns"),
-    "mirror": (_mirror, 2, 2, "mirror(a, n): fold the angle a (turns) into n mirrored segments, 0..0.5/n (kaleidoscope: px = r*cos(tau*mirror(a, 6)))"),
-    "wrap": (_wrap, 2, 2, "wrap(x, p): x repeated with period p (tiling)"),
-    "sat": (lambda a: _clamp(a, 0, 1), 1, 1, "sat(a): clamp to 0..1"),
-    "prev": (_prev_unbound, 2, 2, "prev(x, y): colour of the PREVIOUS frame at that position: feedback for trails, zooming tunnels, fading (stored effects run one warm-up loop first)"),
+    'sin': (1, 1, 'sin(a): sine, a in radians (use tau*cycles*t)'),
+    'cos': (1, 1, 'cos(a)'),
+    'atan2': (2, 2, 'atan2(y, x): angle in radians'),
+    'abs': (1, 1, 'abs(a)'),
+    'sqrt': (1, 1, 'sqrt(a), 0 for negatives'),
+    'exp': (1, 1, 'exp(a)'),
+    'floor': (1, 1, 'floor(a)'),
+    'fract': (1, 1, 'fract(a): fractional part, 0..1'),
+    'sign': (1, 1, 'sign(a): -1, 0 or 1'),
+    'min': (2, 2, 'min(a, b)'),
+    'max': (2, 2, 'max(a, b)'),
+    'clamp': (3, 3, 'clamp(a, lo, hi)'),
+    'step': (2, 2, 'step(edge, a): 1 when a >= edge else 0'),
+    'smoothstep': (3, 3, 'smoothstep(lo, hi, a): smooth 0..1 ramp'),
+    'mix': (3, 3, 'mix(a, b, k): a*(1-k) + b*k, works with colours too'),
+    'tri': (1, 1, 'tri(a): triangle wave 0..1, period 1'),
+    'dist': (4, 4, 'dist(x1, y1, x2, y2)'),
+    'noise': (2, 2, 'noise(x, y): smooth random 0..1'),
+    'noise3': (3, 3, 'noise3(x, y, z): 3D noise 0..1'),
+    'tnoise': (4, 4, 'tnoise(x, y, t, k): noise that evolves over the loop and repeats exactly (k = whole cycles, 1..16)'),
+    'rise': (4, 4, 'rise(x, y, t, k): noise drifting upward |k| cells per loop (negative k: down), exactly looping'),
+    'hash': (1, 2, 'hash(a, b): fixed random number 0..1 for the pair, e.g. hash(i, seed) per LED'),
+    'palette': (2, 2, 'palette("name", v): colour at v (0..1) of a palette, clamped'),
+    'cpalette': (2, 2, 'cpalette("name", v): the same but v wraps around (for cycling colours)'),
+    'hsv': (3, 3, 'hsv(h, s, v): colour from hue, saturation, value (0..1)'),
+    'rgb': (3, 3, 'rgb(r, g, b): colour, 0..1 each'),
+    'gray': (1, 1, 'gray(a): grey colour'),
+    'rotx': (3, 3, 'rotx(x, y, turns): x of the point (x, y) rotated by an angle in turns (use with roty)'),
+    'roty': (3, 3, 'roty(x, y, turns): y of the point (x, y) rotated by an angle in turns'),
+    'mirror': (2, 2, 'mirror(a, n): fold the angle a (turns) into n mirrored segments, 0..0.5/n (kaleidoscope: px = r*cos(tau*mirror(a, 6)))'),
+    'wrap': (2, 2, 'wrap(x, p): x repeated with period p (tiling)'),
+    'sat': (1, 1, 'sat(a): clamp to 0..1'),
+    'prev': (2, 2, 'prev(x, y): colour of the PREVIOUS frame at that position: feedback for trails, zooming tunnels, fading (stored effects run one warm-up loop first)'),
 }
 PALETTE_FUNCS = {"palette", "cpalette"}
-GLOBALS = {"__builtins__": {}, "tau": TAU, "pi": math.pi, "_div": _div, "_mod": _mod, "_pow": _pow,
-           **{k: v[0] for k, v in FUNCS.items()}}
 
 REFERENCE = {
     "variables": [
@@ -309,7 +103,7 @@ REFERENCE = {
         "w, h: width and height of the area; seed: the Seed slider; tau, pi",
         "your own parameters (they become sliders) and any name you assign: speed = 2",
     ],
-    "functions": [v[3] for v in FUNCS.values()],
+    "functions": [v[2] for v in FUNCS.values()],
     "rules": [
         "One statement per line: name = expression. The last line is the colour: palette(...), hsv(...), rgb(...) or a number.",
         "Operators: + - * / % **, comparisons < > <= >= == !=, and/or, and conditions as (a if cond else b).",
@@ -367,7 +161,7 @@ def _check(node, scope):
         if not isinstance(node.func, ast.Name) or node.func.id not in FUNCS:
             raise _err("unknown function", node)
         name = node.func.id
-        _, lo, hi, _doc = FUNCS[name]
+        lo, hi, _doc = FUNCS[name]
         if node.keywords or not (lo <= len(node.args) <= hi):
             raise _err(f"{name}() takes {lo if lo == hi else f'{lo}-{hi}'} argument(s)", node)
         args = node.args
@@ -386,70 +180,8 @@ def _check(node, scope):
 
 _compiled: dict = {}
 
-PER_LED = {"x", "y", "u", "v", "r", "a", "i", "prev"}
-
-
-def _invariant(node, inv: set) -> bool:
-    """True when the expression gives the same number for every LED (it uses only the time, the parameters and such)."""
-    if isinstance(node, ast.Name):
-        return node.id in inv
-    if isinstance(node, ast.Call):
-        return all(_invariant(a, inv) for a in node.args if not isinstance(a, ast.Constant) or not isinstance(a.value, str))
-    return all(_invariant(c, inv) for c in ast.iter_child_nodes(node) if not isinstance(c, (ast.operator, ast.unaryop, ast.cmpop, ast.boolop, ast.expr_context)))
-
-
-def _split(tree, param_names):
-    """Moves what does not depend on the LED out of the per-LED code: it is computed once per frame, not 600 times.
-    Returns (pre_lines, body_statements, outputs) or None. Only expressions that are always evaluated are moved (a branch of
-    a condition stays where it is), so the numbers are exactly the same; if the part computed in advance fails, the caller
-    falls back to the plain function."""
-    counts = {}
-    for st in tree.body[:-1]:
-        counts[st.targets[0].id] = counts.get(st.targets[0].id, 0) + 1
-    inv = (set(BASE_VARS) - PER_LED) | set(CONSTS) | set(param_names)
-    pre, outs, memo = [], [], {}
-
-    def hoist(node):
-        if isinstance(node, (ast.Constant, ast.Name)):
-            return node
-        if _invariant(node, inv):
-            key = ast.unparse(node)
-            if key not in memo:
-                memo[key] = f"_c{len(memo)}"
-                pre.append(f"{memo[key]} = {key}"); outs.append(memo[key])
-            return ast.copy_location(ast.Name(id=memo[key], ctx=ast.Load()), node)
-        if isinstance(node, ast.IfExp):
-            node.test = hoist(node.test)
-        elif isinstance(node, ast.BoolOp):
-            node.values[0] = hoist(node.values[0])
-        elif isinstance(node, ast.Compare):
-            node.left = hoist(node.left)
-            if len(node.comparators) == 1:
-                node.comparators[0] = hoist(node.comparators[0])
-        elif isinstance(node, ast.BinOp):
-            node.left, node.right = hoist(node.left), hoist(node.right)
-        elif isinstance(node, ast.UnaryOp):
-            node.operand = hoist(node.operand)
-        elif isinstance(node, ast.Call):
-            node.args = [a if isinstance(a, ast.Constant) else hoist(a) for a in node.args]
-        return node
-
-    body = []
-    for st in tree.body[:-1]:
-        name = st.targets[0].id
-        if counts[name] == 1 and _invariant(st.value, inv):
-            pre.append(f"{name} = {ast.unparse(st.value)}"); outs.append(name); inv.add(name)
-            continue
-        st.value = hoist(st.value)
-        body.append(st)
-    last = tree.body[-1]
-    last.value = hoist(last.value)
-    body.append(last)
-    return (pre, body, outs) if outs else None
-
-
 def compile_formula(src: str, param_names: tuple = ()):
-    """Validate and compile; returns the function f(x, y, u, v, r, a, i, n, t, w, h, seed, *params)."""
+    """Validate and compile; returns the array function f(x, y, u, v, r, a, i, n, t, w, h, seed, now, prev, *params)."""
     key = (src, param_names, palettes.VERSION)
     if key in _compiled:
         return _compiled[key]
@@ -482,47 +214,13 @@ def compile_formula(src: str, param_names: tuple = ()):
 
     tree = _Ops().visit(tree)
     args = BASE_VARS + ["prev"] + list(param_names)  # prev(x, y) is passed in per scene (no shared state in the code)
-    # The checked and transformed tree is written out as ordinary source text and compiled the normal way
-    # (hand-assembled ASTs with positions that do not fit together are an unusual input for the compiler).
-    def source(name, argl, body_nodes, head=()):
-        lines, line_map = [f"def {name}({', '.join(argl)}):"] + ["    " + x for x in head], {}
-        for st in body_nodes[:-1]:
-            lines.append("    " + ast.unparse(st))
-            line_map[len(lines)] = st.lineno
-        lines.append("    return " + ast.unparse(body_nodes[-1].value))
-        line_map[len(lines)] = body_nodes[-1].lineno
-        return lines, line_map
-
-    lines, line_map = source("_f", args, list(tree.body))
-    ns = dict(GLOBALS)
-    exec(compile("\n".join(lines) + "\n", "<formula>", "exec"), ns)
-    fn = ns["_f"]
-    # the fastest way: all LEDs at once with numpy (vformula.py); None when numpy is missing or the formula does not fit
-    fn.vec = None
     try:
-        from . import vformula
-        fn.vec = vformula.build(tree, args)
-    except Exception:
-        fn.vec = None
-    # the faster way without numpy: what is the same for every LED is computed once per frame (see _split)
-    fn.split = None
-    try:
-        sp = _split(tree, param_names)  # after the plain function was written out: the tree is changed here
-        if sp:
-            pre, body, outs = sp
-            pargs = [v for v in BASE_VARS if v not in PER_LED] + list(param_names)
-            ptxt = "\n".join([f"def _pre({', '.join(pargs)}):"] + ["    " + x for x in pre] + [f"    return ({', '.join(outs)},)"]) + "\n"
-            blines, bmap = source("_b", args + ["_k"], body, head=[f"({', '.join(outs)},) = _k"])
-            ns2 = dict(GLOBALS)
-            exec(compile(ptxt, "<pre>", "exec"), ns2)
-            exec(compile("\n".join(blines) + "\n", "<formula>", "exec"), ns2)
-            ns2["_b"].line_map = bmap
-            fn.split = (ns2["_pre"], ns2["_b"])
-    except Exception:  # whatever goes wrong here, the plain function still works
-        fn.split = None
+        fn, line_map = vformula.build(tree, args)
+    except TypeError as exc:  # the last line is a yes/no
+        raise FormulaError(str(exc)) from None
     if len(_compiled) > 60:
         _compiled.pop(next(iter(_compiled)))
-    fn.uses_prev = re.search(r"\bprev\s*\(", src) is not None
+    fn.uses_prev = re.search(r"(?<![A-Za-z0-9_])prev\s*\(", src) is not None
     fn.line_map = line_map  # line of the generated function -> line the user wrote
     _compiled[key] = fn
     return fn
@@ -693,20 +391,6 @@ def _line_of(exc, fn=None) -> int | None:
     return getattr(fn, "line_map", {}).get(line, line) if line else None
 
 
-def _rgb(res, k):
-    if isinstance(res, Vec):
-        r, g, b = res.r, res.g, res.b
-    elif isinstance(res, (int, float)) and not isinstance(res, bool):
-        r = g = b = res
-    else:
-        raise TypeError("the last line must give a colour (palette, hsv, rgb, gray) or a number")
-    out = []
-    for c in (r, g, b):
-        c = 0.0 if c != c else c
-        out.append(min(255, max(0, int(c * 255 * k))))
-    return bytes(out)
-
-
 class Prepared:
     """Per-LED constants of a layout, computed once."""
     def __init__(self, layout: list):
@@ -715,128 +399,43 @@ class Prepared:
         self.w, self.h = (x1 - x0) or 1.0, (y1 - y0) or 1.0
         cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
         self.n = len(layout)
-        self.per = [(p["x"], p["y"], (p["x"] - x0) / self.w, (p["y"] - y0) / self.h, math.hypot(p["x"] - cx, p["y"] - cy),
-                     math.atan2(p["y"] - cy, p["x"] - cx) / TAU, i) for i, p in enumerate(layout)]
+        x, y = np.array(xs, dtype=np.float64), np.array(ys, dtype=np.float64)
+        self.arrays = (x, y, (x - x0) / self.w, (y - y0) / self.h, np.hypot(x - cx, y - cy),
+                       np.arctan2(y - cy, x - cx) / TAU, np.arange(self.n, dtype=np.float64))  # x y u v r a i
         self.x0, self.y0 = x0, y0
-        self._pts = [(p["x"], p["y"]) for p in layout]
-        self._grid = None
-        self._arr = None
-
-    def arrays(self):
-        """x, y, u, v, r, a, i of all LEDs as numpy arrays (for vformula)."""
-        if self._arr is None:
-            import numpy as np
-            self._arr = tuple(np.array([row[j] for row in self.per], dtype=np.float64) for j in range(7))
-        return self._arr
+        self._pts = list(zip(xs, ys))
 
     GRID = 32
     KNN = 4
-
-    def neighbours(self, x: float, y: float) -> list:
-        """The few LEDs around (x, y) as (index, weight), weights adding up to 1: lets the previous frame
-        be sampled between LEDs (a zoom of 2% per frame is much smaller than the LED spacing)."""
-        G = self.GRID
-        if self._grid is None:
-            self._grid = []
-            for gy in range(G):
-                for gx in range(G):
-                    px, py = self.x0 + (gx + 0.5) / G * self.w, self.y0 + (gy + 0.5) / G * self.h
-                    near = sorted(range(self.n), key=lambda j: (self._pts[j][0] - px) ** 2 + (self._pts[j][1] - py) ** 2)[:self.KNN + 2]
-                    self._grid.append(near)
-        gx = min(G - 1, max(0, int((x - self.x0) / self.w * G)))
-        gy = min(G - 1, max(0, int((y - self.y0) / self.h * G)))
-        cand = self._grid[gy * G + gx]
-        ds = sorted(((self._pts[j][0] - x) ** 2 + (self._pts[j][1] - y) ** 2, j) for j in cand)[:self.KNN]
-        ws = [1.0 / (d + 0.0006) for d, _ in ds]
-        tot = sum(ws)
-        return [(j, w / tot) for (_, j), w in zip(ds, ws)]
 
 
 def make_prev(prep: "Prepared", k: float):
     """prev(x, y) for one scene: reads the previous frame. Returns (function, state);
     set state["frame"] to the bytes of the frame just produced."""
     state = {"frame": None}
-    inv = 1.0 / (255.0 * max(k, 0.05))
-
-    def prev(x, y):
-        fr = state["frame"]
-        if fr is None:
-            return Vec(0.0, 0.0, 0.0)
-        r = g = b = 0.0
-        for j, w in prep.neighbours(_clean(x), _clean(y)):
-            r += fr[3 * j] * w
-            g += fr[3 * j + 1] * w
-            b += fr[3 * j + 2] * w
-        return Vec(min(1.0, r * inv), min(1.0, g * inv), min(1.0, b * inv))
-
-    holder = []
-
-    def vec(x, y):  # the array version for vformula, built when first used
-        if not holder:
-            from . import vformula
-            holder.append(vformula.make_prev_vec(prep, k, state))
-        return holder[0](x, y)
-
-    prev.vec = vec
-    return prev, state
-
-
-def _prev_unbound_vec(x, y):
-    return Vec(0.0, 0.0, 0.0)
+    return vformula.make_prev(prep, k, state), state
 
 
 def apply_shade(buf: bytes, weights: list) -> bytes:
     """A picture (r, g, b of every LED) with every LED multiplied by its own factor."""
-    try:
-        from . import vformula
-        np = vformula.np
-        if np is not None:
-            a = np.frombuffer(buf, dtype=np.uint8).astype(np.float64).reshape(-1, 3)
-            return (a * np.asarray(weights, dtype=np.float64)[:, None]).astype(np.uint8).tobytes()
-    except Exception:
-        pass
-    out = bytearray(len(buf))
-    for i, w in enumerate(weights):
-        for c in range(3):
-            out[3 * i + c] = int(buf[3 * i + c] * w)
-    return bytes(out)
+    a = np.frombuffer(buf, dtype=np.uint8).astype(np.float64).reshape(-1, 3)
+    return (a * np.asarray(weights, dtype=np.float64)[:, None]).astype(np.uint8).tobytes()
 
 
 def eval_frame(fn, prep: Prepared, t: float, now: float, seed: float, vals: list, k: float, prevfn=None) -> bytes:
-    """One frame: the formula for every LED. Raises FormulaError for mistakes in the formula."""
-    buf = bytearray()
+    """One frame: the formula for all LEDs at once. Raises FormulaError for mistakes in the formula
+    (with the line the user wrote when the error comes from a line of the formula)."""
     n, w, h = prep.n, prep.w, prep.h
-    vec = getattr(fn, "vec", None)
-    if vec is not None:  # all LEDs at once; anything unusual falls back to the plain function below
-        try:
-            from . import vformula
-            pv = getattr(prevfn, "vec", None) if prevfn else _prev_unbound_vec
-            if pv is None:
-                raise TypeError("no array version of prev")
-            with vformula.np.errstate(all="ignore"):
-                return vformula.frame_bytes(vec(*prep.arrays(), n, t, w, h, seed, now, pv, *vals), n, k)
-        except Exception:
-            fn.vec = None
-    prevfn = prevfn or _prev_unbound
-    call, tail = fn, vals
-    if fn.split is not None:  # what is the same for every LED is computed once; if that fails the plain function reports it
-        try:
-            tail = list(vals) + [fn.split[0](n, t, w, h, seed, now, *vals)]
-            call = fn.split[1]
-        except Exception:
-            pass
-    for x, y, u, v, r, a, i in prep.per:
-        try:
-            res = call(x, y, u, v, r, a, i, n, t, w, h, seed, now, prevfn, *tail)
-        except (ZeroDivisionError, OverflowError, ValueError):
-            res = 0.0
-        except Exception as exc:  # a mistake in the formula (e.g. a colour used as a number)
-            raise FormulaError(f"{type(exc).__name__}: {exc}", _line_of(exc, call)) from None
-        try:
-            buf += _rgb(res, k)
-        except TypeError as exc:
-            raise FormulaError(str(exc)) from None
-    return bytes(buf)
+    try:
+        with np.errstate(all="ignore"):
+            res = fn(*prep.arrays, n, t, w, h, seed, now, prevfn or vformula.prev_unbound, *vals)
+            return vformula.frame_bytes(res, n, k)
+    except FormulaError:
+        raise
+    except Exception as exc:  # a mistake in the formula (e.g. a colour used as a number)
+        line = _line_of(exc, fn)
+        msg = str(exc) if isinstance(exc, TypeError) and str(exc).startswith("the last line") else f"{type(exc).__name__}: {exc}"
+        raise FormulaError(msg, line) from None
 
 
 def render_spec(layout: list, params: dict, spec: dict) -> Rendered:

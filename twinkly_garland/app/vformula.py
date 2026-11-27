@@ -1,33 +1,60 @@
-"""The same formulas as formula.py, but computed for all LEDs at once with numpy.
+"""The formula engine: a formula is computed for ALL LEDs at once with numpy.
 
-formula.py checks a formula and compiles it into a Python function that is called for every LED. Here the SAME checked
-syntax tree is written out as a function that works on arrays (one number per LED): every position variable is an array,
-every function a numpy one, a condition (a if c else b) computes both sides and picks per LED. The pictures are the same
-as the scalar ones (to a rounding of one step of a colour channel); on the Home Assistant host this is 5 to 10 times
-cheaper than 600 calls of the scalar function.
+formula.py checks a formula and transforms the syntax tree (safe /, %, **); here the SAME checked tree is written out as
+a function that works on arrays (one number per LED): every position variable is an array, every function a numpy one, a
+condition (a if c else b) computes both sides and picks per LED. There is no other engine: whatever does not fit (a colour
+used as a number, a parameter of a function that has to be one number but differs per LED) raises, and formula.eval_frame
+turns that into a FormulaError with the line of the formula the user wrote.
 
-It is an acceleration only: whatever does not fit (a colour used as a number, a parameter of a function that has to be one
-number but differs per LED, numpy missing) raises here, and formula.eval_frame then uses the scalar function, which also
-produces the error messages with the line of the formula.
+New functions and constructs of the language are written for numpy only: arrays in, arrays out, no per-LED branching.
 """
 import ast
 import copy
 import math
 
-try:
-    import numpy as np
-except ImportError:  # the scalar engine still works
-    np = None
+import numpy as np
 
-from . import formula, palettes
-from .formula import FUNCS, Vec
+from . import palettes
 
 TAU = 2 * math.pi
 M32 = 0xFFFFFFFF
 
 
-def available() -> bool:
-    return np is not None
+class Vec:
+    """RGB in 0..1 (each channel a number or an array); supports + - * with numbers, arrays and other colours."""
+    __slots__ = ("r", "g", "b")
+    __array_ufunc__ = None  # `array * colour` must call Vec.__rmul__ (numpy would otherwise wrap the colour into an object array)
+
+    def __init__(self, r, g, b):
+        self.r, self.g, self.b = r, g, b
+
+    def __add__(self, o):
+        if o.__class__ is Vec:
+            return Vec(self.r + o.r, self.g + o.g, self.b + o.b)
+        return Vec(self.r + o, self.g + o, self.b + o)
+    __radd__ = __add__
+
+    def __sub__(self, o):
+        if o.__class__ is Vec:
+            return Vec(self.r - o.r, self.g - o.g, self.b - o.b)
+        return Vec(self.r - o, self.g - o, self.b - o)
+
+    def __rsub__(self, o):
+        return Vec(o - self.r, o - self.g, o - self.b)
+
+    def __mul__(self, o):
+        if o.__class__ is Vec:
+            return Vec(self.r * o.r, self.g * o.g, self.b * o.b)
+        return Vec(self.r * o, self.g * o, self.b * o)
+    __rmul__ = __mul__
+
+    def __neg__(self):
+        return Vec(-self.r, -self.g, -self.b)
+
+    def _no(self, *_):
+        raise TypeError("a colour cannot be used here, only a number")
+    __lt__ = __le__ = __gt__ = __ge__ = __truediv__ = __rtruediv__ = __mod__ = __rmod__ = __pow__ = __rpow__ = _no
+    __bool__ = _no
 
 
 # ---- numbers ------------------------------------------------------------------------------------------
@@ -39,17 +66,10 @@ def _num(x):
 
 
 def C(x):
-    """formula._clean for numbers and arrays: NaN becomes 0, the rest is held within +-1e6."""
+    """NaN becomes 0, the rest is held within +-1e6 (numbers and arrays)."""
     if x.__class__ is Vec:
         raise TypeError("a colour cannot be used here, only a number")
     return np.clip(np.nan_to_num(x, nan=0.0, posinf=1e6, neginf=-1e6), -1e6, 1e6)
-
-
-def _scalar(x, what):
-    a = np.asarray(_num(x))
-    if a.size != 1:
-        raise ValueError(f"{what} has to be one number, not one per LED")
-    return float(a.reshape(()))
 
 
 def _fract(x):
@@ -252,7 +272,7 @@ def _wrap(x, p):
     return np.where(z, 0.0, C(x) - q * np.floor(C(x) / q))
 
 
-VFUNCS = {
+IMPL = {
     "sin": lambda a: np.sin(C(a)), "cos": lambda a: np.cos(C(a)), "atan2": lambda a, b: np.arctan2(C(a), C(b)),
     "abs": lambda a: np.abs(_num(a)), "sqrt": lambda a: np.sqrt(np.maximum(0.0, _num(a))),
     "exp": lambda a: np.exp(np.clip(_num(a), -50.0, 50.0)), "floor": lambda a: np.floor(C(a)), "fract": _fract,
@@ -303,27 +323,36 @@ NS = {"__builtins__": {}, "tau": TAU, "pi": math.pi, "_div": _div, "_mod": _mod,
 
 
 def build(tree, args: list):
-    """The array function for a checked and Ops-transformed tree (or None): same arguments as the scalar one."""
-    if np is None:
-        return None
+    """The array function for a checked and Ops-transformed tree: (function, line_map). The function takes `args`;
+    line_map maps a line of the generated code to the line the user wrote (errors are reported with the user's line)."""
     last = tree.body[-1].value
     if isinstance(last, (ast.Compare, ast.BoolOp)):
-        return None  # the scalar path says that a yes/no is no colour
+        raise TypeError(LAST_LINE_MSG)
     t = _Vectorise().visit(copy.deepcopy(tree))
-    lines = [f"def _v({', '.join(args)}):"]
+    lines, line_map = [f"def _v({', '.join(args)}):"], {}
     for st in t.body[:-1]:
         lines.append("    " + ast.unparse(st))
+        line_map[len(lines)] = st.lineno
     lines.append("    return " + ast.unparse(t.body[-1].value))
+    line_map[len(lines)] = t.body[-1].lineno
     ns = dict(NS)
-    ns.update(VFUNCS)
-    exec(compile(chr(10).join(lines) + chr(10), "<vformula>", "exec"), ns)
-    return ns["_v"]
+    ns.update(IMPL)
+    exec(compile(chr(10).join(lines) + chr(10), "<formula>", "exec"), ns)
+    return ns["_v"], line_map
+
+
+LAST_LINE_MSG = "the last line must give a colour (palette, hsv, rgb, gray) or a number"
 
 
 # ---- the previous frame ---------------------------------------------------------------------------------
 
-def make_prev_vec(prep, k, state):
-    """prev(x, y) for arrays: the same four-nearest-LEDs blend as formula.make_prev."""
+def prev_unbound(x, y):
+    """prev() of a formula that is only checked or has no frame yet: black."""
+    return Vec(0.0, 0.0, 0.0)
+
+
+def make_prev(prep, k, state):
+    """prev(x, y) for arrays: a blend of the four nearest LEDs of the previous frame (state["frame"], the bytes of it)."""
     G, K = prep.GRID, prep.KNN
     P = np.array(prep._pts, dtype=np.float64)
     gx = prep.x0 + (np.arange(G) + 0.5) / G * prep.w
@@ -359,7 +388,7 @@ def make_prev_vec(prep, k, state):
 
 
 def frame_bytes(res, n, k) -> bytes:
-    """The result of the array function as the bytes of the frame (the same rounding as formula._rgb)."""
+    """The result of the array function as the bytes of the frame (each channel is cut to 0..255)."""
     if res.__class__ is Vec:
         chans = (res.r, res.g, res.b)
     else:

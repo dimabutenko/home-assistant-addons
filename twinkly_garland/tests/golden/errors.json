@@ -1,0 +1,50 @@
+{
+ "colour as number": [
+  "TypeError: a colour cannot be used here, only a number",
+  3
+ ],
+ "colour as arg 2": [
+  "TypeError: a colour cannot be used here, only a number",
+  2
+ ],
+ "colour in test": [
+  "TypeError: a colour cannot be used here, only a number",
+  1
+ ],
+ "colour in mod": [
+  "TypeError: a colour cannot be used here, only a number",
+  3
+ ],
+ "colour in pow": [
+  "TypeError: a colour cannot be used here, only a number",
+  2
+ ],
+ "colour in compare": [
+  "TypeError: a colour cannot be used here, only a number",
+  1
+ ],
+ "yes/no last": [
+  "the last line must give a colour (palette, hsv, rgb, gray) or a number",
+  null
+ ],
+ "and last": [
+  "the last line must give a colour (palette, hsv, rgb, gray) or a number",
+  null
+ ],
+ "unknown name": [
+  "unknown name 'zz'",
+  2
+ ],
+ "syntax": [
+  "syntax error: '(' was never closed",
+  1
+ ],
+ "palette name": [
+  "unknown palette 'nope'",
+  2
+ ],
+ "colour in tnoise": [
+  "TypeError: a colour cannot be used here, only a number",
+  3
+ ]
+}
